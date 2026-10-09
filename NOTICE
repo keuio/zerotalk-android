@@ -1,0 +1,46 @@
+零语 ZeroTalk 非官方第三方客户端 (unofficial third-party client)
+Copyright 2026 kelo
+
+【非官方声明】
+本仓库是面向「零语 / ZeroTalk」(app.zerotalk.cn) 的非官方第三方客户端，
+由社区开发者独立编写，与 ZeroTalk 官方及其运营方无任何关联，
+未获得其授权、认可或支持。相关服务名称、商标、接口与内容均归其各自权利人所有。
+本项目仅供学习与技术交流使用，使用者请自行遵守目标服务的使用条款。
+
+This is an UNOFFICIAL third-party client. It is not affiliated with,
+authorized, endorsed, or supported by the ZeroTalk service or its operators.
+
+This product includes software developed by The Apache Software Foundation (http://www.apache.org/).
+
+=========================================================================
+Third-party Components and Libraries
+=========================================================================
+
+This project integrates and builds upon the following open-source components,
+which are licensed under the Apache License, Version 2.0:
+
+1. KMPLiquidGlass / Backdrop
+   Copyright 2025 Kashif-E
+   URL: https://github.com/Kashif-E/KMPLiquidGlass
+
+2. Kotlinx Coroutines
+   Copyright 2000-2024 JetBrains s.r.o. and contributors
+   URL: https://github.com/Kotlin/kotlinx.coroutines
+
+3. OkHttp
+   Copyright 2019 Square, Inc.
+   URL: https://github.com/square/okhttp
+
+4. Gson
+   Copyright 2008-2024 Google Inc.
+   URL: https://github.com/google/gson
+
+5. Android Jetpack & Jetpack Compose
+   Copyright The Android Open Source Project
+   URL: https://source.android.com/
+
+=========================================================================
+
+For full license text of the Apache License, Version 2.0, see the LICENSE
+file in the root directory of this repository or visit:
+http://www.apache.org/licenses/LICENSE-2.0

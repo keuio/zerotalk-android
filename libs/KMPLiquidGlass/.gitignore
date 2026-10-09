@@ -1,0 +1,44 @@
+# Gradle
+*.iml
+.gradle
+/local.properties
+build/
+/captures
+.cxx
+
+# Android Studio / IntelliJ IDEA
+.idea/*
+
+# Kotlin
+.kotlin/
+*.kotlin_module
+
+# External Native Build
+.externalNativeBuild
+
+# macOS
+.DS_Store
+
+# Android
+*.apk
+*.ap_
+*.aab
+output-metadata.json
+/app/release/
+/catalog/release/
+
+# Backup files
+*.bak
+*.backup
+
+# Local properties
+local.properties
+
+# Kotlin JS
+kotlin-js-store/
+
+# Scripts
+run-web.sh
+
+# Claude Code skill development workspaces (eval outputs, optimization logs)
+.claude/skills/*-workspace/
