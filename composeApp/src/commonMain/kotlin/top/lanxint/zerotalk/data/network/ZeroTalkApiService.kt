@@ -3,6 +3,7 @@ package top.lanxint.zerotalk.data.network
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
@@ -31,6 +32,9 @@ class ZeroTalkApiService(
     val gson: Gson = GsonBuilder()
         .registerTypeAdapterFactory(FlexibleBooleanTypeAdapterFactory)
         .registerTypeAdapterFactory(FlexibleNumberTypeAdapterFactory)
+        // 文本字段的宽容解析：服务端会把同一字段从字符串改成对象（如 mbti），
+        // 不加这层会让整条 bootstrap 解析失败、登录态无法落地
+        .registerTypeAdapterFactory(FlexibleStringTypeAdapterFactory)
         .registerTypeAdapterFactory(NullTextCoercingTypeAdapterFactory)
         .create()
 
@@ -1070,6 +1074,19 @@ class ZeroTalkApiService(
     )
 
     /**
+     * 表情包列表：GET /api/sticker/list
+     *
+     * 官方 `sticker` store 拉取后按 `asset_id` 建索引，
+     * 用于解析 `type:"sticker"` 消息 content 里的 asset_id（渲染表情包消息）。
+     */
+    suspend fun getStickerList(): Result<StickerListData?> = apiDataRequest(
+        path = "/api/sticker/list",
+        type = object : TypeToken<ApiResponse<StickerListData>>() {}.type,
+        get = true,
+        fallbackMessage = "获取表情包列表失败"
+    )
+
+    /**
      * 通用上传：三段式直传 + 旧版 multipart 回退，返回可直接访问的文件地址
      *
      * @param legacyPath 直传不可用时回退的旧版 multipart 端点
@@ -1536,6 +1553,53 @@ class ZeroTalkApiService(
     ).mapCatching { it.unread.coerceAtLeast(0) }
 
     /**
+     * 通知列表 (GET /api/notifications)
+     *
+     * 官方 `NotificationsView`：首次请求不带 `before_id`，下拉加载更多时带上一页的 `next_before_id`；
+     * `limit` 固定 20，`category` 取 all / interaction / account / system。
+     * 响应 `{ list, has_more, next_before_id, unread }`，其中 `unread` 可顺带回写实时未读数。
+     */
+    suspend fun getNotifications(
+        beforeId: Long? = null,
+        limit: Int = 20,
+        category: String = "all"
+    ): Result<NotificationListData> = apiDataRequestRequired(
+        path = "/api/notifications",
+        type = object : TypeToken<ApiResponse<NotificationListData>>() {}.type,
+        params = buildMap {
+            put("limit", limit.toString())
+            put("category", category)
+            if (beforeId != null && beforeId > 0L) put("before_id", beforeId.toString())
+        },
+        get = true,
+        fallbackMessage = "获取通知列表失败"
+    )
+
+    /**
+     * 标记单条 / 多条通知已读 (POST /notifications/read)
+     *
+     * 官方口径（notification store）：form 参数 `ids` = 多个 id 用英文逗号拼接；
+     * 服务端可能不回 data，因此返回可空的最新未读数，由调用方决定是否本地扣减。
+     */
+    suspend fun markNotificationsRead(ids: List<Long>): Result<Int?> = apiDataRequest<NotificationUnreadData>(
+        path = "/notifications/read",
+        type = object : TypeToken<ApiResponse<NotificationUnreadData>>() {}.type,
+        params = mapOf("ids" to ids.joinToString(",")),
+        fallbackMessage = "标记已读失败"
+    ).mapCatching { it?.unread?.coerceAtLeast(0) }
+
+    /**
+     * 全部标为已读 (POST /notifications/read-all)
+     *
+     * 官方为空 body；同样返回可空的最新未读数。
+     */
+    suspend fun markAllNotificationsRead(): Result<Int?> = apiDataRequest<NotificationUnreadData>(
+        path = "/notifications/read-all",
+        type = object : TypeToken<ApiResponse<NotificationUnreadData>>() {}.type,
+        fallbackMessage = "全部已读失败"
+    ).mapCatching { it?.unread?.coerceAtLeast(0) }
+
+    /**
      * 举报记录列表 (GET /api/report/list)
      *
      * 官网 `MyReportsView` 固定按 `page` + `per_page=10` 分页，并用 `has_more` 控制「加载更多」。
@@ -1626,6 +1690,46 @@ class ZeroTalkApiService(
         fallbackMessage: String = "请求失败"
     ): Result<T> = apiDataRequest<T>(path, type, params, get, fallbackMessage)
         .mapCatching { data -> data ?: throw IOException(fallbackMessage) }
+
+    /**
+     * 与 [apiDataRequest] 相同，但 POST 请求体是 **JSON**（Content-Type: application/json）。
+     *
+     * 站内绝大多数写接口收 form-urlencoded，MBTI 提交等少数接口只认 JSON body，
+     * 因此单独抽出这一条通路；Cookie / X-Device-Id 仍由 OkHttp 拦截器统一附带。
+     *
+     * @param bodyJson 已经序列化好的 JSON 字符串
+     */
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun <T> apiJsonDataRequest(
+        path: String,
+        type: java.lang.reflect.Type,
+        bodyJson: String,
+        fallbackMessage: String = "请求失败"
+    ): Result<T?> = withContext(Dispatchers.IO) {
+        try {
+            val requestBody = bodyJson.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            val request = Request.Builder()
+                .url("$BASE_URL$path")
+                .post(requestBody)
+                .build()
+
+            val response = client.newCall(request).execute()
+            val bodyString = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(IOException("HTTP Error: ${response.code}"))
+            }
+
+            val apiResponse = gson.fromJson(bodyString, type) as? ApiResponse<T>
+                ?: return@withContext Result.failure(IOException(fallbackMessage))
+            if (apiResponse.isSuccess) {
+                Result.success(apiResponse.data)
+            } else {
+                Result.failure(IOException(apiResponse.msg ?: fallbackMessage))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 
     /**
      * 安全中心 · 登录设备列表 (GET /api/security/devices)
@@ -1939,4 +2043,69 @@ class ZeroTalkApiService(
         get = true,
         fallbackMessage = "获取通话状态失败"
     )
+
+    // ============================================================
+    // 官方 MBTI 测评（60 题问卷）
+    //  1) GET  /api/mbti/questions 题目与量表
+    //  2) POST /api/mbti/submit    JSON body 提交答案
+    //  3) GET  /api/mbti/me        我的最近一次结果
+    //  4) POST /api/mbti/clear     清除本次结果
+    // 注意：submit 是全站少数收 JSON body 的接口，走 [apiJsonDataRequest]。
+    // ============================================================
+
+    /**
+     * MBTI 测评 · 题目与量表 (GET /api/mbti/questions)
+     *
+     * 返回 [MbtiQuestionsData]；data 畸形（非对象）时按失败处理。
+     */
+    suspend fun getMbtiQuestions(): Result<MbtiQuestionsData> = apiDataRequest<JsonElement>(
+        path = "/api/mbti/questions",
+        type = object : TypeToken<ApiResponse<JsonElement>>() {}.type,
+        get = true,
+        fallbackMessage = "获取 MBTI 题目失败"
+    ).mapCatching { element ->
+        MbtiQuestionsData.fromJsonElement(element)
+            ?: throw IOException("MBTI 题目数据异常")
+    }
+
+    /**
+     * MBTI 测评 · 我的最近一次结果 (GET /api/mbti/me)
+     *
+     * 服务端结构为 data: { result: <MbtiResult|null> }：
+     * 未测评时 result 为 null，此处同样返回 success(null)，由 UI 决定展示引导页还是结果页。
+     */
+    suspend fun getMyMbtiResult(): Result<MbtiResult?> = apiDataRequest<JsonElement>(
+        path = "/api/mbti/me",
+        type = object : TypeToken<ApiResponse<JsonElement>>() {}.type,
+        get = true,
+        fallbackMessage = "获取 MBTI 结果失败"
+    ).mapCatching { element -> MbtiMeData.fromJsonElement(element)?.result }
+
+    /**
+     * MBTI 测评 · 提交答案 (POST /api/mbti/submit)
+     *
+     * 请求体为 JSON：version + answers[{id, value}]，
+     * value 为量表分值（1..scale.labels.size），version 必须与题目接口下发的一致。
+     */
+    suspend fun submitMbtiTest(version: String, answers: List<MbtiAnswer>): Result<MbtiResult> =
+        apiJsonDataRequest<JsonElement>(
+            path = "/api/mbti/submit",
+            type = object : TypeToken<ApiResponse<JsonElement>>() {}.type,
+            bodyJson = MbtiSubmitRequest(version = version, answers = answers).toJson(gson),
+            fallbackMessage = "提交 MBTI 测评失败"
+        ).mapCatching { element ->
+            MbtiResult.fromJsonElement(element)
+                ?: throw IOException("MBTI 结果数据异常")
+        }
+
+    /**
+     * MBTI 测评 · 清除本次结果 (POST /api/mbti/clear)
+     *
+     * 服务端无业务数据返回，成功即 [Unit]。
+     */
+    suspend fun clearMbtiTest(): Result<Unit> = apiDataRequest<JsonElement>(
+        path = "/api/mbti/clear",
+        type = object : TypeToken<ApiResponse<JsonElement>>() {}.type,
+        fallbackMessage = "清除 MBTI 测评失败"
+    ).mapCatching { Unit }
 }

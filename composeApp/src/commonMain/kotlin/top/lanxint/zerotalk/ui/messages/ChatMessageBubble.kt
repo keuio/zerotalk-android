@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,8 +22,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -30,14 +34,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -46,13 +53,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.lanxint.zerotalk.data.model.ChatMessage
+import top.lanxint.zerotalk.data.model.MomentShareCardData
+import top.lanxint.zerotalk.data.model.MusicPlaylist
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.ChatDice
 import top.lanxint.zerotalk.ui.components.NetworkImageLoader
 import top.lanxint.zerotalk.ui.components.shouldAnimateDice
 import top.lanxint.zerotalk.ui.moments.MomentMusicCard
+import top.lanxint.zerotalk.ui.moments.MomentVoiceBubble
 import top.lanxint.zerotalk.ui.theme.AppleHigColorTokens
+import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.utils.MomentAudioPlayer
 import top.lanxint.zerotalk.ui.utils.rememberMomentAudioPlayer
 
@@ -65,15 +76,14 @@ fun BubbleQuotedBox(
     quotedSenderName: String?,
     quotedIsMine: Boolean?,
     isMine: Boolean,
-    isDark: Boolean,
     higColors: AppleHigColorTokens,
     modifier: Modifier = Modifier
 ) {
-    val quoteTextColor = if (isMine) {
-        Color.White.copy(alpha = 0.70f)
-    } else {
-        higColors.secondaryLabel
-    }
+    // 引用条位于气泡内部，颜色必须跟随**气泡底色**、而不是主题：
+    // 对方气泡恒为深灰 Color(0xB32C2C2E)、我方气泡恒为蓝 Color(0xFF007AFF)（两种主题下都一样），
+    // 气泡主文字也恒为白色。因此引用文字必须恒为浅色 —— 此前用 higColors.secondaryLabel，
+    // 亮色模式下那是深灰字，压在深灰气泡上几乎看不见。
+    val quoteTextColor = Color.White.copy(alpha = if (isMine) 0.80f else 0.72f)
     val quoteBarColor = if (quotedIsMine == true) {
         Color(0xFF007AFF) // 蓝色竖线 (原我方气泡色)
     } else {
@@ -85,8 +95,9 @@ fun BubbleQuotedBox(
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(
-                if (isMine) Color(0x26000000)
-                else if (isDark) Color(0x33000000) else Color(0x0F000000)
+                // 气泡底色两种主题下一致，遮罩也保持一致
+                // （原先亮色用 6%，引用块几乎看不出边界）
+                if (isMine) Color(0x26000000) else Color(0x2E000000)
             )
             .padding(horizontal = 8.dp, vertical = 4.dp)
             .height(IntrinsicSize.Min),
@@ -339,6 +350,14 @@ fun BubbleContentBox(
                 modifier = modifier
             )
         }
+    } else if (message.isMusicPlaylist) {
+        // 歌单卡片：官网与 music 共用 `.msg-music-wrap`（裸媒体块，不套聊天气泡）；
+        // 解析失败（musicPlaylist 为 null）显示「歌单已失效」（对齐官方）
+        MusicPlaylistCard(
+            playlist = message.musicPlaylist,
+            isDark = isDark,
+            modifier = modifier
+        )
     } else if (message.isGame) {
         val invite = message.gameInvite ?: remember(message.content) {
             ZeroTalkClientManager.parseGameInviteContent(message.content)
@@ -361,6 +380,24 @@ fun BubbleContentBox(
             value = message.diceValue,
             animate = message.shouldAnimateDice(),
             modifier = modifier
+        )
+    } else if (message.isMomentShare) {
+        // 动态分享卡片：官网同样是裸媒体块（`.msg-media-wrap msg-moment-share-wrap`），
+        // 自带主题化底色、不套聊天气泡；解析失败（momentShare 为 null）显示「动态卡片已失效」
+        MomentShareCardBubble(
+            data = message.momentShare,
+            isDark = isDark,
+            modifier = modifier
+        )
+    } else if (message.isSticker) {
+        // 表情包：官网裸媒体块（`.msg-media-wrap--sticker`），有图渲染图片，
+        // 拿不到地址（image_url 缺失且本地列表未命中）降级显示「表情包已失效」（对齐官方）
+        StickerBubble(
+            stickerUrl = message.stickerUrl,
+            assetId = message.stickerAssetId,
+            isDark = isDark,
+            modifier = modifier,
+            onClick = onImageClick
         )
     } else {
         val defaultBg = if (isMine) Color(0xFF007AFF) else Color(0xB32C2C2E)
@@ -390,7 +427,6 @@ fun BubbleContentBox(
                         quotedSenderName = message.quotedSenderName,
                         quotedIsMine = message.quotedIsMine,
                         isMine = isMine,
-                        isDark = isDark,
                         higColors = higColors
                     )
                     Spacer(modifier = Modifier.height(6.dp))
@@ -427,6 +463,421 @@ fun BubbleContentBox(
                             lineHeight = 22.sp
                         )
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 网易云歌单卡片（服务端 `type:"music_playlist"`）
+ *
+ * 对齐官方 `NeteasePlaylistCard`（`.nm-pl-card`，聊天内嵌于 `.msg-music-wrap`）：
+ * 封面 + 歌单名 + 「创建者 · N 首」+「歌单」徽标，与 [MomentMusicCard] 同一套视觉语言。
+ * [playlist] 为 null（JSON 解析失败 / playlist_id 非法）时显示「歌单已失效」（对齐官方）。
+ */
+@Composable
+fun MusicPlaylistCard(
+    playlist: MusicPlaylist?,
+    isDark: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val higColors = AppleHigColors.colors(isDark)
+    val cardShape = RoundedCornerShape(14.dp)
+    val cardBg = if (isDark) Color(0xFF1F2430) else Color(0xFFF2F4F8)
+    val subtitleColor = higColors.secondaryLabel
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(cardShape)
+            .background(cardBg)
+            .border(0.5.dp, higColors.separator.copy(alpha = 0.5f), cardShape)
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AsyncNetworkImage(
+            url = playlist?.coverUrl.orEmpty(),
+            contentDescription = "歌单封面",
+            modifier = Modifier.size(46.dp),
+            shape = RoundedCornerShape(10.dp)
+        )
+
+        Spacer(Modifier.width(10.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            BasicText(
+                text = when {
+                    playlist == null -> "歌单已失效"
+                    playlist.name.isBlank() -> "未知歌单"
+                    else -> playlist.name
+                },
+                style = TextStyle(
+                    color = if (playlist == null) subtitleColor else higColors.label,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.MusicNote,
+                    contentDescription = null,
+                    tint = Color(0xFFE11D48),
+                    modifier = Modifier.size(11.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                BasicText(
+                    text = musicPlaylistSubtitle(playlist),
+                    style = TextStyle(color = subtitleColor, fontSize = 12.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        if (playlist != null) {
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFFE11D48))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                BasicText(
+                    text = "歌单",
+                    style = TextStyle(
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+        }
+    }
+}
+
+/** 歌单卡片副标题：官方 `creator ? creator + " · " : ""` + `N 首` */
+private fun musicPlaylistSubtitle(playlist: MusicPlaylist?): String {
+    if (playlist == null) return "网易云音乐"
+    val count = "${playlist.trackCount} 首"
+    return if (playlist.creator.isNotBlank()) "${playlist.creator} · $count" else "网易云歌单 · $count"
+}
+
+/**
+ * 表情包气泡（服务端 `type:"sticker"`）
+ *
+ * 对齐官方 `ko()`：优先 `image_url`，否则按 content 的 asset_id 查本地表情包列表
+ * （`GET /api/sticker/list`，结果缓存在 [ZeroTalkClientManager]）；都拿不到时显示「表情包已失效」（对齐官方）。
+ */
+@Composable
+fun StickerBubble(
+    stickerUrl: String,
+    assetId: Long,
+    isDark: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: ((String) -> Unit)? = null
+) {
+    val resolvedUrl by produceState(initialValue = stickerUrl, stickerUrl, assetId) {
+        value = stickerUrl
+        if (value.isBlank() && assetId > 0L) {
+            value = ZeroTalkClientManager.resolveStickerUrl(assetId)
+            if (value.isBlank()) {
+                ZeroTalkClientManager.ensureStickerListLoaded()
+                value = ZeroTalkClientManager.resolveStickerUrl(assetId)
+            }
+        }
+    }
+
+    if (resolvedUrl.isBlank()) {
+        BasicText(
+            text = "表情包已失效",
+            style = TextStyle(
+                color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                fontSize = 14.sp
+            ),
+            modifier = modifier
+        )
+        return
+    }
+
+    AsyncNetworkImage(
+        url = resolvedUrl,
+        contentDescription = "表情包",
+        modifier = modifier
+            .size(120.dp)
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { onClick(resolvedUrl) }
+                } else {
+                    Modifier
+                }
+            ),
+        contentScale = ContentScale.Fit,
+        shape = RoundedCornerShape(12.dp),
+        backgroundColor = Color.Transparent
+    )
+}
+
+/**
+ * 动态分享卡片气泡（服务端 `type:"moment_share"`）
+ *
+ * 对齐官网 `MomentShareChatCard`（`.msg-moment-share`）：
+ * 作者头像 + 昵称 + 性别 + 正文摘要（最多 5 行）+ 语音 / 音乐 + 图片九宫格（最多 9 张）
+ * + 底部点赞 / 评论数。
+ *
+ * 与官网一致，卡片**不套聊天气泡**（官网是裸媒体块 `.msg-media-wrap msg-moment-share-wrap`），
+ * 而是自带主题化底色：亮色白卡深字、暗色深卡浅字。因此卡片内部文字使用
+ * [AppleHigColors] 是安全的 —— 它们落在卡片自己的底色上，而不是固定在
+ * 蓝 / 深灰的聊天气泡上（后者才必须恒用白色文字，参见 [BubbleQuotedBox] 的修复）。
+ *
+ * @param data 已解析的卡片数据；为 null（JSON 解析失败 / moment_id 非法）时
+ *   按官网口径显示「动态卡片已失效」
+ */
+@Composable
+fun MomentShareCardBubble(
+    data: MomentShareCardData?,
+    isDark: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val higColors = AppleHigColors.colors(isDark)
+    val cardShape = RoundedCornerShape(16.dp)
+    // 对齐官网 .msg-moment-share 的亮 / 暗两套底色
+    val cardBg = if (isDark) Color(0xFF1E293B) else Color(0xFFF8FAFC)
+    val borderColor = if (isDark) Color(0x6194A3B8) else Color(0x4794A3B8)
+    val dividerColor = if (isDark) Color(0x8C475569) else Color(0x2494A3B8)
+    val excerptColor = if (isDark) Color(0xFFCBD5E1) else Color(0xFF334155)
+    val statColor = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(cardShape)
+            .background(cardBg)
+            .border(0.5.dp, borderColor, cardShape)
+            .padding(horizontal = 12.dp, vertical = 11.dp)
+    ) {
+        if (data == null) {
+            BasicText(
+                text = "动态卡片已失效",
+                style = TextStyle(color = statColor, fontSize = 13.sp)
+            )
+            return@Column
+        }
+
+        // ---- 头部：头像 + 昵称 + 性别（+ 时间） ----
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MomentShareAvatar(
+                avatarUrl = data.avatarUrl,
+                fallback = data.avatarFallback,
+                size = 34.dp
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BasicText(
+                        text = data.username,
+                        style = TextStyle(
+                            color = higColors.label,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    MomentShareGenderBadge(gender = data.gender)
+                }
+                data.createdAt?.takeIf { it.isNotBlank() }?.let { time ->
+                    Spacer(Modifier.height(2.dp))
+                    BasicText(
+                        text = time,
+                        style = TextStyle(color = statColor, fontSize = 11.sp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        // ---- 正文摘要（官网最多 5 行） ----
+        if (data.excerpt.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            BasicText(
+                text = data.excerpt,
+                style = TextStyle(color = excerptColor, fontSize = 13.sp, lineHeight = 19.sp),
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        // ---- 语音 / 音乐 ----
+        if (data.audioUrl != null) {
+            Spacer(Modifier.height(8.dp))
+            MomentVoiceBubble(audioUrl = data.audioUrl, isDark = isDark)
+        }
+        data.music?.let { music ->
+            Spacer(Modifier.height(8.dp))
+            MomentMusicCard(music = music, isDark = isDark)
+        }
+
+        // ---- 图片九宫格（最多 9 张） ----
+        if (data.images.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            MomentShareImageGrid(images = data.images)
+        }
+
+        // ---- 底部：点赞 / 评论 ----
+        Spacer(Modifier.height(8.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(0.5.dp)
+                .background(dividerColor)
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MomentShareStat(
+                icon = Icons.Default.Favorite,
+                count = data.likeCount,
+                color = statColor
+            )
+            Spacer(Modifier.width(12.dp))
+            MomentShareStat(
+                icon = Icons.AutoMirrored.Filled.Chat,
+                count = data.commentCount,
+                color = statColor
+            )
+        }
+    }
+}
+
+/**
+ * 动态卡片作者头像：真实头像优先，缺失 / 加载失败时回落为渐变底 + 兜底文字
+ * （对齐官网 `.msg-moment-share__avatar--fb`）。
+ */
+@Composable
+private fun MomentShareAvatar(
+    avatarUrl: String,
+    fallback: String,
+    size: Dp,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(10.dp)
+    if (avatarUrl.isBlank()) {
+        Box(
+            modifier = modifier
+                .size(size)
+                .clip(shape)
+                .background(Brush.linearGradient(listOf(Color(0xFF60A5FA), Color(0xFF334155)))),
+            contentAlignment = Alignment.Center
+        ) {
+            BasicText(
+                text = fallback.ifBlank { "?" },
+                style = TextStyle(
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+        }
+    } else {
+        AsyncNetworkImage(
+            url = avatarUrl,
+            contentDescription = "动态作者头像",
+            modifier = modifier.size(size),
+            shape = shape,
+            showPlaceholder = false
+        )
+    }
+}
+
+/** 动态卡片性别角标（对齐官网 `.msg-moment-share__gender`） */
+@Composable
+private fun MomentShareGenderBadge(gender: String) {
+    val (symbol, color) = when (gender) {
+        "male" -> "♂" to Color(0xFF3B82F6)
+        "female" -> "♀" to Color(0xFFEC4899)
+        else -> return
+    }
+    BasicText(
+        text = symbol,
+        style = TextStyle(color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+    )
+}
+
+/** 动态卡片底部计数项（点赞 / 评论） */
+@Composable
+private fun MomentShareStat(
+    icon: ImageVector,
+    count: Int,
+    color: Color
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(Modifier.width(3.dp))
+        BasicText(
+            text = count.toString(),
+            style = TextStyle(color = color, fontSize = 12.sp)
+        )
+    }
+}
+
+/**
+ * 动态图片九宫格
+ *
+ * 单图按官网限制放大（约 180×128dp），多图 3 列正方裁切；
+ * 不足一行的末行用等宽 Spacer 占位，保持网格对齐。
+ */
+@Composable
+private fun MomentShareImageGrid(
+    images: List<String>,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(8.dp)
+    if (images.size == 1) {
+        AsyncNetworkImage(
+            url = images.first(),
+            contentDescription = "动态图片",
+            modifier = modifier
+                .width(180.dp)
+                .height(128.dp),
+            shape = shape
+        )
+        return
+    }
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        images.chunked(3).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                row.forEach { url ->
+                    AsyncNetworkImage(
+                        url = url,
+                        contentDescription = "动态图片",
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f),
+                        shape = shape
+                    )
+                }
+                repeat(3 - row.size) {
+                    Spacer(Modifier.weight(1f))
                 }
             }
         }

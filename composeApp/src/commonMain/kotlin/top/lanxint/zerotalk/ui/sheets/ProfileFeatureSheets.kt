@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Devices
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -52,17 +54,20 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import top.lanxint.zerotalk.data.log.AppDiagnostics
 import top.lanxint.zerotalk.data.network.NeteaseBindingData
 import top.lanxint.zerotalk.data.network.PenaltyAppealDto
 import top.lanxint.zerotalk.data.network.PenaltyOptionDto
 import top.lanxint.zerotalk.data.network.SecurityDeviceDto
 import top.lanxint.zerotalk.data.network.SecurityLoginLogDto
+import top.lanxint.zerotalk.data.repository.ClientStatus
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AppleHigDivider
 import top.lanxint.zerotalk.ui.components.AppleHigFillCard
 import top.lanxint.zerotalk.ui.components.AppleHigGroupedSection
 import top.lanxint.zerotalk.ui.components.AppleHigRow
 import top.lanxint.zerotalk.ui.components.AppleHigRowAccessory
+import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.utils.decodeByteArrayToImageBitmap
 import top.lanxint.zerotalk.ui.utils.parseQrSvgDataUri
@@ -103,6 +108,7 @@ import androidx.compose.ui.text.AnnotatedString
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 // ============================================================
 // 「我的」页面四个功能的 Sheet 内容
@@ -756,34 +762,127 @@ private fun truncateDeviceId(deviceId: String): String {
     return if (value.length <= 16) value else "${value.take(8)}…${value.takeLast(8)}"
 }
 
-/** 设备活跃时间：兼容 Unix 秒与时间字符串 */
+/**
+ * 设备「活跃」时间。
+ *
+ * 官方 SecurityCenterView 的取值与格式化（tmp/assets/SecurityCenterView-*.js）：
+ * ```
+ * oe = a => { if (!a) return "未知"; const e = new Date(a * 1e3);
+ *             return Number.isNaN(e.getTime()) ? "未知" : e.toLocaleString() }
+ * ```
+ * 即 `last_seen_at` 是 **Unix 秒**，且 JS 的 `*` 会把**任何可数字化字面量**
+ * （`1759238400`、`1759238400.0`、`1.7592384e9`、纯数字字符串）隐式转成 number。
+ *
+ * 该字段经 Gson 落进 [SecurityDeviceDto.lastSeenAt]（String），实际可能是：
+ *  - `"1759238400"`：整数，旧实现能处理；
+ *  - `"1759238400.0"` / `"1.7592384e9"`：PHP `json_encode` 对浮点时间戳的输出。
+ *    旧实现只做 `toLongOrNull()`，这类值直接失败并落到「原样回显」分支，
+ *    卡片上于是出现裸时间戳 —— 这正是「活跃时间显示不对」的根因；
+ *  - 少数情况下是 `"2025-09-30 12:00:00"` 这类时间字符串（DTO 注释声明要兼容）。
+ *
+ * 这里按官方语义统一处理：能数字化的都按 Unix 秒换算成本地时区展示，
+ * 否则再按时间字符串解析，两者都失败才回退原文。
+ */
 private fun formatSecurityDeviceSeen(raw: String): String {
     val value = raw.trim()
     if (value.isEmpty()) return "未知"
-    value.toLongOrNull()?.let { seconds ->
-        if (seconds <= 0L) return "未知"
-        return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(seconds * 1000L))
+    val seconds = value.toJsNumberOrNull()
+    if (seconds != null) {
+        // 官方 `if (!a) return "未知"`：0 表示无记录
+        if (seconds <= 0.0) return "未知"
+        val millis = seconds * 1000.0
+        // 官方 new Date(...) 的有效区间是 ±8.64e15 毫秒，超出即 Invalid Date →「未知」
+        if (!millis.isFinite() || millis < -8.64e15 || millis > 8.64e15) return "未知"
+        return try {
+            SimpleDateFormat(SECURITY_DISPLAY_PATTERN, Locale.getDefault()).format(Date(millis.toLong()))
+        } catch (_: Exception) {
+            "未知"
+        }
     }
-    return formatSecurityDateTime(value)
+    parseSecurityDateTime(value)?.let { return it }
+    // 数字形态却无法解释为 Unix 秒（Infinity / NaN 等）：官方 new Date(...) 只会得到
+    // Invalid Date →「未知」，不要回显裸值
+    if (value.toDoubleOrNull() != null) return "未知"
+    return value
 }
 
-/** 时间字符串（"2025-09-30 12:00:00" / ISO8601）→「yyyy-MM-dd HH:mm」，解析失败原样返回 */
-private fun formatSecurityDateTime(raw: String): String {
+/**
+ * 按 JS `Number()` 的十进制语义解析（对齐官方 `a * 1e3` 的隐式转换）：
+ * 接受 `[+-]?digits[.digits][e±digits]`；拒绝 `Infinity` / `NaN` / 十六进制等
+ * `Double.parseDouble` 会放行、但时间戳场景不存在的写法。
+ */
+private fun String.toJsNumberOrNull(): Double? =
+    if (JS_DECIMAL_NUMBER_REGEX.matches(this)) toDoubleOrNull() else null
+
+private val JS_DECIMAL_NUMBER_REGEX = Regex("^[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?$")
+
+/** 时间展示格式（官方为 `toLocaleString()`，App 侧统一为等价的本地时间文本） */
+private const val SECURITY_DISPLAY_PATTERN = "yyyy-MM-dd HH:mm"
+
+/** 时间字符串尾部时区偏移：`+08:00` / `+0800` */
+private val SECURITY_UTC_OFFSET_REGEX = Regex("([+-])(\\d{2}):?(\\d{2})$")
+
+/** 时间字符串可接受的日期时间形态（按「精确 → 宽松」顺序尝试） */
+private val SECURITY_DATE_PATTERNS = listOf(
+    "yyyy-MM-dd'T'HH:mm:ss.SSS",
+    "yyyy-MM-dd'T'HH:mm:ss",
+    "yyyy-MM-dd'T'HH:mm",
+    "yyyy-MM-dd"
+)
+
+/**
+ * 时间字符串 → 本地时区「yyyy-MM-dd HH:mm」；解析失败返回 null，由调用方决定回退文案。
+ *
+ * 官方 `ie(created_at)`：`new Date(a.replace(" ", "T"))`，解析失败原样回显。
+ * 浏览器 `Date` 的时区语义：无时区标记按本地时间，尾部 `Z` 按 UTC，
+ * 尾部 `±HH:mm` / `±HHmm` 按该偏移。旧实现直接 `removeSuffix("Z")`，
+ * 把 UTC 当成本地时间，东八区会整整差 8 小时。
+ */
+private fun parseSecurityDateTime(raw: String): String? {
     val value = raw.trim()
-    if (value.isEmpty()) return "未知"
-    val normalized = value.replace(' ', 'T').removeSuffix("Z")
-    val patterns = listOf("yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm")
-    patterns.forEach { pattern ->
+    if (value.isEmpty()) return null
+
+    // 与官方一致：只把首个空格换成 T，交给 Date 语义解析
+    var text = value.replaceFirst(' ', 'T')
+
+    var zone: TimeZone? = null
+    if (text.endsWith("Z") || text.endsWith("z")) {
+        zone = TimeZone.getTimeZone("UTC")
+        text = text.dropLast(1)
+    } else {
+        val offset = SECURITY_UTC_OFFSET_REGEX.find(text)
+        // 只在「日期时间」之后紧跟偏移时才按偏移解析，避免误伤 "2025-09-30" 这类纯日期
+        if (offset != null && text.substring(0, offset.range.first).contains('T')) {
+            val sign = offset.groupValues[1]
+            val hours = offset.groupValues[2]
+            val minutes = offset.groupValues[3]
+            zone = TimeZone.getTimeZone("GMT$sign$hours:$minutes")
+            text = text.substring(0, offset.range.first)
+        }
+    }
+
+    SECURITY_DATE_PATTERNS.forEach { pattern ->
         try {
-            val parsed = SimpleDateFormat(pattern, Locale.getDefault()).parse(normalized)
-            if (parsed != null) {
-                return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(parsed)
+            val formatter = SimpleDateFormat(pattern, Locale.getDefault()).apply {
+                isLenient = false
+                zone?.let { timeZone = it }
             }
+            val parsed = formatter.parse(text) ?: return@forEach
+            return SimpleDateFormat(SECURITY_DISPLAY_PATTERN, Locale.getDefault()).format(parsed)
         } catch (_: Exception) {
             // 尝试下一个模式
         }
     }
-    return value
+    return null
+}
+
+/**
+ * 时间字符串 → 本地时区「yyyy-MM-dd HH:mm」，解析失败原样回显（官方 `ie` 的回退语义）。
+ */
+private fun formatSecurityDateTime(raw: String): String {
+    val value = raw.trim()
+    if (value.isEmpty()) return "未知"
+    return parseSecurityDateTime(value) ?: value
 }
 
 // ------------------------------------------------------------
@@ -2379,6 +2478,7 @@ private const val APP_FEEDBACK_ROOM_PASSWORD = "1"
  * 顶部另有「App反馈」入口：一键加入官方暗语群聊（创建者 kelo / 房间 App端群 / 暗号 1），
  * 走 [ZeroTalkClientManager.joinSecretRoom] 的 `POST /room/join`。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SheetFeedbackContent(
     isDark: Boolean,
@@ -2398,6 +2498,11 @@ fun SheetFeedbackContent(
     var isSubmitting by remember { mutableStateOf(false) }
     var formError by remember { mutableStateOf<String?>(null) }
     var isJoiningAppRoom by remember { mutableStateOf(false) }
+
+    // 「发送诊断信息到 App端群」：预览文本 / 预览弹窗 / 发送中
+    var diagnosticsText by remember { mutableStateOf("") }
+    var showDiagnosticsPreview by remember { mutableStateOf(false) }
+    var isSendingDiagnostics by remember { mutableStateOf(false) }
 
     // 官方同款：内容上限 2000 字，剩余不足 50 字时提示转警示色
     val contentLimit = 2000
@@ -2440,6 +2545,63 @@ fun SheetFeedbackContent(
                         formError = res.exceptionOrNull()?.message ?: "提交失败，请稍后重试"
                     }
                     isSubmitting = false
+                }
+            }
+        }
+    }
+
+    // ---- 诊断信息发送链路：已加入则直接进房发送，未加入则先 joinSecretRoom ----
+
+    /** 进入目标房间并发送（发送前校验连接状态，避免消息静默丢失） */
+    suspend fun deliverDiagnostics(roomId: String, text: String) {
+        if (ZeroTalkClientManager.status.value !is ClientStatus.Connected) {
+            isSendingDiagnostics = false
+            onShowMessage("发送失败：连接未就绪，请稍后重试")
+            return
+        }
+        // 先让 WebSocket 进入该房间，再发送，避免 join 与 send 抢跑导致消息被服务端丢弃
+        ZeroTalkClientManager.enterRoom(roomId)
+        delay(600)
+        ZeroTalkClientManager.sendRoomMessage(roomId, text)
+        isSendingDiagnostics = false
+        showDiagnosticsPreview = false
+        onShowMessage("已发送到「$APP_FEEDBACK_ROOM_NAME」")
+    }
+
+    /** 尚未加入 App端群：复用「App反馈」同一套常量与 joinSecretRoom */
+    fun joinAndSendDiagnostics(text: String) {
+        ZeroTalkClientManager.joinSecretRoom(
+            creatorUsername = APP_FEEDBACK_ROOM_OWNER,
+            roomName = APP_FEEDBACK_ROOM_NAME,
+            password = APP_FEEDBACK_ROOM_PASSWORD,
+            onSuccess = { data ->
+                scope.launch { deliverDiagnostics(data.roomId, text) }
+            },
+            onError = { err ->
+                isSendingDiagnostics = false
+                onShowMessage("加入「$APP_FEEDBACK_ROOM_NAME」失败：$err")
+            }
+        )
+    }
+
+    val onSendDiagnostics: () -> Unit = {
+        if (!isSendingDiagnostics) {
+            val text = diagnosticsText.trim()
+            when {
+                text.isEmpty() -> onShowMessage("诊断信息为空，无法发送")
+                ZeroTalkClientManager.loginData.value == null ->
+                    onShowMessage("请先登录后再发送诊断信息")
+                else -> {
+                    isSendingDiagnostics = true
+                    scope.launch {
+                        val existing = ZeroTalkClientManager.conversations.value
+                            .firstOrNull { it.targetName == APP_FEEDBACK_ROOM_NAME }
+                        if (existing != null) {
+                            deliverDiagnostics(existing.id, text)
+                        } else {
+                            joinAndSendDiagnostics(text)
+                        }
+                    }
                 }
             }
         }
@@ -2514,6 +2676,48 @@ fun SheetFeedbackContent(
                     )
                 )
             }
+
+            // ---- 一键发送诊断信息：先弹预览（可编辑），确认后再发到 App端群 ----
+            LiquidButton(
+                onClick = {
+                    if (isSendingDiagnostics) return@LiquidButton
+                    // 组装时即完成脱敏：uid/房间 id 截断、聊天正文省略、日志按关键字筛选
+                    diagnosticsText = AppDiagnostics.build(
+                        // 优先用账号 uid（32 位 hex，会截断到前 8 位）；无则退回数字 user_id
+                        uid = ZeroTalkClientManager.loginData.value?.uid
+                            ?.takeIf { it.isNotBlank() }
+                            ?: ZeroTalkClientManager.userProfile.value.userId,
+                        nickname = ZeroTalkClientManager.userProfile.value.name
+                    )
+                    showDiagnosticsPreview = true
+                },
+                isDark = isDark,
+                isInteractive = !isSendingDiagnostics,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.BugReport,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                BasicText(
+                    text = "发送诊断信息到 App端群",
+                    style = AppleHigTypography.subhead.copy(
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+            BasicText(
+                text = "自动附带 App 版本 / 系统 / 机型 / 账号信息与日志尾部；发送前可预览编辑，" +
+                    "uid 与房间 id 已截断、聊天正文已省略",
+                style = AppleHigTypography.caption2.copy(color = higColors.tertiaryLabel)
+            )
         }
 
         Spacer(Modifier.height(16.dp))
@@ -2763,6 +2967,67 @@ fun SheetFeedbackContent(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ---- 诊断信息预览：完整文本可编辑，确认后发送 ----
+    if (showDiagnosticsPreview) {
+        AppleModalBottomSheet(
+            onDismissRequest = { if (!isSendingDiagnostics) showDiagnosticsPreview = false },
+            title = "诊断信息预览",
+            isDark = isDark
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                BasicText(
+                    text = "以下内容将发送到「$APP_FEEDBACK_ROOM_NAME」，可编辑后再发送。" +
+                        "账号 uid 与房间 id 已截断，聊天正文已省略。",
+                    style = AppleHigTypography.caption1.copy(color = higColors.secondaryLabel)
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 300.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(higColors.quaternarySystemFill)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    BasicTextField(
+                        value = diagnosticsText,
+                        onValueChange = { diagnosticsText = it },
+                        textStyle = AppleHigTypography.footnote.copy(color = higColors.label),
+                        cursorBrush = SolidColor(higColors.systemBlue),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                LiquidButton(
+                    onClick = onSendDiagnostics,
+                    isDark = isDark,
+                    isInteractive = !isSendingDiagnostics,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp)
+                ) {
+                    BasicText(
+                        text = if (isSendingDiagnostics) "发送中…" else "发送到「$APP_FEEDBACK_ROOM_NAME」",
+                        style = AppleHigTypography.headline.copy(
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
         }

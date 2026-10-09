@@ -27,7 +27,9 @@ data class UserProfile(
     val qq: String = "",
     val avatarUpload: AvatarUploadDto? = null,
     val hasCustomAvatar: Boolean = false,
-    val location: String = ""
+    val location: String = "",
+    /** MBTI 完整信息（未填写 MBTI 时为 null，UI 不展示对应卡片） */
+    val mbti: MbtiInfo? = null
 ) {
     companion object {
         val AGE_OPTIONS = listOf("18-23", "23以上")

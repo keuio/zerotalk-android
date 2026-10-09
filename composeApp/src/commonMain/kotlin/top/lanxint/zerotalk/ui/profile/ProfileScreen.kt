@@ -18,18 +18,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import top.lanxint.zerotalk.data.model.AppThemeMode
 import top.lanxint.zerotalk.data.notify.SystemNotificationBridge
 import top.lanxint.zerotalk.data.model.UserProfile
+import top.lanxint.zerotalk.data.repository.NotificationCenterStore
 import top.lanxint.zerotalk.ui.components.AppleHigDivider
 import top.lanxint.zerotalk.ui.components.AppleHigGroupedCard
 import top.lanxint.zerotalk.ui.components.AppleHigGroupedSection
@@ -54,6 +58,7 @@ import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.ui.components.GenderBadge
 import top.lanxint.zerotalk.ui.components.LiquidSegmentedControl
 import top.lanxint.zerotalk.ui.components.LiquidToggle
+import top.lanxint.zerotalk.ui.components.MbtiCard
 import top.lanxint.zerotalk.ui.components.UserAvatar
 import top.lanxint.zerotalk.ui.sheets.ProfileSettingItem
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
@@ -85,6 +90,10 @@ fun ProfileScreen(
     onLogout: () -> Unit,
     onLogin: (() -> Unit)? = null,
     onOpenSetting: (ProfileSettingItem) -> Unit,
+    /** 打开「通知中心」面板 */
+    onOpenNotificationCenter: () -> Unit,
+    /** 打开「MBTI 人格测试」面板 */
+    onOpenMbtiTest: () -> Unit,
     onDeleteAccount: () -> Unit,
     backdrop: Backdrop? = null,
     isDark: Boolean,
@@ -98,6 +107,11 @@ fun ProfileScreen(
     // 系统通知权限：进入「我的」时刷新一次（用户可能刚从系统设置页返回）
     var notificationsEnabled by remember { mutableStateOf(SystemNotificationBridge.isNotificationEnabled) }
     LaunchedEffect(Unit) { notificationsEnabled = SystemNotificationBridge.isNotificationEnabled }
+
+    // 通知中心未读数：与面板共用同一份 store 状态（进入「我的」时刷新一次）
+    val notificationState by NotificationCenterStore.state.collectAsState()
+    val notificationUnreadCount = notificationState.unreadCount
+    LaunchedEffect(Unit) { NotificationCenterStore.refreshUnread() }
 
     Column(
         modifier = modifier
@@ -323,6 +337,33 @@ fun ProfileScreen(
             }
         }
 
+        // MBTI 完整信息卡片（未填写 MBTI 时不渲染，保持原有布局）
+        profile.mbti?.let { mbtiInfo ->
+            Spacer(Modifier.height(cardSpacing))
+            MbtiCard(
+                mbti = mbtiInfo,
+                isDark = isDark,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // MBTI 人格测试入口：未测试过也能进；已测试过则显示「查看报告 / 重新测试」
+        Spacer(Modifier.height(cardSpacing))
+        AppleHigGroupedSection(
+            title = "人格测试",
+            footer = "官方 60 题问卷 · 生成你的 16 型人格报告",
+            isDark = isDark
+        ) {
+            AppleHigRow(
+                title = "MBTI 人格测试",
+                subtitle = if (profile.mbti != null) "查看报告 / 重新测试" else "还没有测试过，去做一次",
+                icon = Icons.Default.Psychology,
+                iconBgColor = Color(0xFF8B5CF6),
+                isDark = isDark,
+                onClick = onOpenMbtiTest
+            )
+        }
+
         Spacer(Modifier.height(cardSpacing))
 
         // ============================================================
@@ -378,6 +419,47 @@ fun ProfileScreen(
             footer = "关闭后 App 将停止后台保活，退到后台时无法接收系统通知",
             isDark = isDark
         ) {
+            // 通知中心：入口行带未读数角标（点击进入官方「通知中心」面板）
+            AppleHigRow(
+                title = "通知中心",
+                subtitle = if (notificationUnreadCount > 0) {
+                    "有 $notificationUnreadCount 条未读通知"
+                } else {
+                    "系统提醒与互动消息"
+                },
+                icon = Icons.Default.Notifications,
+                iconBgColor = Color(0xFFF59E0B),
+                isDark = isDark,
+                onClick = onOpenNotificationCenter,
+                trailingContent = {
+                    if (notificationUnreadCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(100.dp))
+                                .background(Color(0xFFEF4444))
+                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                        ) {
+                            BasicText(
+                                text = if (notificationUnreadCount > 99) "99+" else notificationUnreadCount.toString(),
+                                style = AppleHigTypography.caption2.copy(
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                        contentDescription = null,
+                        tint = higColors.tertiaryLabel,
+                        modifier = Modifier.size(11.7.dp)
+                    )
+                }
+            )
+
+            AppleHigDivider(isDark = isDark, insetStart = 16.dp)
+
             AppleHigRow(
                 title = "后台接收消息",
                 icon = Icons.Default.NotificationsActive,

@@ -86,6 +86,108 @@ fun resolveConversationStatusTag(
 val REAL_USER_ID_PLACEHOLDERS = setOf("peer", "me", "system", "0")
 
 /**
+ * 消息类型：动态分享卡片
+ *
+ * 官方发送帧为 `{"event":"message","type":"moment_share","content":"<卡片 JSON>"}`，
+ * 接收端 `JSON.parse(content)` 后渲染动态卡片，而不是把正文当普通文本。
+ */
+const val MESSAGE_TYPE_MOMENT_SHARE = "moment_share"
+
+/**
+ * 消息类型：网易云歌单卡片
+ *
+ * 官方发送帧为 `{"event":"message","type":"music_playlist","content":"<歌单 JSON>"}`，
+ * 接收端 `JSON.parse(content)` 后渲染歌单卡片（与 `music` 同一套 `msg-music-wrap`），
+ * 解析失败时气泡显示「歌单已失效」（对齐官方）。
+ */
+const val MESSAGE_TYPE_MUSIC_PLAYLIST = "music_playlist"
+
+/**
+ * 消息类型：表情包
+ *
+ * 官方发送帧为 `{"event":"message","content":"<asset_id>","asset_id":<id>,"type":"sticker"}`，
+ * 接收端优先取 `image_url`，否则用 `content` 里的 asset_id 到本地表情包列表（`/api/sticker/list`）
+ * 按 `asset_id` 查 url；都拿不到时气泡降级展示「表情包已失效」（对齐官方；会话列表摘要才是 `[表情包]`）。
+ */
+const val MESSAGE_TYPE_STICKER = "sticker"
+
+/**
+ * 动态分享卡片数据（对齐官方 `moment_share` 的 content JSON，`v:1`）
+ *
+ * 字段与官方 `momentTime-*.js` 的发送构造 `p()` / 接收解析 `g()` 一一对应：
+ * - `moment_id` 必须 > 0，否则官方接收端直接判为失效（本模型由解析层保证）；
+ * - `uid` 仅保留合法的 32 位 hex（小写），其余置空；
+ * - `gender` 只认 `male` / `female`，其余一律 `other`；
+ * - `excerpt` 接收侧最多保留 400 字（发送侧超 280 字截断 + "…"）；
+ * - `images` 已过滤空值并截断到 9 张；
+ * - `has_audio` / `has_music` 缺省时按 `audio_url` / `music` 是否存在推导。
+ *
+ * @param momentId 动态 id（官方 `moment_id`）
+ * @param userId 作者数字 id（官方 `user_id`，<=0 时官方落 0）
+ * @param uid 作者 32 位 hex uid（官方规范化小写；非法则为空串）
+ * @param username 作者昵称（最多 32 字，空则「用户」）
+ * @param gender male / female / other
+ * @param avatarUrl 作者头像地址
+ * @param avatarFallback 头像兜底文字（作者名首字，最多 2 字，空则 "?"）
+ * @param excerpt 正文摘要
+ * @param images 图片地址（最多 9 张）
+ * @param audioUrl 语音动态音频地址（无则 null）
+ * @param hasAudio 是否含语音（官方 `has_audio`）
+ * @param hasMusic 是否含音乐（官方 `has_music`）
+ * @param music 已解析的网易云音乐（歌曲形态；歌单仅保留名称/封面）
+ * @param likeCount 点赞数（>=0）
+ * @param commentCount 评论数（>=0）
+ * @param createdAt 原始创建时间字符串（本客户端 MomentItem 未携带，发送时为 null）
+ */
+data class MomentShareCardData(
+    val momentId: Long = 0L,
+    val userId: Long = 0L,
+    val uid: String = "",
+    val username: String = "用户",
+    val gender: String = "other",
+    val avatarUrl: String = "",
+    val avatarFallback: String = "?",
+    val excerpt: String = "",
+    val images: List<String> = emptyList(),
+    val audioUrl: String? = null,
+    val hasAudio: Boolean = false,
+    val hasMusic: Boolean = false,
+    val music: MomentMusic? = null,
+    val likeCount: Int = 0,
+    val commentCount: Int = 0,
+    val createdAt: String? = null
+)
+
+/**
+ * 网易云歌单卡片数据（对齐官方 `musicPlayer-*.js` 的 `Yr()` 解析结果）
+ *
+ * 官方解析规则（逐字段对齐）：
+ * - 输入是 JSON 字符串或对象，解析失败 / 非对象直接返回 null；
+ * - `playlist_id ?? id` 必须是 1~20 位纯数字，否则 null；
+ * - 若 `kind !== "playlist"` 且 `tracks` 不是数组且 `playlist_id` 为假值，则 null；
+ * - `name` 空则「未知歌单」；`cover_url` / `creator` 去空白；
+ * - `tracks` 逐条按歌曲规则（`Zn()`）解析，最多 500 首；
+ * - `track_count` 取 `max(tracks.size, Number(track_count) || 0)`。
+ *
+ * @param provider 固定 netease
+ * @param playlistId 歌单 id（官方 `playlist_id`）
+ * @param name 歌单名（空则「未知歌单」）
+ * @param coverUrl 封面地址
+ * @param creator 创建者昵称
+ * @param trackCount 曲目数（已按官方口径归一化）
+ * @param tracks 已解析曲目（最多 500 首）
+ */
+data class MusicPlaylist(
+    val provider: String = "netease",
+    val playlistId: String = "",
+    val name: String = "",
+    val coverUrl: String = "",
+    val creator: String = "",
+    val trackCount: Int = 0,
+    val tracks: List<MomentMusic> = emptyList()
+)
+
+/**
  * 单条聊天消息模型
  */
 data class ChatMessage(
@@ -147,7 +249,36 @@ data class ChatMessage(
     /** 发送方性别：male / female / unknown */
     val senderGender: String = "",
     /** 会话摘要文案（图片 / 拍一拍等非文本消息用于列表展示） */
-    val previewText: String = ""
+    val previewText: String = "",
+    /**
+     * 是否为动态分享卡片消息（服务端 `type:"moment_share"`）
+     *
+     * content 是卡片 JSON。解析失败时 [momentShare] 为 null，
+     * 气泡按官网口径显示「动态卡片已失效」，而不是把 JSON 原文贴出来。
+     */
+    val isMomentShare: Boolean = false,
+    /** 已解析的动态分享卡片数据（解析失败为 null） */
+    val momentShare: MomentShareCardData? = null,
+    /**
+     * 是否为网易云歌单卡片消息（服务端 `type:"music_playlist"`）
+     *
+     * content 是歌单 JSON。解析失败时 [musicPlaylist] 为 null，
+     * 气泡显示「歌单已失效」，而不是把 JSON 原文贴出来。
+     */
+    val isMusicPlaylist: Boolean = false,
+    /** 已解析的歌单卡片数据（解析失败为 null） */
+    val musicPlaylist: MusicPlaylist? = null,
+    /**
+     * 是否为表情包消息（服务端 `type:"sticker"`）
+     *
+     * 渲染优先用 [stickerUrl]（来自 `image_url` 或本地表情包列表解析）；
+     * 都拿不到时气泡降级显示「表情包已失效」（会话列表摘要为 `[表情包]`）。
+     */
+    val isSticker: Boolean = false,
+    /** 表情包图片地址（image_url 直取，或按 asset_id 查本地列表得到；可能为空） */
+    val stickerUrl: String = "",
+    /** 表情包 asset_id（content 解析得到；无法解析为 0） */
+    val stickerAssetId: Long = 0L
 )
 
 /**
@@ -162,6 +293,9 @@ fun ChatMessage.quotePreviewText(): String = when {
     isImage -> "[图片]"
     isDice -> if (diceValue in 1..6) "[骰子 $diceValue]" else "[骰子]"
     isPat -> patText.ifBlank { "拍了拍" }
+    isMomentShare -> previewText.ifBlank { "[动态]" }
+    isMusicPlaylist -> previewText.ifBlank { "[歌单]" }
+    isSticker -> "[表情包]"
     isMusic || isGame -> previewText
     else -> content
 }

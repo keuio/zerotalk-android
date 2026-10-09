@@ -65,7 +65,9 @@ data class OtherUserProfile(
     val moments: List<MomentItem> = emptyList(),
     val hasMoreMoments: Boolean = false,
     val isOnline: Boolean? = null,
-    val showOnlineStatus: Boolean? = null
+    val showOnlineStatus: Boolean? = null,
+    /** MBTI 完整信息（未填写 MBTI 时为 null，UI 不展示对应卡片） */
+    val mbti: MbtiInfo? = null
 ) {
     /** 互相关注 */
     val isMutual: Boolean get() = isFollowing && followedBy

@@ -50,6 +50,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.gson.JsonArray
+import com.google.gson.JsonNull
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import top.lanxint.zerotalk.data.model.MESSAGE_TYPE_MOMENT_SHARE
 import top.lanxint.zerotalk.data.model.MomentItem
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AppleHigDivider
@@ -101,17 +106,61 @@ fun MomentShareSheet(
         "https://app.zerotalk.cn/app/moments/${moment.id}"
     }
 
-    // 格式化官方动态卡片分享文本
-    fun buildOfficialShareText(): String {
-        val excerpt = if (moment.textContent.length > 280) {
-            "${moment.textContent.take(280)}…"
-        } else moment.textContent.trim()
-        val author = moment.authorName.ifBlank { "用户" }
-        return if (excerpt.isNotBlank()) {
-            "[动态] $author：$excerpt $momentLink"
-        } else {
-            "[动态] $author 的动态 $momentLink"
+    /**
+     * 构造官方动态卡片分享 JSON（逐字段对齐官方 `momentTime-*.js` 的发送构造 `p()`）
+     *
+     * 与旧版纯文本 `[动态] 作者：摘要 链接` 不同，官方发送的是
+     * `{"event":"message","type":"moment_share","content":"<本 JSON>"}`，
+     * 接收端 `JSON.parse(content)` 后渲染成动态卡片。
+     *
+     * `moment_id` 必须 > 0（官方接收端 `g()` 的硬校验），否则返回 null 由调用方提示；
+     * 本客户端的 `MomentItem` 未携带原始 `created_at`，该字段按官方口径发 null。
+     */
+    fun buildOfficialSharePayload(): String? {
+        val momentId = moment.id.trim().toLongOrNull() ?: 0L
+        if (momentId <= 0L) return null
+
+        val author = moment.authorName.trim().ifBlank { "用户" }
+        val rawText = moment.textContent.trim()
+        val excerpt = if (rawText.length > 280) rawText.take(280) + "…" else rawText
+        val images = moment.images.map { it.trim() }.filter { it.isNotEmpty() }.take(9)
+        val audioUrl = moment.audioUrl.trim().takeIf { it.isNotEmpty() }
+        val music = moment.music
+        // 官方 `m()` 只认 male / female；本客户端动态模型的性别是「男 / 女」需先归一化
+        val gender = when {
+            moment.authorGender.equals("male", ignoreCase = true) ||
+                moment.authorGender.contains("男") -> "male"
+            moment.authorGender.equals("female", ignoreCase = true) ||
+                moment.authorGender.contains("女") -> "female"
+            else -> "other"
         }
+        val userId = moment.authorId.trim().toLongOrNull()?.takeIf { it > 0L } ?: 0L
+
+        val payload = JsonObject().apply {
+            addProperty("v", 1)
+            addProperty("kind", "moment_share")
+            addProperty("moment_id", momentId)
+            addProperty("user_id", userId)
+            addProperty("uid", moment.authorUid.trim().lowercase())
+            addProperty("username", author.take(32))
+            addProperty("gender", gender)
+            addProperty("avatar_url", moment.authorAvatar.trim())
+            addProperty("avatar_fallback", author.take(1).ifBlank { "?" }.take(2))
+            addProperty("excerpt", excerpt)
+            add("images", JsonArray().apply { images.forEach(::add) })
+            if (audioUrl != null) addProperty("audio_url", audioUrl) else add("audio_url", JsonNull.INSTANCE)
+            if (music != null) {
+                add("music", JsonParser.parseString(music.toJsonString()))
+            } else {
+                add("music", JsonNull.INSTANCE)
+            }
+            addProperty("has_audio", audioUrl != null)
+            addProperty("has_music", music != null)
+            addProperty("like_count", moment.likesCount.coerceAtLeast(0))
+            addProperty("comment_count", moment.commentsCount.coerceAtLeast(0))
+            add("created_at", JsonNull.INSTANCE)
+        }
+        return payload.toString()
     }
 
     Column(
@@ -228,8 +277,16 @@ fun MomentShareSheet(
                                     icon = Icons.Default.Public,
                                     isDark = isDark,
                                     onClick = {
-                                        val shareText = buildOfficialShareText()
-                                        ZeroTalkClientManager.sendHallMessage(shareText)
+                                        val payload = buildOfficialSharePayload()
+                                        if (payload == null) {
+                                            notificationState.show("动态分享数据无效")
+                                            return@RoomTargetRow
+                                        }
+                                        ZeroTalkClientManager.sendHallMessage(
+                                            content = payload,
+                                            mentionIds = emptyList(),
+                                            messageType = MESSAGE_TYPE_MOMENT_SHARE
+                                        )
                                         notificationState.show("动态卡片已发送")
                                         onDismiss()
                                     }
@@ -250,8 +307,16 @@ fun MomentShareSheet(
                                     icon = Icons.AutoMirrored.Filled.Chat,
                                     isDark = isDark,
                                     onClick = {
-                                        val shareText = buildOfficialShareText()
-                                        ZeroTalkClientManager.sendRoomMessage(conv.id, shareText)
+                                        val payload = buildOfficialSharePayload()
+                                        if (payload == null) {
+                                            notificationState.show("动态分享数据无效")
+                                            return@RoomTargetRow
+                                        }
+                                        ZeroTalkClientManager.sendRoomMessage(
+                                            roomId = conv.id,
+                                            content = payload,
+                                            messageType = MESSAGE_TYPE_MOMENT_SHARE
+                                        )
                                         notificationState.show("动态卡片已发送")
                                         onDismiss()
                                     }

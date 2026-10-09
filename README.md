@@ -2,6 +2,8 @@
 
 > 面向「零语 / ZeroTalk」(app.zerotalk.cn) 的 **非官方** Android 客户端，基于 Kotlin Multiplatform + Compose Multiplatform。
 
+**中文** | [English](./README.en.md)
+
 ---
 
 ## ⚠️ 非官方声明

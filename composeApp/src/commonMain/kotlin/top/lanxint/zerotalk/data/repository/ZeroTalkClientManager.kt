@@ -1,5 +1,6 @@
 package top.lanxint.zerotalk.data.repository
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import top.lanxint.zerotalk.data.model.ChatMessage
@@ -1228,7 +1229,9 @@ object ZeroTalkClientManager {
                 qq = user.qq ?: "",
                 avatarUpload = user.avatarUpload,
                 hasCustomAvatar = user.hasCustomAvatar || (user.avatarUpload?.hasCustom == true),
-                location = user.location.orEmpty()
+                location = user.location.orEmpty(),
+                // MBTI：服务端下发对象（旧版为字符串），由 mbtiInfo 容错解析
+                mbti = user.mbtiInfo
             )
         }
 
@@ -1387,12 +1390,20 @@ object ZeroTalkClientManager {
      * @param onResult 发送结果回调（false 表示 WebSocket 未就绪/发送失败，调用方应提示用户）
      */
     fun sendHallMessage(content: String, onResult: ((Boolean) -> Unit)? = null) {
-        sendHallMessage(content, emptyList(), onResult)
+        sendHallMessage(content, emptyList(), "text", onResult)
     }
 
+    /**
+     * 发送大厅消息（可指定消息类型）
+     *
+     * @param mentionIds @ 提及的 uid 列表
+     * @param messageType 消息类型（text / moment_share / …），动态分享传 [MESSAGE_TYPE_MOMENT_SHARE]
+     * @param onResult 发送结果回调（false 表示 WebSocket 未就绪/发送失败，调用方应提示用户）
+     */
     fun sendHallMessage(
         content: String,
         mentionIds: List<String>,
+        messageType: String = "text",
         onResult: ((Boolean) -> Unit)? = null
     ) {
         if (content.isBlank()) {
@@ -1415,19 +1426,24 @@ object ZeroTalkClientManager {
             }
 
             // 3. 发送并在本机即时回显
-            val success = wsClient.sendTextMessage(content, mentionIds = mentionIds)
+            val success = wsClient.sendMessage(content, messageType, mentionIds = mentionIds)
             if (success) {
                 val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
-                val myMsg = ChatMessage(
-                    id = "hall_my_${System.currentTimeMillis()}",
-                    senderId = "me",
-                    content = content,
-                    timestamp = nowTimeStr,
-                    isMine = true,
-                    timestampMs = System.currentTimeMillis(),
-                    senderName = _userProfile.value.name,
-                    senderAvatar = _userProfile.value.avatarUrl,
-                    previewText = content
+                // 本地即时回显与历史 / 实时消息共用 buildChatMessage：
+                // 动态分享 / 歌单 / 表情包等富媒体类型同样带齐卡片数据，避免自己这边只看到 JSON 文本
+                val myMsg = buildChatMessage(
+                    RawChatMessage(
+                        id = "hall_my_${System.currentTimeMillis()}",
+                        senderId = "me",
+                        content = content,
+                        type = messageType,
+                        timestamp = nowTimeStr,
+                        timestampMs = System.currentTimeMillis(),
+                        serverId = 0L,
+                        isMine = true,
+                        senderName = _userProfile.value.name,
+                        senderAvatar = _userProfile.value.avatarUrl
+                    )
                 )
                 _hallMessages.value = _hallMessages.value + myMsg
             }
@@ -1698,35 +1714,41 @@ object ZeroTalkClientManager {
         quotedIsMine: Boolean? = null,
         quotedSenderName: String? = null,
         replyToId: Long? = null,
-        mentionIds: List<String> = emptyList()
+        mentionIds: List<String> = emptyList(),
+        messageType: String = "text"
     ) {
         if (content.isBlank()) return
         if (wsClient.currentRoomId != roomId) {
             wsClient.joinRoom(roomId)
         }
-        val success = wsClient.sendTextMessage(content, replyToId, mentionIds)
+        val success = wsClient.sendMessage(content, messageType, replyToId, mentionIds)
         if (success) {
             val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
-            val myMsg = ChatMessage(
-                id = "room_${roomId}_${System.currentTimeMillis()}",
-                senderId = "me",
-                content = content,
-                timestamp = nowTimeStr,
-                isMine = true,
-                timestampMs = System.currentTimeMillis(),
-                senderName = _userProfile.value.name,
-                senderAvatar = _userProfile.value.avatarUrl,
-                quotedText = quotedText,
-                quotedIsMine = quotedIsMine,
-                quotedSenderName = quotedSenderName,
-                previewText = content
+            // 本地即时回显与历史 / 实时消息共用 buildChatMessage：
+            // 动态分享 / 歌单 / 表情包等富媒体类型同样带齐卡片数据，避免自己这边只看到 JSON 文本
+            val myMsg = buildChatMessage(
+                RawChatMessage(
+                    id = "room_${roomId}_${System.currentTimeMillis()}",
+                    senderId = "me",
+                    content = content,
+                    type = messageType,
+                    timestamp = nowTimeStr,
+                    timestampMs = System.currentTimeMillis(),
+                    serverId = 0L,
+                    isMine = true,
+                    senderName = _userProfile.value.name,
+                    senderAvatar = _userProfile.value.avatarUrl,
+                    quotedText = quotedText,
+                    quotedIsMine = quotedIsMine,
+                    quotedSenderName = quotedSenderName
+                )
             )
             val currentList = _roomMessages.value[roomId] ?: emptyList()
             _roomMessages.value = _roomMessages.value + (roomId to (currentList + myMsg))
             val existing = _conversations.value.find { it.id == roomId }
             if (existing != null) {
                 val updated = existing.copy(
-                    lastMessage = content,
+                    lastMessage = myMsg.previewText,
                     timestamp = nowTimeStr
                 )
                 _conversations.value = listOf(updated) + _conversations.value.filter { it.id != roomId }
@@ -3264,6 +3286,8 @@ object ZeroTalkClientManager {
             },
             ageRangeText = user?.ageRangeText?.takeIf { it.isNotBlank() } ?: user?.ageRange.orEmpty(),
             location = user?.location.orEmpty(),
+            // MBTI：与「我的」页同口径，服务端可能下发对象或字符串
+            mbti = user?.mbtiInfo,
             avatarUrl = NetworkImageUrl.resolveWithStyle(user?.avatarUrl),
             avatarFallback = user?.avatarFallback.orEmpty(),
             bio = user?.bio.orEmpty(),
@@ -4157,7 +4181,15 @@ object ZeroTalkClientManager {
      */
     private fun buildChatMessage(raw: RawChatMessage): ChatMessage {
         val msgType = raw.type.lowercase()
-        val isImage = msgType == "image" || !raw.imageUrl.isNullOrBlank()
+        // 表情包：官方 ko() 优先 image_url，否则按 content 的 asset_id 查本地表情包列表。
+        // 必须先于 isImage 判定，否则带 image_url 的表情包会被误判成图片消息。
+        val isSticker = msgType == MESSAGE_TYPE_STICKER
+        val sticker = if (isSticker) {
+            MessageContentParser.resolveSticker(raw.imageUrl, raw.content, ::resolveStickerUrl)
+        } else {
+            null
+        }
+        val isImage = !isSticker && (msgType == "image" || !raw.imageUrl.isNullOrBlank())
         // 语音消息 type 为 "audio"；"voice" 是语音通话记录（官网 voiceCallDisplay 单独渲染），二者不可混用
         val isVoiceCall = msgType == "voice"
         val isVoice = msgType == "audio" || (!isVoiceCall && !raw.audioUrl.isNullOrBlank())
@@ -4165,15 +4197,24 @@ object ZeroTalkClientManager {
         val isPat = msgType == "pat" || msgType == "pat_pat" || msgType == "poke"
         val isMusic = msgType == "music"
         val musicData = if (isMusic) parseMusicContent(raw.content) else null
+        // 歌单卡片：content 是歌单 JSON，解析失败时 musicPlaylist 为 null（气泡显示「歌单已失效」）
+        val isMusicPlaylist = msgType == MESSAGE_TYPE_MUSIC_PLAYLIST
+        val musicPlaylist = if (isMusicPlaylist) parseMusicPlaylistContent(raw.content) else null
         val isGame = msgType in setOf("gobang", "go", "xiangqi", "chess", "undercover") ||
             (raw.content.trim().startsWith("{") && raw.content.contains("\"game_id\""))
         val gameInvite = if (isGame) parseGameInviteContent(raw.content, msgType) else null
         val isDice = msgType == "dice"
         val diceValue = if (isDice) parseDiceValue(raw.content) else 0
         val patText = if (isPat) buildPatDisplayText(raw.content, raw.senderName, raw.isMine) else ""
+        // 动态分享卡片：content 是卡片 JSON，解析失败时 momentShare 为 null（气泡显示「动态卡片已失效」）
+        val isMomentShare = msgType == MESSAGE_TYPE_MOMENT_SHARE
+        val momentShare = if (isMomentShare) parseMomentShareContent(raw.content) else null
         val preview = when {
             isGame -> if (gameInvite != null) "[${GameType.getDisplayName(gameInvite.gameType)}] 对战" else "[游戏对战]"
             isMusic -> if (musicData != null && musicData.name.isNotBlank()) "[歌曲] ${musicData.name}" else "[歌曲]"
+            isMusicPlaylist -> MessageContentParser.musicPlaylistPreview(musicPlaylist)
+            isSticker -> "[表情包]"
+            isMomentShare -> momentSharePreviewText(momentShare)
             isImage -> "[图片]"
             isPat -> patText.ifBlank { "拍了拍" }
             isVoiceCall -> voiceCallText.ifBlank { "[语音通话]" }
@@ -4211,7 +4252,14 @@ object ZeroTalkClientManager {
             quotedText = raw.quotedText,
             quotedIsMine = raw.quotedIsMine,
             quotedSenderName = raw.quotedSenderName,
-            previewText = preview
+            previewText = preview,
+            isMomentShare = isMomentShare,
+            momentShare = momentShare,
+            isMusicPlaylist = isMusicPlaylist,
+            musicPlaylist = musicPlaylist,
+            isSticker = isSticker,
+            stickerUrl = sticker?.url.orEmpty(),
+            stickerAssetId = sticker?.assetId ?: 0L
         )
     }
 
@@ -4235,23 +4283,49 @@ object ZeroTalkClientManager {
     }
 
     /**
-     * 解析聊天消息中的网易云音乐 JSON
+     * 解析聊天消息中的网易云音乐 JSON（官方 `Zn()`，见 [MessageContentParser.parseMusic]）
      */
-    fun parseMusicContent(content: String): MomentMusic? = try {
-        val trimmed = content.trim()
-        if (!trimmed.startsWith("{")) null
-        else {
-            val obj = JsonParser.parseString(trimmed).asJsonObject
-            MomentMusic(
-                songId = obj.get("song_id")?.asString.orEmpty(),
-                name = obj.get("name")?.asString.orEmpty(),
-                artists = obj.get("artists")?.asString.orEmpty(),
-                album = obj.get("album")?.asString.orEmpty(),
-                coverUrl = obj.get("cover_url")?.asString.orEmpty()
-            )
+    fun parseMusicContent(content: String): MomentMusic? = MessageContentParser.parseMusic(content)
+
+    /**
+     * 解析聊天消息中的网易云歌单 JSON（官方 `Yr()`，见 [MessageContentParser.parseMusicPlaylist]）
+     *
+     * 解析失败（JSON 非法 / playlist_id 非纯数字 / 形态不匹配）返回 null，
+     * 由气泡降级显示「歌单已失效」。
+     */
+    fun parseMusicPlaylistContent(content: String): MusicPlaylist? = MessageContentParser.parseMusicPlaylist(content)
+
+    /**
+     * 解析表情包消息 content 里的 asset_id（官方 `Su()`，见 [MessageContentParser.parseStickerAssetId]）
+     */
+    fun parseStickerAssetId(content: String): Long? = MessageContentParser.parseStickerAssetId(content)
+
+    /** 表情包 asset_id -> 图片地址缓存（`GET /api/sticker/list` 懒加载，官方 `Tu()` 的本地等价物） */
+    private val stickerUrlCache = mutableMapOf<Long, String>()
+
+    @Volatile
+    private var stickerListLoaded = false
+
+    /** 从本地表情包缓存按 asset_id 查图片地址（未加载 / 未命中返回空串） */
+    fun resolveStickerUrl(assetId: Long): String =
+        if (assetId <= 0L) "" else synchronized(stickerUrlCache) { stickerUrlCache[assetId].orEmpty() }
+
+    /**
+     * 确保表情包列表已加载（`GET /api/sticker/list`，成功一次后不再请求）
+     *
+     * 官方 sticker store 在表情面板首次打开时拉取；本客户端在渲染
+     * `type:"sticker"` 且消息未带 `image_url` 时懒加载，失败可重试。
+     */
+    suspend fun ensureStickerListLoaded() {
+        if (stickerListLoaded) return
+        val data = apiService.getStickerList().getOrNull() ?: return
+        synchronized(stickerUrlCache) {
+            data.entries.forEach { item ->
+                val id = item.assetId.takeIf { it > 0L } ?: item.id
+                if (id > 0L && item.url.isNotBlank()) stickerUrlCache[id] = item.url
+            }
         }
-    } catch (e: Exception) {
-        null
+        stickerListLoaded = true
     }
 
     /**
@@ -4268,6 +4342,159 @@ object ZeroTalkClientManager {
         }
     } catch (e: Exception) {
         null
+    }
+
+    /**
+     * 解析 `type:"moment_share"` 的 content JSON（对齐官方 `momentTime-*.js` 的 `g()`）
+     *
+     * 校验口径与官方一致：必须是 JSON 对象且 `moment_id > 0`，否则返回 null，
+     * 由气泡渲染为「动态卡片已失效」（不能把 JSON 原文当文本贴出来）。
+     *
+     * 归一化规则（逐字段对齐官方）：
+     * - `username` 空则「用户」，截断 32 字；
+     * - `uid` 仅保留合法 32 位 hex 并转小写，否则置空；
+     * - `gender` 只认 male / female，其余 other；
+     * - `images` 过滤空值、最多 9 张；`excerpt` 最多 400 字；
+     * - `has_audio` / `has_music` 缺省时由 `audio_url` / `music` 推导。
+     */
+    fun parseMomentShareContent(content: String): MomentShareCardData? = try {
+        val trimmed = content.trim()
+        if (!trimmed.startsWith("{")) null
+        else {
+            val obj = JsonParser.parseString(trimmed).asJsonObject
+
+            fun str(key: String): String? =
+                obj.get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+
+            fun long(key: String): Long = try {
+                obj.get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asLong ?: 0L
+            } catch (_: Exception) {
+                0L
+            }
+
+            fun boolOrNull(key: String): Boolean? = try {
+                val el = obj.get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                if (el == null) {
+                    null
+                } else {
+                    val prim = el.asJsonPrimitive
+                    when {
+                        prim.isBoolean -> prim.asBoolean
+                        prim.isNumber -> prim.asInt != 0
+                        else -> when (prim.asString.trim().lowercase()) {
+                            "true", "1" -> true
+                            "false", "0", "" -> false
+                            else -> null
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                null
+            }
+
+            val momentId = long("moment_id")
+            if (momentId <= 0L) null
+            else {
+                val images = obj.get("images")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { el -> el.takeIf { it.isJsonPrimitive }?.asString?.trim() }
+                    ?.filter { it.isNotEmpty() }
+                    ?.take(9)
+                    ?: emptyList()
+                val username = str("username")?.trim().orEmpty().ifBlank { "用户" }.take(32)
+                val audioUrl = str("audio_url")?.trim()?.takeIf { it.isNotEmpty() }
+                val music = parseMomentShareMusic(obj.get("music")?.takeIf { !it.isJsonNull })
+                val avatarFallback = str("avatar_fallback")?.trim().orEmpty()
+                    .ifBlank { username.take(1) }
+                    .ifBlank { "?" }
+                    .take(2)
+
+                MomentShareCardData(
+                    momentId = momentId,
+                    userId = long("user_id").coerceAtLeast(0L),
+                    uid = str("uid")?.trim()?.lowercase()?.takeIf { PAT_UID_REGEX.matches(it) }.orEmpty(),
+                    username = username,
+                    gender = normalizeMomentShareGender(str("gender")),
+                    avatarUrl = str("avatar_url")?.trim().orEmpty(),
+                    avatarFallback = avatarFallback,
+                    excerpt = str("excerpt").orEmpty().take(400),
+                    images = images,
+                    audioUrl = audioUrl,
+                    hasAudio = boolOrNull("has_audio") ?: (audioUrl != null),
+                    hasMusic = boolOrNull("has_music") ?: (music != null),
+                    music = music,
+                    likeCount = long("like_count").coerceAtLeast(0L).toInt(),
+                    commentCount = long("comment_count").coerceAtLeast(0L).toInt(),
+                    createdAt = str("created_at")?.takeIf { it.isNotEmpty() }
+                )
+            }
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /** 官方 `m()`：性别只认 male / female，其余一律 other */
+    private fun normalizeMomentShareGender(raw: String?): String {
+        val value = raw?.trim()?.lowercase().orEmpty()
+        return if (value == "male" || value == "female") value else "other"
+    }
+
+    /**
+     * 解析动态分享卡片里的 `music` 字段（对象形态，兼容 JSON 字符串形态）
+     *
+     * 官方卡片对歌曲用网易云音乐卡片、对歌单用歌单卡片；本客户端只建模歌曲，
+     * 歌单仅保留名称 / 封面（`songId` 置空因而不可播放）。
+     */
+    private fun parseMomentShareMusic(element: JsonElement?): MomentMusic? {
+        if (element == null) return null
+        return try {
+            val obj = when {
+                element.isJsonObject -> element.asJsonObject
+                element.isJsonPrimitive && element.asJsonPrimitive.isString -> {
+                    val text = element.asString.trim()
+                    if (!text.startsWith("{")) return null
+                    JsonParser.parseString(text).asJsonObject
+                }
+                else -> return null
+            }
+
+            fun str(key: String): String =
+                obj.get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim().orEmpty()
+
+            val isPlaylist = str("kind").lowercase() == "playlist"
+            val songId = if (isPlaylist) "" else str("song_id")
+            val name = str("name")
+            val coverUrl = str("cover_url")
+            if (songId.isBlank() && name.isBlank() && coverUrl.isBlank()) {
+                null
+            } else {
+                MomentMusic(
+                    provider = str("provider").ifBlank { "netease" },
+                    songId = songId,
+                    name = name,
+                    artists = str("artists"),
+                    album = str("album"),
+                    coverUrl = coverUrl
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 动态分享消息的会话列表摘要（对齐官方 `fo()`）：`[动态] 作者：摘要`
+     *
+     * 摘要折叠空白后最多 36 字，超长追加省略号；无正文时退化为 `[动态] 作者 的动态`；
+     * 卡片解析失败时为 `[动态]`。
+     */
+    fun momentSharePreviewText(data: MomentShareCardData?): String {
+        if (data == null) return "[动态]"
+        val excerpt = data.excerpt.replace(Regex("\\s+"), " ").trim()
+        if (excerpt.isNotEmpty()) {
+            val text = "${data.username}：$excerpt"
+            return "[动态] " + if (text.length > 36) text.take(36) + "…" else text
+        }
+        return "[动态] ${data.username} 的动态"
     }
 
     /**

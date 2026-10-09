@@ -657,32 +657,32 @@ fun PrivateChatScreen(
             // 本地背景文件（离线可显示）优先；文件缺失 / 未设置时回退素雅纯色
             val localWallpaper = localWallpaperBitmap
             if (localWallpaperFile != null && localWallpaper != null) {
-                // 自定义背景（本地文件）：图片对齐宽度铺满，上下如有留空露出 pageBg 背景色
+                // 自定义背景（本地文件）：自适应铺满整个对话界面，超出部分裁掉，不留空白
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(pageBg),
-                    contentAlignment = Alignment.TopCenter
+                    contentAlignment = Alignment.Center
                 ) {
                     LocalWallpaperImage(
                         bitmap = localWallpaper,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
             } else if (remoteWallpaperUrl != null) {
-                // 自定义上传背景（远程地址）：图片对齐宽度铺满，上下如有留空露出 pageBg 背景色
+                // 自定义上传背景（远程地址）：自适应铺满整个对话界面，超出部分裁掉，不留空白
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(pageBg),
-                    contentAlignment = Alignment.TopCenter
+                    contentAlignment = Alignment.Center
                 ) {
                     AsyncNetworkImage(
                         url = remoteWallpaperUrl,
                         contentDescription = "自定义对话背景",
                         shape = RectangleShape,
-                        contentScale = ContentScale.FillWidth,
-                        modifier = Modifier.fillMaxWidth()
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
             } else {
@@ -817,8 +817,10 @@ fun PrivateChatScreen(
                             msg.isVoice -> 3
                             msg.isDice -> 4
                             msg.isMusic -> 5
-                            msg.isGame -> 6
-                            else -> 7
+                            msg.isMusicPlaylist -> 6
+                            msg.isSticker -> 7
+                            msg.isGame -> 8
+                            else -> 9
                         }
                     }
                 ) { index, msg ->
@@ -844,14 +846,14 @@ fun PrivateChatScreen(
                             SystemMessageItem(
                                 content = msg.content,
                                 isWallpaperNotice = msg.content.contains("背景") || msg.content.contains("撤回"),
-                                isDark = isDark
+                                isWhiteBackground = isWhiteBackground
                             )
                         } else if (msg.isVoiceCall) {
                             // ---- 语音通话记录（官网 type:"voice"）：居中弱化文案，取 content 的 text ----
                             SystemMessageItem(
                                 content = msg.voiceCallText.ifBlank { "[语音通话]" },
                                 isWallpaperNotice = false,
-                                isDark = isDark
+                                isWhiteBackground = isWhiteBackground
                             )
                         } else if (msg.isPat) {
                             // ---- 拍一拍：居中弱化文案；文案由管理器按「发送方 / 被拍方」归因 ----
@@ -860,7 +862,7 @@ fun PrivateChatScreen(
                                     if (msg.isMine) "你 拍了拍 对方" else "有人 拍了拍 你"
                                 },
                                 isWallpaperNotice = false,
-                                isDark = isDark
+                                isWhiteBackground = isWhiteBackground
                             )
                         } else {
                             // ---- 真实对话气泡 (私聊：iMessage 小尖尾；群聊：普通圆气泡无尾巴) ----
@@ -2208,9 +2210,14 @@ private fun BubbleMessageItem(
                     },
                     modifier = Modifier
                         .then(
-                            // 图片 / 游戏卡片 / 骰子为「自撑尺寸」的媒体内容，不施加气泡最小宽度
-                            if (message.isImage || message.isGame || message.isDice) Modifier
-                            else Modifier.widthIn(min = 52.dp, max = maxBubbleWidth)
+                            // 图片 / 游戏卡片 / 骰子 / 歌单 / 表情包为「自撑尺寸」的媒体内容，不施加气泡最小宽度
+                            if (message.isImage || message.isGame || message.isDice ||
+                                message.isMusicPlaylist || message.isSticker
+                            ) {
+                                Modifier
+                            } else {
+                                Modifier.widthIn(min = 52.dp, max = maxBubbleWidth)
+                            }
                         )
                         .onGloballyPositioned { coords ->
                             bubbleBounds = coords.boundsInRoot()
@@ -2796,7 +2803,10 @@ private fun buildContextMenuItems(
     // 2. 仅我方包含：撤回、撤回并编辑、编辑
     if (message.isMine) {
         list.add(ContextMenuItem("撤回", SFSymbolType.UNDO_SEND, onRecall))
-        if (!message.isImage && !message.isVoice && !message.isDice) {
+        // 动态分享卡片的 content 是卡片 JSON，不能进输入框编辑（官网同样排除非文本类型）
+        if (!message.isImage && !message.isVoice && !message.isDice && !message.isMomentShare &&
+            !message.isMusicPlaylist && !message.isSticker
+        ) {
             list.add(ContextMenuItem("撤回并编辑", SFSymbolType.RECALL_AND_EDIT, onRecallAndEdit))
             list.add(ContextMenuItem("编辑", SFSymbolType.EDIT, onEdit))
         }
@@ -2855,7 +2865,9 @@ private fun TimeSeparatorHeader(
 private fun SystemMessageItem(
     content: String,
     isWallpaperNotice: Boolean,
-    isDark: Boolean
+    /** 页面底色是否为纯白：有壁纸或深色主题时都为 false，此时系统文案必须用浅色，
+     *  否则（例如亮色主题 + 自定义背景）深色字压在图上完全看不清 */
+    isWhiteBackground: Boolean
 ) {
     Box(
         modifier = Modifier
@@ -2887,7 +2899,7 @@ private fun SystemMessageItem(
             BasicText(
                 text = content,
                 style = TextStyle(
-                    color = if (isDark) Color(0xAAFFFFFF) else Color(0x73000000), // 45% black for light mode
+                    color = if (isWhiteBackground) Color(0x73000000) else Color(0xAAFFFFFF),
                     fontSize = 12.sp,
                     lineHeight = 16.sp,
                     fontWeight = FontWeight.Normal
@@ -2983,7 +2995,7 @@ internal fun decodeLocalWallpaper(file: File): ImageBitmap? = try {
 /**
  * 本地背景图组件
  *
- * 布局与 [AsyncNetworkImage] 保持一致（按宽度铺满，上下留空露出父容器背景色），
+ * 布局与 [AsyncNetworkImage] 保持一致（自适应铺满、超出部分裁掉），
  * 但直接使用本地文件解码出的位图，因此断网 / 重启后依然能显示。
  */
 @Composable
@@ -3000,7 +3012,7 @@ internal fun LocalWallpaperImage(
         Image(
             bitmap = bitmap,
             contentDescription = "自定义对话背景",
-            contentScale = ContentScale.FillWidth,
+            contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
     }

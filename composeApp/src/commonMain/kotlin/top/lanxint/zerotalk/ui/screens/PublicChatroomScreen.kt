@@ -84,6 +84,8 @@ import top.lanxint.zerotalk.ui.components.shouldAnimateDice
 import androidx.compose.foundation.lazy.itemsIndexed
 import top.lanxint.zerotalk.ui.messages.BubbleImageContent
 import top.lanxint.zerotalk.ui.messages.MessageTimeHelper
+import top.lanxint.zerotalk.ui.messages.MusicPlaylistCard
+import top.lanxint.zerotalk.ui.messages.StickerBubble
 import top.lanxint.zerotalk.ui.navigation.rememberHasUserProfileLayers
 import top.lanxint.zerotalk.ui.utils.BackHandler
 
@@ -546,9 +548,10 @@ private fun HallMessageBubble(
 
             Box(
                 modifier = Modifier
-                    // 骰子与官网一致：裸媒体块（`.msg-media-wrap` 背景透明、无内边距、无边框）
+                    // 骰子 / 歌单 / 表情包与官网一致：裸媒体块
+                    // （`.msg-media-wrap` 背景透明、无内边距、无边框）
                     .then(
-                        if (msg.isDice) Modifier
+                        if (msg.isDice || msg.isMusicPlaylist || msg.isSticker) Modifier
                         else Modifier.clip(bubbleShape).background(bubbleBg)
                     )
                     .combinedClickable(
@@ -561,8 +564,11 @@ private fun HallMessageBubble(
                         onDoubleClick = onPat
                     )
                     .padding(
-                        if (msg.isImage || msg.isDice) PaddingValues(0.dp)
-                        else PaddingValues(horizontal = 14.dp, vertical = 9.dp)
+                        if (msg.isImage || msg.isDice || msg.isMusicPlaylist || msg.isSticker) {
+                            PaddingValues(0.dp)
+                        } else {
+                            PaddingValues(horizontal = 14.dp, vertical = 9.dp)
+                        }
                     )
             ) {
                 if (msg.isImage && msg.imageUrl.isNotBlank()) {
@@ -579,6 +585,20 @@ private fun HallMessageBubble(
                     ChatDice(
                         value = msg.diceValue,
                         animate = msg.shouldAnimateDice()
+                    )
+                } else if (msg.isMusicPlaylist) {
+                    // 歌单卡片：解析失败（musicPlaylist 为 null）显示「歌单已失效」
+                    MusicPlaylistCard(
+                        playlist = msg.musicPlaylist,
+                        isDark = isDark
+                    )
+                } else if (msg.isSticker) {
+                    // 表情包：优先 image_url，否则按 asset_id 查本地列表，都拿不到显示「表情包已失效」
+                    StickerBubble(
+                        stickerUrl = msg.stickerUrl,
+                        assetId = msg.stickerAssetId,
+                        isDark = isDark,
+                        onClick = { url -> imageViewer.open(url) }
                     )
                 } else {
                     Row(

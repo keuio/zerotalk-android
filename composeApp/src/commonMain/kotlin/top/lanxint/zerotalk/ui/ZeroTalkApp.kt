@@ -41,6 +41,7 @@ import top.lanxint.zerotalk.data.model.resolveConversationStatusTag
 import top.lanxint.zerotalk.data.voice.VoiceCallEvent
 import top.lanxint.zerotalk.ui.voice.VoiceCallOverlay
 import top.lanxint.zerotalk.data.repository.ClientStatus
+import top.lanxint.zerotalk.data.repository.NotificationCenterStore
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.data.settings.UiPreferencesStore
 import kotlinx.coroutines.delay
@@ -71,6 +72,8 @@ import top.lanxint.zerotalk.ui.utils.applyLiquidGlassCompatMode
 import top.lanxint.zerotalk.ui.utils.rememberPlatformAppActions
 import top.lanxint.zerotalk.ui.sheets.HomeSheetType
 import top.lanxint.zerotalk.ui.sheets.MatchingPreferences
+import top.lanxint.zerotalk.ui.sheets.MbtiTest
+import top.lanxint.zerotalk.ui.sheets.ProfileNotificationCenter
 import top.lanxint.zerotalk.ui.sheets.ProfileSettingItem
 import top.lanxint.zerotalk.ui.sheets.ProfileSheetType
 import top.lanxint.zerotalk.ui.sheets.SheetBlockListContent
@@ -88,8 +91,10 @@ import top.lanxint.zerotalk.ui.sheets.SheetLoginContent
 import top.lanxint.zerotalk.ui.sheets.SheetLogoutConfirmContent
 import top.lanxint.zerotalk.ui.sheets.SheetMatchingInProgressContent
 import top.lanxint.zerotalk.ui.sheets.SheetMatchingSettingsContent
+import top.lanxint.zerotalk.ui.sheets.SheetMbtiTestContent
 import top.lanxint.zerotalk.ui.sheets.SheetMyReportsContent
 import top.lanxint.zerotalk.ui.sheets.SheetNeteaseBindContent
+import top.lanxint.zerotalk.ui.sheets.SheetNotificationCenterContent
 import top.lanxint.zerotalk.ui.sheets.SheetPenaltyReliefContent
 import top.lanxint.zerotalk.ui.sheets.SheetPrivacySettingsContent
 import top.lanxint.zerotalk.ui.sheets.SheetSearchUsersContent
@@ -468,6 +473,12 @@ fun ZeroTalkApp() {
                             }
                             activeProfileSheet = ProfileSheetType.SettingDetail(item)
                         },
+                        onOpenNotificationCenter = {
+                            activeProfileSheet = ProfileNotificationCenter
+                        },
+                        onOpenMbtiTest = {
+                            activeProfileSheet = MbtiTest
+                        },
                         onDeleteAccount = {
                             activeProfileSheet = ProfileSheetType.DeleteAccountConfirm
                         },
@@ -774,6 +785,8 @@ fun ZeroTalkApp() {
                 is ProfileSheetType.LogoutConfirm -> "退出登录"
                 is ProfileSheetType.DeleteAccountConfirm -> "注销账号"
                 is ProfileSheetType.SettingDetail -> currentProfileSheet.item.title
+                is MbtiTest -> "MBTI 人格测试"
+                is ProfileNotificationCenter -> "通知中心"
             }
 
             val pLeadingAction = when (currentProfileSheet) {
@@ -792,6 +805,12 @@ fun ZeroTalkApp() {
                     activeProfileSheet = null
                 }
                 is ProfileSheetType.SettingDetail -> SheetAction.Close {
+                    activeProfileSheet = null
+                }
+                is MbtiTest -> SheetAction.Close {
+                    activeProfileSheet = null
+                }
+                is ProfileNotificationCenter -> SheetAction.Close {
                     activeProfileSheet = null
                 }
             }
@@ -852,6 +871,8 @@ fun ZeroTalkApp() {
                     enabled = true,
                     onClick = {
                         ZeroTalkClientManager.logout()
+                        // 退出登录时清空通知中心状态，避免串号
+                        NotificationCenterStore.clear()
                         userProfile = UserProfile.NO_ACCOUNT
                         activeProfileSheet = null
                         notificationState.show("已退出登录")
@@ -885,6 +906,10 @@ fun ZeroTalkApp() {
                         SheetAction.None
                     }
                 }
+                // MBTI 测评：操作按钮在内容里（重新测试 / 清除本次测试），右上角无需确认按钮
+                is MbtiTest -> SheetAction.None
+                // 通知中心：顶部工具栏自带「全部已读」，右上角无需确认按钮
+                is ProfileNotificationCenter -> SheetAction.None
             }
 
             AppleModalBottomSheet(
@@ -1060,6 +1085,17 @@ fun ZeroTalkApp() {
                                 )
                             }
                         }
+                    }
+                    is MbtiTest -> {
+                        SheetMbtiTestContent(
+                            isDark = isDark,
+                            onShowMessage = { notificationState.show(it) }
+                        )
+                    }
+                    is ProfileNotificationCenter -> {
+                        SheetNotificationCenterContent(
+                            isDark = isDark
+                        )
                     }
                 }
             }

@@ -66,6 +66,7 @@ import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.ui.components.GenderBadge
 import top.lanxint.zerotalk.ui.components.LiquidSegmentedControl
 import top.lanxint.zerotalk.ui.components.LiquidToggle
+import top.lanxint.zerotalk.ui.components.MbtiCard
 import top.lanxint.zerotalk.ui.components.UserAvatar
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
@@ -1096,15 +1097,18 @@ fun SheetSearchUsersContent(
                                     text = "ID: ${user.userId}",
                                     style = AppleHigTypography.caption2.copy(color = higColors.secondaryLabel)
                                 )
-                                val userMbti = user.mbti
-                                if (!userMbti.isNullOrBlank()) {
-                                    BasicText(
-                                        text = userMbti,
-                                        style = AppleHigTypography.caption2.copy(color = higColors.tint)
-                                    )
-                                }
                             }
                         }
+                    }
+
+                    // MBTI 完整信息卡片：对象形态展示中文名 / 角色标签 / 关键词 / 四维百分比；
+                    // 早期字符串形态仅展示类型代码；未填写（null）时不渲染。
+                    user.mbtiInfo?.let { mbtiInfo ->
+                        MbtiCard(
+                            mbti = mbtiInfo,
+                            isDark = isDark,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
 
                     val userBio = user.bio

@@ -4,6 +4,7 @@ import com.google.gson.JsonElement
 import com.google.gson.annotations.SerializedName
 import top.lanxint.zerotalk.data.model.GameSessionDetail
 import top.lanxint.zerotalk.data.model.ChatGameInvite
+import top.lanxint.zerotalk.data.model.MbtiInfo
 
 /**
  * 接口通用基础响应模型
@@ -53,13 +54,21 @@ data class BootstrapUser(
     @SerializedName("gender_label") val genderLabel: String? = null,
     @SerializedName("avatar_url") val avatarUrl: String? = null,
     @SerializedName("location") val location: String? = null,
-    @SerializedName("mbti") val mbti: String? = null,
+    /**
+     * MBTI 原始 JSON：对象 `{"type":"INFP","name":"调停者",...}` 或早期字符串 `"INFP"`，
+     * 未填写时为 null。保留 [JsonElement] 交给 [MbtiInfo.fromJson] 容错解析，
+     * 避免声明成对象类型时遇到字符串形态抛异常、导致整条 bootstrap 解析失败。
+     */
+    @SerializedName("mbti") val mbti: JsonElement? = null,
     @SerializedName("age_range") val ageRange: String? = null,
     @SerializedName("pat_text") val patText: String? = null,
     @SerializedName("qq") val qq: String? = null,
     @SerializedName("avatar_upload") val avatarUpload: AvatarUploadDto? = null,
     @SerializedName("has_custom_avatar") val hasCustomAvatar: Boolean = false
-)
+) {
+    /** MBTI 完整信息（服务端下发对象或字符串；缺失/异常形态为 null） */
+    val mbtiInfo: MbtiInfo? get() = MbtiInfo.fromJson(mbti)
+}
 
 /**
  * Bootstrap 返回的公共房间模型
@@ -682,10 +691,14 @@ data class UserLookupUserDto(
     @SerializedName("avatar_url") val avatarUrl: String? = null,
     @SerializedName("gender") val gender: String? = null,
     @SerializedName("bio") val bio: String? = null,
-    @SerializedName("mbti") val mbti: String? = null,
+    /** MBTI 原始 JSON（对象 / 字符串，未填写为 null），经 [MbtiInfo.fromJson] 容错解析 */
+    @SerializedName("mbti") val mbti: JsonElement? = null,
     @SerializedName("age_range_text") val ageRangeText: String? = null,
     @SerializedName("location") val location: String? = null
-)
+) {
+    /** MBTI 完整信息（服务端下发对象或字符串；缺失/异常形态为 null） */
+    val mbtiInfo: MbtiInfo? get() = MbtiInfo.fromJson(mbti)
+}
 
 /**
  * 查找用户返回数据 (/user/lookup)
@@ -702,7 +715,8 @@ data class UserLookupData(
     @SerializedName("avatar_url") val fallbackAvatarUrl: String? = null,
     @SerializedName("gender") val fallbackGender: String? = null,
     @SerializedName("bio") val fallbackBio: String? = null,
-    @SerializedName("mbti") val fallbackMbti: String? = null
+    /** 根级兜底 MBTI 原始 JSON（对象 / 字符串） */
+    @SerializedName("mbti") val fallbackMbti: JsonElement? = null
 ) {
     val userId: Long get() = user?.id ?: fallbackUserId
     val uid: String get() = user?.uid ?: fallbackUid
@@ -711,7 +725,11 @@ data class UserLookupData(
     val avatarUrl: String? get() = user?.avatarUrl ?: fallbackAvatarUrl
     val gender: String? get() = user?.gender ?: fallbackGender
     val bio: String? get() = user?.bio ?: fallbackBio
-    val mbti: String? get() = user?.mbti ?: fallbackMbti
+    /** MBTI 完整信息：优先 user 对象内，缺失时回落根级字段 */
+    val mbtiInfo: MbtiInfo? get() = user?.mbtiInfo ?: MbtiInfo.fromJson(fallbackMbti)
+
+    /** 兼容旧调用点：仅类型代码字符串（无 MBTI 时为 null） */
+    val mbti: String? get() = mbtiInfo?.type
 }
 
 /**
@@ -850,8 +868,13 @@ data class UserProfileDto(
     /** 对方是否开启在线状态展示（为 0/false 时即隐身模式） */
     @SerializedName(value = "show_online_status", alternate = ["showOnlineStatus", "online_status_visible"]) val showOnlineStatus: Boolean? = null,
     /** 对方是否开启隐私模式（为真时官方隐藏「动态」入口） */
-    @SerializedName("privacy_mode") val privacyMode: Boolean? = null
-)
+    @SerializedName("privacy_mode") val privacyMode: Boolean? = null,
+    /** MBTI 原始 JSON（对象 / 字符串，未填写为 null），经 [MbtiInfo.fromJson] 容错解析 */
+    @SerializedName("mbti") val mbti: JsonElement? = null
+) {
+    /** MBTI 完整信息（服务端下发对象或字符串；缺失/异常形态为 null） */
+    val mbtiInfo: MbtiInfo? get() = MbtiInfo.fromJson(mbti)
+}
 
 /**
  * 他人主页聚合接口返回 (GET /api/moment/user)

@@ -705,12 +705,25 @@ class ZeroTalkWebSocketClient(
     }
 
     /**
-     * 发送文字消息
+     * 发送指定 type 的聊天消息帧（官网统一入口 `ke({event:"message",type,content,...})`）
+     *
+     * 帧形如 `{"event":"message","type":"<type>","content":"<content>"}`，
+     * 动态分享卡片即 `type:"moment_share"`（content 为卡片 JSON）。
+     * 回复与 @ 提及字段对所有类型一致生效。
+     *
+     * @param type 消息类型（text / moment_share / …），缺省 text
+     * @param replyToId 引用回复的服务端消息 id（<=0 不带该字段）
+     * @param mentionIds @ 提及的 uid 列表（去空去重后写入 `mention_ids`）
      */
-    fun sendTextMessage(content: String, replyToId: Long? = null, mentionIds: List<String> = emptyList()): Boolean {
+    fun sendMessage(
+        content: String,
+        type: String = "text",
+        replyToId: Long? = null,
+        mentionIds: List<String> = emptyList()
+    ): Boolean {
         val payload = JsonObject().apply {
             addProperty("event", "message")
-            addProperty("type", "text")
+            addProperty("type", type)
             addProperty("content", content)
             replyToId?.takeIf { it > 0L }?.let { addProperty("reply_to_id", it) }
             val validMentionIds = mentionIds.map(String::trim).filter(String::isNotBlank).distinct()
@@ -722,6 +735,12 @@ class ZeroTalkWebSocketClient(
         }
         return sendRawJson(payload.toString())
     }
+
+    /**
+     * 发送文字消息
+     */
+    fun sendTextMessage(content: String, replyToId: Long? = null, mentionIds: List<String> = emptyList()): Boolean =
+        sendMessage(content = content, type = "text", replyToId = replyToId, mentionIds = mentionIds)
 
     /**
      * 发送拍一拍

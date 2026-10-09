@@ -92,6 +92,7 @@ import top.lanxint.zerotalk.ui.components.AppleHigDivider
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.components.SheetAction
 import top.lanxint.zerotalk.ui.components.AppleHigFillCard
+import top.lanxint.zerotalk.ui.components.MbtiCard
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.ui.components.FollowCapsuleButton
@@ -751,6 +752,16 @@ private fun ProfileTabContent(
 
             else -> {
                 ProfileSignatureCard(profile = profile, isDark = isDark)
+                // MBTI 卡片：未设置 MBTI 时为 null，不渲染
+                profile.mbti?.let { mbti ->
+                    MbtiCard(
+                        mbti = mbti,
+                        isDark = isDark,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    )
+                }
                 ProfileStatsCard(
                     profile = profile,
                     isDark = isDark,
@@ -1985,7 +1996,7 @@ internal fun ChatSettingsTabContent(
         }
 
         BasicText(
-            text = "自定义背景图将按宽度铺满对话界面，上下如有留空会显示默认背景色。",
+            text = "自定义背景图将自适应铺满整个对话界面，超出部分会被裁掉。",
             style = AppleHigTypography.footnote.copy(
                 color = higColors.secondaryLabel,
                 textAlign = TextAlign.Center
