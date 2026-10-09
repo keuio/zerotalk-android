@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.home.components.CatchMomentsCard
 import top.lanxint.zerotalk.ui.home.components.MatchingCard
+import top.lanxint.zerotalk.ui.home.components.MbtiTestCard
 import top.lanxint.zerotalk.ui.home.components.PublicChatroomCard
 import top.lanxint.zerotalk.ui.home.components.RoomActionCards
 import com.kashif_e.backdrop.Backdrop
@@ -42,6 +43,7 @@ fun HomeScreen(
     onOpenJoinRoom: () -> Unit,
     onOpenCatchMoments: () -> Unit,
     onOpenCatchHistory: () -> Unit,
+    onOpenMbtiTest: () -> Unit,
     isDark: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -110,6 +112,15 @@ fun HomeScreen(
                 onCatchMomentsClick = onOpenCatchMoments,
                 onHistoryClick = onOpenCatchHistory,
                 isDark = isDark
+            )
+        }
+
+        // 第五个卡片：人格测试（MBTI 60 题问卷，已测出结果时右侧显示类型代码）
+        item {
+            MbtiTestCard(
+                onOpenMbtiTest = onOpenMbtiTest,
+                isDark = isDark,
+                mbtiType = userProfile.mbti?.type
             )
         }
 

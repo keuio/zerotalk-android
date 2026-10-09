@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.HorizontalDivider
@@ -58,7 +57,6 @@ import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.ui.components.GenderBadge
 import top.lanxint.zerotalk.ui.components.LiquidSegmentedControl
 import top.lanxint.zerotalk.ui.components.LiquidToggle
-import top.lanxint.zerotalk.ui.components.MbtiCard
 import top.lanxint.zerotalk.ui.components.UserAvatar
 import top.lanxint.zerotalk.ui.sheets.ProfileSettingItem
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
@@ -92,8 +90,6 @@ fun ProfileScreen(
     onOpenSetting: (ProfileSettingItem) -> Unit,
     /** 打开「通知中心」面板 */
     onOpenNotificationCenter: () -> Unit,
-    /** 打开「MBTI 人格测试」面板 */
-    onOpenMbtiTest: () -> Unit,
     onDeleteAccount: () -> Unit,
     backdrop: Backdrop? = null,
     isDark: Boolean,
@@ -335,33 +331,6 @@ fun ProfileScreen(
                     }
                 }
             }
-        }
-
-        // MBTI 完整信息卡片（未填写 MBTI 时不渲染，保持原有布局）
-        profile.mbti?.let { mbtiInfo ->
-            Spacer(Modifier.height(cardSpacing))
-            MbtiCard(
-                mbti = mbtiInfo,
-                isDark = isDark,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        // MBTI 人格测试入口：未测试过也能进；已测试过则显示「查看报告 / 重新测试」
-        Spacer(Modifier.height(cardSpacing))
-        AppleHigGroupedSection(
-            title = "人格测试",
-            footer = "官方 60 题问卷 · 生成你的 16 型人格报告",
-            isDark = isDark
-        ) {
-            AppleHigRow(
-                title = "MBTI 人格测试",
-                subtitle = if (profile.mbti != null) "查看报告 / 重新测试" else "还没有测试过，去做一次",
-                icon = Icons.Default.Psychology,
-                iconBgColor = Color(0xFF8B5CF6),
-                isDark = isDark,
-                onClick = onOpenMbtiTest
-            )
         }
 
         Spacer(Modifier.height(cardSpacing))

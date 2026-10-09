@@ -431,6 +431,9 @@ fun ZeroTalkApp() {
                         onOpenCatchHistory = {
                             activeSheet = HomeSheetType.CatchHistory
                         },
+                        onOpenMbtiTest = {
+                            activeProfileSheet = MbtiTest
+                        },
                         isDark = isDark
                     )
                 }
@@ -475,9 +478,6 @@ fun ZeroTalkApp() {
                         },
                         onOpenNotificationCenter = {
                             activeProfileSheet = ProfileNotificationCenter
-                        },
-                        onOpenMbtiTest = {
-                            activeProfileSheet = MbtiTest
                         },
                         onDeleteAccount = {
                             activeProfileSheet = ProfileSheetType.DeleteAccountConfirm
