@@ -23,7 +23,7 @@
 
 ## 本地构建
 
-需要 JDK 17 与 Android SDK（compileSdk / targetSdk 36，minSdk 24）：
+需要 JDK 17 与 Android SDK（compileSdk / targetSdk 36，minSdk 23）：
 
 ```bash
 ./gradlew :composeApp:assembleDebug

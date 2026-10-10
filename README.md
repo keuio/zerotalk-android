@@ -37,7 +37,7 @@ This is an **UNOFFICIAL** third-party client. It is not affiliated with, authori
 | 项 | 版本 |
 | --- | --- |
 | JDK | 17 |
-| Android SDK | compileSdk / targetSdk 36，minSdk 24 |
+| Android SDK | compileSdk / targetSdk 36，minSdk 23 |
 | Gradle | 使用仓库自带的 Wrapper |
 
 ### 命令
@@ -81,7 +81,7 @@ gradle/                 版本目录（libs.versions.toml）
 
 ## 下载
 
-从 [Releases](https://github.com/keuio/zerotalk-android/releases) 下载**已签名的 APK** 直接安装（Android 7.0 / API 24 及以上）。
+从 [Releases](https://github.com/keuio/zerotalk-android/releases) 下载**已签名的 APK** 直接安装（Android 6.0 / API 23 及以上）。
 
 > 首次安装前请确认来源为本仓库；APK 签名证书 SHA-256：`576adcaafea97432944c4817e1feba9baaa4b81f325ac43dcaafd129c7241892`
 

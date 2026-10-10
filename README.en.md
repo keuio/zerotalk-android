@@ -31,7 +31,7 @@ This project is provided for learning and technical exchange only; users must co
 
 ## Download
 
-Get the **signed APK** from [Releases](https://github.com/keuio/zerotalk-android/releases) — Android 7.0 (API 24) or later.
+Get the **signed APK** from [Releases](https://github.com/keuio/zerotalk-android/releases) — Android 6.0 (API 23) or later.
 
 > APK signing certificate SHA-256: `576adcaafea97432944c4817e1feba9baaa4b81f325ac43dcaafd129c7241892`
 
@@ -44,7 +44,7 @@ Get the **signed APK** from [Releases](https://github.com/keuio/zerotalk-android
 | Item | Version |
 | --- | --- |
 | JDK | 17 |
-| Android SDK | compileSdk / targetSdk 36, minSdk 24 |
+| Android SDK | compileSdk / targetSdk 36, minSdk 23 |
 | Gradle | use the bundled Wrapper |
 
 ### Commands
