@@ -1,6 +1,7 @@
 package top.lanxint.zerotalk.data.model
 
 import androidx.compose.ui.graphics.Color
+import top.lanxint.zerotalk.data.network.MessageEncryptionDto
 
 /**
  * 消息分类标签枚举
@@ -244,6 +245,28 @@ data class ChatMessage(
      * 骰子会变 `?`（此前完全没有消费该字段，重进会话即复现）。
      */
     val isDeleted: Boolean = false,
+    /**
+     * 是否为端到端加密消息（官方 `enc` 存在且本地未解密成功）
+     *
+     * 用户尚未输入房间暗号时，历史/实时密文只能展示占位文案，不能展示密文原文或
+     * 尝试按普通文本渲染；解锁后仓库层会用 RoomMessageCrypto 替换为明文。
+     */
+    val isEncrypted: Boolean = false,
+    /** 未解密时可展示的占位文案（官方口径 `[加密消息，请输入暗号解锁]`，本客户端同样使用） */
+    val encryptionPlaceholder: String = "",
+    /** 原始密文正文（解锁前保留，供解锁后重解密；解锁成功后不再保留） */
+    val encryptedContent: String = "",
+    /** 端到端加密参数（官方 `enc`：`{v,alg,iv,kid,sid}`） */
+    val encryptionEnc: MessageEncryptionDto? = null,
+    /** 端到端加密消息的客户端消息 id（官方 `client_message_id`，参与消息 AAD） */
+    val encryptionClientMessageId: String? = null,
+    /**
+     * 服务端/客户端消息标识（官方 `client_message_id`）。
+     *
+     * 本地乐观回显写入自己生成的 id，服务端回推时带同一 id，用于精确对账；
+     * 加密消息同样依赖它参与 AAD，因此非空即代表这条消息来自本机发送。
+     */
+    val clientMessageId: String = "",
     val quotedText: String? = null,
     val quotedIsMine: Boolean? = null,
     val quotedSenderName: String? = null,
@@ -336,6 +359,11 @@ data class ChatMessage(
 const val RECALLED_MESSAGE_TEXT = "该消息已被撤回"
 
 /**
+ * 端到端加密消息未解锁时的展示占位文案（对齐官方 `[加密消息，请输入暗号解锁]`）。
+ */
+const val ENCRYPTED_MESSAGE_PLACEHOLDER = "[加密消息，请输入暗号解锁]"
+
+/**
  * 把消息归一化为「已撤回」状态（对齐官网 `handleMessageRecall` 的本地标记 + 清空）。
  *
  * 官网撤回时执行：
@@ -353,6 +381,11 @@ fun ChatMessage.asRecalled(): ChatMessage = copy(
     imageUrl = "",
     audioUrl = "",
     stickerUrl = "",
+    isEncrypted = false,
+    encryptionPlaceholder = "",
+    encryptedContent = "",
+    encryptionEnc = null,
+    encryptionClientMessageId = null,
     quotedText = null,
     quotedSenderName = null,
     quotedIsMine = null,
@@ -419,6 +452,7 @@ fun List<ChatMessage>.applyRecall(messageId: Long): List<ChatMessage> =
  */
 fun ChatMessage.quotePreviewText(): String = when {
     isDeleted -> RECALLED_MESSAGE_TEXT
+    isEncrypted -> encryptionPlaceholder.ifBlank { "[加密消息，请输入暗号解锁]" }
     isVoiceCall -> voiceCallText.ifBlank { "[语音通话]" }
     isVoice -> "[语音 ${voiceDurationSec}\"]"
     isImage -> "[图片]"

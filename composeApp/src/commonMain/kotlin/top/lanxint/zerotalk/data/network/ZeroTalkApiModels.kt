@@ -272,6 +272,10 @@ sealed class WsServerEvent {
          * 消息可能以「已撤回」状态实时到达，映射层必须透传到 ChatMessage。
          */
         val isDeleted: Boolean = false,
+        /** 端到端加密参数（官方 `enc`：`{v,alg,iv,kid,sid}`），仅 text 消息存在 */
+        val enc: MessageEncryptionDto? = null,
+        /** 端到端加密消息的客户端消息 id（官方 `client_message_id`，参与消息 AAD） */
+        val clientMessageId: String? = null,
         /** 发送者称号（官方消息行 `msg.title`）；未下发为 null */
         val title: String? = null,
         /** 发送者称号颜色 key（官方消息行 `msg.title_color`） */
@@ -387,6 +391,17 @@ sealed class WsServerEvent {
         val isCaller: Boolean?,
         val hintMs: Long?,
         val rawJson: String
+    ) : WsServerEvent()
+
+    /**
+     * 端到端加密房间拒绝未解锁发送（官网 `encryption_locked`）。
+     *
+     * 服务端在未解锁会话里收到明文发送请求时回推该事件，客户端应弹出暗号解锁面板，
+     * 而不是把消息静默丢弃。
+     */
+    data class EncryptionLocked(
+        val roomId: String?,
+        val message: String?
     ) : WsServerEvent()
 
     data class Unknown(val rawEvent: String, val rawJson: String) : WsServerEvent()
@@ -531,6 +546,10 @@ data class ChatMessageDto(
     @SerializedName("created_at") val createdAt: String = "",
     @SerializedName("avatar_url") val avatarUrl: String? = null,
     @SerializedName("media_locked") val mediaLocked: Boolean = false,
+    /** 端到端加密参数（官方 `enc`：`{v,alg,iv,kid,sid}`），仅 text 消息存在 */
+    @SerializedName("enc") val enc: MessageEncryptionDto? = null,
+    /** 端到端加密消息的客户端消息 id（服务端原样返回，用于本地消息去重） */
+    @SerializedName("client_message_id") val clientMessageId: String? = null,
     /** 发送者称号（官方 UserTitleBadge 的 `title`）；未下发为 null */
     @SerializedName("title") val title: String? = null,
     /** 发送者称号颜色 key（官方 `title_color`，白名单外 UI 回落 blue） */
@@ -551,6 +570,15 @@ data class ChatBootstrapData(
     @SerializedName("is_public_room") val isPublicRoom: Boolean = false,
     @SerializedName("encryption_enabled") val encryptionEnabled: Boolean = false,
     @SerializedName("encryption_unlocked") val encryptionUnlocked: Boolean = true,
+    /** 房间端到端加密配置（官方 `encryption` 对象；仅 encryption_enabled 时下发） */
+    @SerializedName("encryption") val encryption: RoomEncryptionDto? = null,
+    /**
+     * 房间创建者资料（官方 `room_creator`）。
+     *
+     * 解锁弹窗的「忘记暗号 → 联系房主」需要展示房主昵称与头像；
+     * 非创建者房间才会下发，缺省为 null。
+     */
+    @SerializedName("room_creator") val roomCreator: PeerUserDto? = null,
     @SerializedName("ws_token") val wsToken: String? = null,
     // ---- 群聊权限与成员（服务端权威下发，客户端不自算）----
     @SerializedName("members") val members: List<BootstrapMemberDto>? = null,
@@ -1430,4 +1458,52 @@ data class UserShareCodeData(
     @SerializedName("login_name") val loginName: String = "",
     @SerializedName("id") val id: Long = 0
 )
+/**
+ * 加密房间配置 DTO（bootstrap `encryption` 对象）
+ *
+ * 官方字段：
+ * - `room_kdf_salt`：PBKDF2 盐（base64）
+ * - `encrypted_dek_client`：DEK 封装（版本+iv+tag+密文，base64）
+ * - `kdf_params.iterations`：PBKDF2 迭代次数（默认 150000）
+ * - `key_id`：密钥 id（默认 room_dek_v1）
+ * - `dek`：服务端可能在部分场景直接下发已解封 DEK（官方 Hd() 直接导入）
+ */
+data class RoomEncryptionDto(
+    @SerializedName("encryption_enabled") val encryptionEnabled: Boolean = false,
+    @SerializedName("room_kdf_salt") val roomKdfSalt: String? = null,
+    @SerializedName("encrypted_dek_client") val encryptedDekClient: String? = null,
+    @SerializedName("kdf_params") val kdfParams: RoomKdfParamsDto? = null,
+    @SerializedName("key_id") val keyId: String? = null,
+    @SerializedName("dek") val dek: String? = null
+)
+
+/** PBKDF2 参数（官方 `kdf_params`） */
+data class RoomKdfParamsDto(
+    @SerializedName("iterations") val iterations: Int = 0,
+    @SerializedName("salt") val salt: String? = null
+)
+
+/**
+ * 加密消息参数 DTO（官方 `enc`）
+ *
+ * 只有 `type=="text"` 走端到端加密；图片/表情包/音乐等不加密。
+ */
+data class MessageEncryptionDto(
+    @SerializedName("v") val version: Int = 1,
+    @SerializedName("alg") val algorithm: String = "",
+    @SerializedName("iv") val iv: String = "",
+    @SerializedName("kid") val keyId: String? = null,
+    @SerializedName("sid") val senderUid: String? = null
+)
+
+
+/** 解锁/启用加密房间返回数据（/room/encryption/unlock、/room/encryption/enable） */
+data class RoomEncryptionUnlockData(
+    @SerializedName("room_id") val roomId: String = "",
+    @SerializedName("encryption_enabled") val encryptionEnabled: Boolean = false,
+    @SerializedName("encryption_unlocked") val encryptionUnlocked: Boolean = false,
+    @SerializedName("encryption") val encryption: RoomEncryptionDto? = null
+)
+
+
 

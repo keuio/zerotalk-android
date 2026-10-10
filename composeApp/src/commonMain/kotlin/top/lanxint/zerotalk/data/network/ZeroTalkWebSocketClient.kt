@@ -348,6 +348,15 @@ class ZeroTalkWebSocketClient(
                     ZtLog.d("ZeroTalk", "[WS] message_recalled frame")
                     parseMessageRecalled(root) ?: WsServerEvent.Unknown(event, text)
                 }
+                "encryption_locked" -> {
+                    // 未解锁会话的明文发送被服务端拒绝：引导用户输入房间暗号
+                    val dataObj = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val roomId = (root.get("room_id") ?: dataObj?.get("room_id"))
+                        ?.takeIf { !it.isJsonNull }?.asString
+                    val message = (root.get("message") ?: dataObj?.get("message"))
+                        ?.takeIf { !it.isJsonNull }?.asString
+                    WsServerEvent.EncryptionLocked(roomId, message)
+                }
                 else -> when {
                     // 语音通话全量下行（voice_invite_sent / ringing / offer / answer / ice / …）
                     event.startsWith("voice_") -> parseVoiceCall(event.removePrefix("voice_"), root, text)
@@ -684,18 +693,32 @@ class ZeroTalkWebSocketClient(
      * @param type 消息类型（text / moment_share / …），缺省 text
      * @param replyToId 引用回复的服务端消息 id（<=0 不带该字段）
      * @param mentionIds @ 提及的 uid 列表（去空去重后写入 `mention_ids`）
+     * @param enc 端到端加密参数（官方 `enc`：`{v,alg,iv,kid,sid}`）；仅加密 text 消息需要
+     * @param clientMessageId 端到端加密消息的客户端消息 id（参与消息 AAD）
      */
     fun sendMessage(
         content: String,
         type: String = "text",
         replyToId: Long? = null,
-        mentionIds: List<String> = emptyList()
+        mentionIds: List<String> = emptyList(),
+        enc: MessageEncryptionDto? = null,
+        clientMessageId: String? = null
     ): Boolean {
         val payload = JsonObject().apply {
             addProperty("event", "message")
             addProperty("type", type)
             addProperty("content", content)
             replyToId?.takeIf { it > 0L }?.let { addProperty("reply_to_id", it) }
+            enc?.let { cfg ->
+                add("enc", JsonObject().apply {
+                    addProperty("v", cfg.version)
+                    addProperty("alg", cfg.algorithm)
+                    addProperty("iv", cfg.iv)
+                    cfg.keyId?.let { addProperty("kid", it) }
+                    cfg.senderUid?.let { addProperty("sid", it) }
+                })
+            }
+            clientMessageId?.takeIf { it.isNotBlank() }?.let { addProperty("client_message_id", it) }
             val validMentionIds = mentionIds.map(String::trim).filter(String::isNotBlank).distinct()
             if (validMentionIds.isNotEmpty()) {
                 add("mention_ids", com.google.gson.JsonArray().apply {
@@ -750,6 +773,28 @@ class ZeroTalkWebSocketClient(
             addProperty("type", "image")
             addProperty("content", content.ifBlank { imageUrl })
             addProperty("image_url", imageUrl)
+        }
+        return sendRawJson(payload.toString())
+    }
+
+    /**
+     * 发送表情包
+     *
+     * 官方帧（官网源码两处独立证据：主聊天 `$n` 与对局聊天 `me` 完全一致）：
+     * `{"event":"message","content":"<assetId>","asset_id":<assetId>,"type":"sticker"}`
+     *
+     * 注意：普通消息**不带**顶层 `asset_id`，表情包**必须**带上，
+     * 因此不能复用 [sendMessage]（它不写该字段）。
+     *
+     * @param assetId 表情包资源 id（必须 > 0）
+     */
+    fun sendStickerMessage(assetId: Long): Boolean {
+        if (assetId <= 0L) return false
+        val payload = JsonObject().apply {
+            addProperty("event", "message")
+            addProperty("type", "sticker")
+            addProperty("content", assetId.toString())
+            addProperty("asset_id", assetId)
         }
         return sendRawJson(payload.toString())
     }

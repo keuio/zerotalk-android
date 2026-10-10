@@ -73,8 +73,13 @@ import java.util.Calendar
 import java.io.File
 import java.security.MessageDigest
 import okhttp3.Request
+import top.lanxint.zerotalk.data.network.MessageEncryptionDto
+import top.lanxint.zerotalk.data.network.RoomEncryptionDto
+import top.lanxint.zerotalk.data.network.RoomEncryptionUnlockData
 import top.lanxint.zerotalk.data.network.ZeroTalkApiService
 import top.lanxint.zerotalk.data.network.ZeroTalkWebSocketClient
+import top.lanxint.zerotalk.data.security.RoomKeyStore
+import top.lanxint.zerotalk.data.security.RoomMessageCrypto
 import top.lanxint.zerotalk.data.voice.VoiceCallConfig
 import top.lanxint.zerotalk.data.voice.VoiceCallController
 import java.io.IOException
@@ -90,6 +95,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.delay
 
 /**
@@ -117,6 +123,21 @@ sealed class MatchStatus {
     object Timeout : MatchStatus()
     data class Error(val message: String) : MatchStatus()
 }
+
+/**
+ * 房间端到端加密的客户端状态
+ *
+ * @param enabled 服务端是否已开启该房间加密
+ * @param unlocked 本机是否已通过暗号解出 DEK（决定能否查看明文 / 发送加密消息）
+ * @param serverUnlocked 服务端当前会话是否已解锁（bootstrap `encryption_unlocked`）
+ * @param config 最近一次 bootstrap / unlock 返回的加密配置
+ */
+data class RoomEncryptionState(
+    val enabled: Boolean = false,
+    val unlocked: Boolean = false,
+    val serverUnlocked: Boolean = false,
+    val config: EncryptionConfig? = null
+)
 
 /**
  * 零语全局核心调度与数据中枢 (单例)
@@ -194,6 +215,25 @@ object ZeroTalkClientManager {
     /** 按房间存储聊天 bootstrap 数据（包含成员列表和权限字段） */
     private val _roomBootstrapMap = MutableStateFlow<Map<String, ChatBootstrapData>>(emptyMap())
     val roomBootstrapMap: StateFlow<Map<String, ChatBootstrapData>> = _roomBootstrapMap.asStateFlow()
+
+    /** 房间端到端加密的内存密钥存储（DEK 不落盘） */
+    private val roomKeyStore = RoomKeyStore()
+
+    /** 房间端到端加密状态（enabled / unlocked / config） */
+    private val _roomEncryption = MutableStateFlow<Map<String, RoomEncryptionState>>(emptyMap())
+    val roomEncryption: StateFlow<Map<String, RoomEncryptionState>> = _roomEncryption.asStateFlow()
+
+    /** 需要 UI 弹出「输入暗号解锁」的房间 id（消费后置空） */
+    private val _encryptionUnlockRequest = MutableStateFlow<String?>(null)
+    val encryptionUnlockRequest: StateFlow<String?> = _encryptionUnlockRequest.asStateFlow()
+
+    /** 解锁接口请求中标记（避免用户重复点击） */
+    private val _encryptionUnlocking = MutableStateFlow(false)
+    val encryptionUnlocking: StateFlow<Boolean> = _encryptionUnlocking.asStateFlow()
+
+    /** 最近一次解锁返回的可展示错误；成功置空 */
+    private val _encryptionUnlockError = MutableStateFlow<String?>(null)
+    val encryptionUnlockError: StateFlow<String?> = _encryptionUnlockError.asStateFlow()
 
     /** 各房间成员列表（GET /api/room/members，群聊资料页权威来源） */
     private val _roomMembers = MutableStateFlow<Map<String, List<RoomMemberDto>>>(emptyMap())
@@ -345,7 +385,13 @@ object ZeroTalkClientManager {
      * 气泡永远停在空内容——这正是「骰子消息内容为空」的根因。
      */
     private fun isSameEchoKind(echo: ChatMessage, event: WsServerEvent.Message): Boolean =
-        EchoMatcher.isSameKind(echo, event.type, event.content, event.imageUrl)
+        EchoMatcher.isSameKind(
+            echo = echo,
+            eventType = event.type,
+            eventContent = event.content,
+            eventImageUrl = event.imageUrl,
+            eventClientMessageId = event.clientMessageId
+        )
 
     private val _conversations = MutableStateFlow<List<ConversationItem>>(emptyList())
     val conversations: StateFlow<List<ConversationItem>> = _conversations.asStateFlow()
@@ -1291,6 +1337,12 @@ object ZeroTalkClientManager {
         _roomPeers.value = emptyMap()
         _conversations.value = emptyList()
         _roomMessages.value = emptyMap()
+        // 端到端加密：退出登录必须清空内存 DEK 与状态，换账号后不得复用
+        roomKeyStore.lockAll()
+        _roomEncryption.value = emptyMap()
+        _encryptionUnlockRequest.value = null
+        _encryptionUnlockError.value = null
+        _encryptionUnlocking.value = false
         _privacySettings.value = MomentsPrivacyData()
         _blockList.value = emptyList()
         _reportList.value = emptyList()
@@ -1745,10 +1797,26 @@ object ZeroTalkClientManager {
         messageType: String = "text"
     ) {
         if (content.isBlank()) return
+        // 端到端加密房间：未解锁先引导输入暗号，禁止明文外发
+        val encryptionState = _roomEncryption.value[roomId]
+        val encryptedPayload = if (messageType == "text" && encryptionState?.enabled == true) {
+            if (encryptionState.unlocked != true) {
+                requestRoomEncryptionUnlock(roomId)
+                return
+            }
+            prepareEncryptedTextMessage(roomId, content)
+        } else null
         if (wsClient.currentRoomId != roomId) {
             wsClient.joinRoom(roomId)
         }
-        val success = wsClient.sendMessage(content, messageType, replyToId, mentionIds)
+        val success = wsClient.sendMessage(
+            content = encryptedPayload?.first ?: content,
+            type = messageType,
+            replyToId = replyToId,
+            mentionIds = mentionIds,
+            enc = encryptedPayload?.second,
+            clientMessageId = encryptedPayload?.third
+        )
         if (success) {
             val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
             // 本地即时回显与历史 / 实时消息共用 buildChatMessage：
@@ -1768,7 +1836,8 @@ object ZeroTalkClientManager {
                     quotedText = quotedText,
                     quotedIsMine = quotedIsMine,
                     quotedSenderName = quotedSenderName,
-                    replyToId = replyToId
+                    replyToId = replyToId,
+                    clientMessageId = encryptedPayload?.third
                 )
             )
             appendLocalOutgoing(roomId, myMsg, myMsg.previewText)
@@ -4101,8 +4170,335 @@ object ZeroTalkClientManager {
         _roomHasMoreHistory.value = _roomHasMoreHistory.value - roomId
         _roomHistoryLoading.value = _roomHistoryLoading.value - roomId
         _groupRooms.value = _groupRooms.value - roomId
+        // 退房 / 删房后清掉该房间的 DEK 与加密状态，避免残留解锁态
+        roomKeyStore.lock(roomId)
+        _roomEncryption.value = _roomEncryption.value - roomId
+        _roomBootstrapMap.value = _roomBootstrapMap.value - roomId
         if (wsClient.currentRoomId == roomId) wsClient.leaveRoom()
         fetchRoomList()
+    }
+
+    /**
+     * 将服务端 bootstrap / unlock 返回的 encryption DTO 归一化为本地加密配置。
+     *
+     * @param fallbackEnabled 顶层 `encryption_enabled` 为 true、但嵌套对象未重复该字段时，
+     *        用它兜底判定，避免把已加密房间误判成未加密。
+     */
+    private fun resolveEncryptionConfig(
+        dto: RoomEncryptionDto?,
+        fallbackEnabled: Boolean = false
+    ): EncryptionConfig? {
+        if (dto == null) return null
+        if (!dto.encryptionEnabled && !fallbackEnabled) return null
+        return EncryptionConfig(
+            encryptionEnabled = true,
+            roomKdfSalt = dto.roomKdfSalt,
+            encryptedDekClient = dto.encryptedDekClient,
+            kdfIterations = dto.kdfParams?.iterations?.takeIf { it > 0 } ?: DEFAULT_KDF_ITERATIONS,
+            keyId = dto.keyId.orEmpty().ifBlank { DEFAULT_ROOM_KEY_ID },
+            dek = dto.dek
+        )
+    }
+
+    /** 当前账号的数字 id（字符串形式，用于 DEK / 消息 AAD）；未登录返回空串 */
+    private fun currentAccountId(): String = 
+        _loginData.value?.userId?.takeIf { it > 0L }?.toString() ?: _loginData.value?.uid.orEmpty()
+
+    /** 尝试解密一条加密文本；房未解锁 / 参数缺失 / 暗号不符返回 null，调用方按加密占位处理 */
+    private fun decryptEncryptedText(
+        roomId: String,
+        clientMessageId: String?,
+        senderUserId: String?,
+        iv: String,
+        cipherText: String
+    ): String? {
+        if (iv.isBlank() || cipherText.isBlank()) return null
+        val dek = roomKeyStore.dek(roomId) ?: return null
+        val userId = senderUserId?.takeIf { it.isNotBlank() } ?: currentAccountId()
+        if (userId.isBlank()) return null
+        return try {
+            RoomMessageCrypto.decryptText(
+                dek = dek,
+                roomId = roomId,
+                userId = userId,
+                clientMessageId = clientMessageId.orEmpty(),
+                ivBase64Url = iv,
+                cipherTextBase64Url = cipherText
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** 房间是否已在本机解锁（有 DEK） */
+    fun isRoomEncryptionUnlocked(roomId: String): Boolean = roomKeyStore.isUnlocked(roomId)
+
+    /** 房间是否开启端到端加密（bootstrap / unlock 已下发配置） */
+    fun isRoomEncryptionEnabled(roomId: String): Boolean =
+        _roomEncryption.value[roomId]?.enabled == true
+
+    /** UI：请求弹出输入房间暗号的解锁面板（消费后置空） */
+    fun requestRoomEncryptionUnlock(roomId: String) {
+        if (roomId.isBlank()) return
+        _encryptionUnlockRequest.value = roomId
+    }
+
+    /** UI：关闭解锁面板 */
+    fun closeRoomEncryptionUnlock() {
+        _encryptionUnlockRequest.value = null
+        _encryptionUnlockError.value = null
+    }
+
+    /** 重置中标记（房主在解锁弹窗内改暗号） */
+    private val _encryptionResettingPassword = MutableStateFlow(false)
+    val encryptionResettingPassword: StateFlow<Boolean> = _encryptionResettingPassword.asStateFlow()
+
+    /** 联系房主请求中标记（非房主走 dm-creator） */
+    private val _encryptionContactingCreator = MutableStateFlow(false)
+    val encryptionContactingCreator: StateFlow<Boolean> = _encryptionContactingCreator.asStateFlow()
+
+    /**
+     * 房主在加密房间重置暗号（官方 RoomEncryptionSwitch 的忘记暗号分支）。
+     *
+     * 复用 `/room/update` 的房间密码更新能力；成功后清掉旧 DEK，
+     * 让用户用新暗号重新解锁，避免本地继续使用已失效的密钥。
+     */
+    fun resetRoomEncryptionPassword(
+        roomId: String,
+        newPassword: String,
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        val room = roomId.trim()
+        val password = newPassword.trim()
+        if (room.isEmpty() || password.isEmpty()) {
+            onResult?.invoke(false, "请输入新的房间暗号")
+            return
+        }
+        if (_encryptionResettingPassword.value) return
+        _encryptionResettingPassword.value = true
+        scope.launch {
+            val result = apiService.roomManagementRequest(
+                "/room/update",
+                mapOf("room_id" to room, "password" to password)
+            )
+            _encryptionResettingPassword.value = false
+            if (result.isSuccess) {
+                // 旧暗号派生的 DEK 已失效：清解锁态并保留加密配置，等待重新解锁
+                roomKeyStore.lock(room)
+                val current = _roomEncryption.value[room]
+                if (current != null) {
+                    _roomEncryption.value = _roomEncryption.value + (
+                        room to current.copy(unlocked = false, serverUnlocked = false)
+                    )
+                }
+                onResult?.invoke(true, null)
+            } else {
+                onResult?.invoke(false, result.exceptionOrNull()?.message ?: "重置暗号失败")
+            }
+        }
+    }
+
+    /**
+     * 非房主忘记暗号：调用 `/room/encryption/dm-creator` 创建与房主的私聊，
+     * 并把服务端返回的房间设为待打开会话，UI 侧据此直达。
+     */
+    fun contactRoomEncryptionCreator(
+        roomId: String,
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        val room = roomId.trim()
+        if (room.isEmpty()) {
+            onResult?.invoke(false, "房间信息缺失")
+            return
+        }
+        if (_encryptionContactingCreator.value) return
+        _encryptionContactingCreator.value = true
+        scope.launch {
+            val res = apiService.createEncryptionForgotDm(room)
+            _encryptionContactingCreator.value = false
+            val data = res.getOrNull()
+            if (data != null && data.roomId.isNotBlank()) {
+                fetchRoomList()
+                requestOpenRoom(data.roomId)
+                onResult?.invoke(true, null)
+            } else {
+                onResult?.invoke(false, res.exceptionOrNull()?.message ?: "无法联系房主")
+            }
+        }
+    }
+
+    /**
+     * 用房间暗号解锁端到端加密（官方 unlockWithPassword 流程）。
+     *
+     * 先调 `/room/encryption/unlock` 由服务端确认暗号并下发加密配置，
+     * 再用本地 AES-GCM 解开 DEK，成功后立即对当前列表中的加密占位消息重解密。
+     */
+    fun unlockRoomEncryption(
+        roomId: String,
+        password: String,
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        val room = roomId.trim()
+        val pass = password.trim()
+        if (room.isEmpty() || pass.isEmpty()) {
+            onResult?.invoke(false, "请输入房间暗号")
+            return
+        }
+        if (_encryptionUnlocking.value) return
+        _encryptionUnlocking.value = true
+        _encryptionUnlockError.value = null
+        scope.launch {
+            val res = apiService.unlockRoomEncryption(room, pass)
+            val data = res.getOrNull()
+            // 官方 unlockWithPassword：先 unlock 让服务端校验暗号，再用**本地已缓存的**
+            // 房间加密配置解包 DEK（`jd(M,G,J)` 的 J 来自 bootstrap 的 St.get(M)），
+            // 并不依赖 unlock 响应体回传配置——响应缺字段时不能据此判定「未开启加密」。
+            val cachedConfig = _roomEncryption.value[room]?.config
+            val responseConfig = resolveEncryptionConfig(
+                data?.encryption,
+                fallbackEnabled = data?.encryptionEnabled == true
+            )
+            // 配置缓存缺失时按官方 `jd` 的思路重新拉一次房间配置，而不是直接判「未开启加密」
+            var cfg = responseConfig ?: cachedConfig
+            if (cfg == null) {
+                // getChatBootstrap 本身返回 Result，不能再套 runCatching（会变成 Result<Result<…>>）
+                val refreshed: ChatBootstrapData? =
+                    apiService.getChatBootstrap(room).getOrNull()
+                if (refreshed != null) {
+                    cfg = resolveEncryptionConfig(
+                        refreshed.encryption,
+                        fallbackEnabled = refreshed.encryptionEnabled
+                    )
+                    if (cfg != null) {
+                        _roomEncryption.value = _roomEncryption.value + (
+                            room to RoomEncryptionState(
+                                enabled = true,
+                                unlocked = roomKeyStore.isUnlocked(room),
+                                serverUnlocked = refreshed.encryptionUnlocked,
+                                config = cfg
+                            )
+                        )
+                    }
+                }
+            }
+            val result: Pair<Boolean, String?> = when {
+                data == null -> {
+                    val msg = res.exceptionOrNull()?.message ?: "解锁失败，请稍后重试"
+                    false to msg
+                }
+                cfg == null -> {
+                    // 走到这里说明 unlock 成功但三次都没拿到加密配置：
+                    // 文案不能断言房间未加密，否则会误导已开启加密的房间
+                    val msg = "未能获取房间加密配置，请稍后重试"
+                    false to msg
+                }
+                else -> {
+                    val accountId = currentAccountId()
+                    if (accountId.isEmpty()) {
+                        false to "请先登录后再解锁"
+                    } else {
+                        when (val unlock = roomKeyStore.unlock(room, cfg, pass)) {
+                            is RoomUnlockResult.Success -> {
+                                _roomEncryption.value = _roomEncryption.value + (
+                                    room to RoomEncryptionState(
+                                        enabled = true,
+                                        unlocked = true,
+                                        serverUnlocked = data.encryptionUnlocked,
+                                        config = cfg
+                                    )
+                                )
+                                redecryptRoomMessages(room)
+                                true to null
+                            }
+                            is RoomUnlockResult.Failure -> {
+                                val msg = when (unlock.reason) {
+                                    RoomUnlockError.INVALID_CONFIG -> "房间加密配置不完整，请更新应用后重试"
+                                    RoomUnlockError.INVALID_DEK_PAYLOAD -> "房间密钥数据无效，请更新应用后重试"
+                                    RoomUnlockError.KDF_FAILED -> "当前设备不支持该房间加密"
+                                    RoomUnlockError.SERVER_REJECTED -> "房间暗号不正确"
+                                    RoomUnlockError.WRONG_PASSWORD_OR_CORRUPTED -> "房间暗号不正确，请重新输入"
+                                }
+                                false to msg
+                            }
+                        }
+                    }
+                }
+            }
+            _encryptionUnlockError.value = result.second
+            _encryptionUnlocking.value = false
+            // 解锁成功后消费掉请求，避免面板因状态变化被重新拉起
+            if (result.first && _encryptionUnlockRequest.value == room) {
+                _encryptionUnlockRequest.value = null
+            }
+            onResult?.invoke(result.first, result.second)
+        }
+    }
+
+    /** 解锁成功后重新解密当前列表中已缓存的加密占位消息 */
+    private fun redecryptRoomMessages(roomId: String) {
+        val list = _roomMessages.value[roomId] ?: return
+        if (list.none { it.isEncrypted }) return
+        val updated = list.map { msg ->
+            if (!msg.isEncrypted) return@map msg
+            val enc = msg.encryptionEnc ?: return@map msg
+            val decrypted = decryptEncryptedText(
+                roomId = roomId,
+                clientMessageId = msg.encryptionClientMessageId,
+                senderUserId = enc.senderUid,
+                iv = enc.iv,
+                cipherText = msg.encryptedContent
+            ) ?: return@map msg
+            msg.copy(
+                content = decrypted,
+                previewText = decrypted,
+                isEncrypted = false,
+                encryptionPlaceholder = "",
+                encryptedContent = "",
+                encryptionEnc = null,
+                encryptionClientMessageId = null
+            )
+        }
+        if (updated != list) {
+            _roomMessages.value = _roomMessages.value + (roomId to updated)
+        }
+    }
+
+    /**
+     * 加密房间的 text 出站消息：生成新 client_message_id / IV、加密正文，
+     * 返回 WS 帧需要的 content / enc / client_message_id；非加密房间或未解锁返回 null。
+     */
+    private fun prepareEncryptedTextMessage(
+        roomId: String,
+        plainText: String
+    ): Triple<String, MessageEncryptionDto, String>? {
+        val state = _roomEncryption.value[roomId]
+        if (state?.enabled != true || state.unlocked != true || state.config == null) return null
+        val dek = roomKeyStore.dek(roomId) ?: return null
+        val userId = currentAccountId()
+        if (userId.isBlank()) return null
+        val clientMessageId = UUID.randomUUID().toString()
+        val encrypted = try {
+            RoomMessageCrypto.encryptTextWithIv(
+                dek = dek,
+                roomId = roomId,
+                userId = userId,
+                clientMessageId = clientMessageId,
+                plainText = plainText
+            )
+        } catch (_: Exception) {
+            return null
+        }
+        return Triple(
+            encrypted.cipherText,
+            MessageEncryptionDto(
+                version = 1,
+                algorithm = "AES-256-GCM",
+                iv = encrypted.iv,
+                keyId = roomKeyStore.keyId(roomId) ?: DEFAULT_ROOM_KEY_ID,
+                senderUid = userId
+            ),
+            clientMessageId
+        )
     }
 
     /**
@@ -4156,6 +4552,28 @@ object ZeroTalkClientManager {
 
                 // 3. 同步存储完整的 bootstrap 数据（成员列表 + 权限字段）
                 _roomBootstrapMap.value = _roomBootstrapMap.value + (roomId to bootstrap)
+
+                // 3.5 端到端加密：记录配置与服务端解锁状态，未解锁时引导输入暗号
+                if (bootstrap.encryptionEnabled) {
+                    val cfg = resolveEncryptionConfig(bootstrap.encryption, fallbackEnabled = true)
+                    val directDek = cfg?.dek?.takeIf { it.isNotBlank() }
+                    val accountId = currentAccountId()
+                    if (!roomKeyStore.isUnlocked(roomId) && directDek != null && cfg != null && accountId.isNotBlank()) {
+                        roomKeyStore.unlock(roomId, cfg, "")
+                    }
+                    val locallyUnlocked = roomKeyStore.isUnlocked(roomId)
+                    _roomEncryption.value = _roomEncryption.value + (
+                        roomId to RoomEncryptionState(
+                            enabled = true,
+                            unlocked = locallyUnlocked,
+                            serverUnlocked = bootstrap.encryptionUnlocked,
+                            config = cfg
+                        )
+                    )
+                    if (!locallyUnlocked) requestRoomEncryptionUnlock(roomId)
+                } else {
+                    _roomEncryption.value = _roomEncryption.value - roomId
+                }
 
                 // 4. 映射历史消息
                 val msgList = bootstrap.messages.map { dto -> mapChatMessageDto(dto, roomId) }
@@ -4389,7 +4807,11 @@ object ZeroTalkClientManager {
         val quotedSenderName: String? = null,
         val replyToId: Long? = null,
         /** 服务端标记的「已撤回 / 已删除」（历史 DTO 的 `is_deleted` / WS 帧的 `is_deleted`） */
-        val isDeleted: Boolean = false
+        val isDeleted: Boolean = false,
+        /** 端到端加密参数（仅 text 消息存在；存在即先走密文占位/解密流程） */
+        val enc: MessageEncryptionDto? = null,
+        /** 端到端加密消息的客户端消息 id（参与消息 AAD） */
+        val clientMessageId: String? = null
     )
 
     /**
@@ -4397,11 +4819,21 @@ object ZeroTalkClientManager {
      */
     internal fun mapChatMessageDto(dto: ChatMessageDto, roomId: String): ChatMessage {
         val myUid = _loginData.value?.uid
+        val enc = dto.enc
+        val plainText = if (enc != null && enc.iv.isNotBlank() && dto.content.isNotBlank()) {
+            decryptEncryptedText(
+                roomId = roomId,
+                clientMessageId = dto.clientMessageId,
+                senderUserId = enc.senderUid,
+                iv = enc.iv,
+                cipherText = dto.content
+            )
+        } else null
         return buildChatMessage(
             RawChatMessage(
                 id = "msg_${dto.id}",
                 senderId = dto.uid ?: "",
-                content = dto.content,
+                content = plainText ?: dto.content,
                 type = dto.type,
                 timestamp = formatConversationTime(dto.createdAt),
                 timestampMs = parseTimestampMs(dto.createdAt),
@@ -4419,7 +4851,9 @@ object ZeroTalkClientManager {
                 quotedIsMine = dto.replyToUserId?.let { it == myUid },
                 quotedSenderName = dto.replyUsername,
                 replyToId = dto.replyToId,
-                isDeleted = dto.isDeleted
+                isDeleted = dto.isDeleted,
+                enc = enc?.takeIf { plainText == null },
+                clientMessageId = dto.clientMessageId
             )
         )
     }
@@ -4429,6 +4863,34 @@ object ZeroTalkClientManager {
      */
     internal fun buildChatMessage(raw: RawChatMessage): ChatMessage {
         val msgType = raw.type.lowercase()
+        if (raw.enc != null && !raw.isDeleted) {
+            return ChatMessage(
+                id = raw.id,
+                senderId = raw.senderId,
+                content = ENCRYPTED_MESSAGE_PLACEHOLDER,
+                timestamp = raw.timestamp,
+                isMine = raw.isMine,
+                timestampMs = raw.timestampMs,
+                arrivedAtMs = raw.arrivedAtMs,
+                serverId = raw.serverId,
+                senderName = raw.senderName,
+                senderAvatar = raw.senderAvatar,
+                senderGender = raw.senderGender,
+                authorTitle = raw.authorTitle,
+                authorTitleColor = raw.authorTitleColor,
+                quotedText = raw.quotedText,
+                quotedIsMine = raw.quotedIsMine,
+                quotedSenderName = raw.quotedSenderName,
+                replyToId = raw.replyToId,
+                previewText = ENCRYPTED_MESSAGE_PLACEHOLDER,
+                isEncrypted = true,
+                encryptionPlaceholder = ENCRYPTED_MESSAGE_PLACEHOLDER,
+                encryptedContent = raw.content,
+                encryptionEnc = raw.enc,
+                encryptionClientMessageId = raw.clientMessageId,
+                clientMessageId = raw.clientMessageId.orEmpty()
+            )
+        }
         // 表情包：官方 ko() 优先 image_url，否则按 content 的 asset_id 查本地表情包列表。
         // 必须先于 isImage 判定，否则带 image_url 的表情包会被误判成图片消息。
         val isSticker = msgType == MESSAGE_TYPE_STICKER
@@ -5830,6 +6292,19 @@ object ZeroTalkClientManager {
                     fetchRoomList()
                 }
             }
+            // 未解锁会话的发送被服务端拒绝：标记服务端已锁并引导输入暗号
+            is WsServerEvent.EncryptionLocked -> {
+                val roomId = event.roomId?.takeIf { it.isNotBlank() } ?: viewingRoomId
+                if (!roomId.isNullOrBlank()) {
+                    val current = _roomEncryption.value[roomId]
+                    if (current != null && current.enabled) {
+                        _roomEncryption.value = _roomEncryption.value + (
+                            roomId to current.copy(serverUnlocked = false)
+                        )
+                    }
+                    requestRoomEncryptionUnlock(roomId)
+                }
+            }
             is WsServerEvent.Message -> {
                 val isMine = isMessageFromMe(event.fromUid, event.username, event.isSelf)
                 val isPatEvent = event.type.equals("pat", ignoreCase = true)
@@ -5855,6 +6330,21 @@ object ZeroTalkClientManager {
                     .ifBlank { memberGender(event.fromUid) }
                     .ifBlank { if (isMine) "" else peer?.gender.orEmpty() }
 
+                // 端到端加密：已解锁则本地解密，未解锁则保留 enc 走占位并引导输入暗号
+                val realtimeEnc = event.enc
+                val realtimePlain = if (realtimeEnc != null && realtimeEnc.iv.isNotBlank() && event.content.isNotBlank()) {
+                    decryptEncryptedText(
+                        roomId = targetRoom.orEmpty(),
+                        clientMessageId = event.clientMessageId,
+                        senderUserId = realtimeEnc.senderUid,
+                        iv = realtimeEnc.iv,
+                        cipherText = event.content
+                    )
+                } else null
+                if (realtimeEnc != null && realtimePlain == null && !targetRoom.isNullOrBlank()) {
+                    requestRoomEncryptionUnlock(targetRoom)
+                }
+
                 // 类型判定（isImage / isVoice / isPat / preview）与字段映射与历史消息共用
                 val newMsg = buildChatMessage(
                     RawChatMessage(
@@ -5868,7 +6358,7 @@ object ZeroTalkClientManager {
                             "msg_ws_${System.currentTimeMillis()}_${wsMessageFallbackSeq++}"
                         },
                         senderId = event.fromUid ?: "peer",
-                        content = event.content,
+                        content = realtimePlain ?: event.content,
                         type = event.type,
                         timestamp = timeStr,
                         timestampMs = eventMs,
@@ -5888,7 +6378,9 @@ object ZeroTalkClientManager {
                         quotedSenderName = event.replyToUsername,
                         replyToId = event.replyToId,
                         // 已撤回标记透传（历史 DTO 与 WS 实时帧同源字段）
-                        isDeleted = event.isDeleted
+                        isDeleted = event.isDeleted,
+                        enc = realtimeEnc?.takeIf { realtimePlain == null },
+                        clientMessageId = event.clientMessageId
                     )
                 )
                 val preview = newMsg.previewText

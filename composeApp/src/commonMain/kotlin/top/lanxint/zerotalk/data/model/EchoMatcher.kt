@@ -13,13 +13,23 @@ internal object EchoMatcher {
      * @param eventType 服务端消息类型（image / audio / dice / text …）
      * @param eventContent 服务端消息 content
      * @param eventImageUrl 服务端消息 image_url（仅图片可能携带）
+     * @param eventClientMessageId 服务端回推的 `client_message_id`；与本地回显一致即同一条
      */
     fun isSameKind(
         echo: ChatMessage,
         eventType: String,
         eventContent: String,
-        eventImageUrl: String? = null
+        eventImageUrl: String? = null,
+        eventClientMessageId: String? = null
     ): Boolean {
+        // 加密消息的服务端回推是密文，明文 content 必然不等；
+        // 官方以 client_message_id 判定同一条，这里优先用同一标识精确对账。
+        val eventClientId = eventClientMessageId?.trim().orEmpty()
+        if (eventClientId.isNotEmpty() && echo.clientMessageId.isNotBlank() &&
+            echo.clientMessageId == eventClientId
+        ) {
+            return true
+        }
         if (echo.content == eventContent) return true
         val type = eventType.lowercase()
         if (echo.isDice && type == "dice") return true

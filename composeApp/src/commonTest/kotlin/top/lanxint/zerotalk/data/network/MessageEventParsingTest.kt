@@ -66,4 +66,51 @@ class MessageEventParsingTest {
             gson.fromJson("""{"id":1}""", ChatMessageDto::class.java).isDeleted
         )
     }
+
+    // ---- 端到端加密帧（官方 enc / client_message_id）----
+
+    @Test
+    fun `加密消息的 enc 与 client_message_id 透传`() {
+        val event = parse(
+            """{"event":"message","id":11,"type":"text","content":"Y2lwaGVy","uid":"u1",""" +
+                """"client_message_id":"cmid-1","enc":{"v":1,"alg":"AES-256-GCM","iv":"aXY","kid":"room_dek_v1","sid":"42"}}"""
+        )
+        assertEquals("cmid-1", event.clientMessageId)
+        val enc = event.enc
+        assertTrue(enc != null)
+        assertEquals(1, enc.version)
+        assertEquals("AES-256-GCM", enc.algorithm)
+        assertEquals("aXY", enc.iv)
+        assertEquals("room_dek_v1", enc.keyId)
+        assertEquals("42", enc.senderUid)
+    }
+
+    @Test
+    fun `非加密消息 enc 为 null`() {
+        val event = parse("""{"event":"message","id":12,"type":"text","content":"hi"}""")
+        assertEquals(null, event.enc)
+        assertEquals(null, event.clientMessageId)
+    }
+
+    @Test
+    fun `enc 为脏数据时不抛异常`() {
+        assertTrue(parse("""{"event":"message","id":13,"enc":"oops"}""").enc == null)
+        assertTrue(parse("""{"event":"message","id":14,"enc":null}""").enc == null)
+        // iv 缺失仍能解析出对象，缺字段回落默认值
+        val partial = parse("""{"event":"message","id":15,"enc":{"sid":7}}""")
+        assertEquals("", partial.enc?.iv)
+        assertEquals("7", partial.enc?.senderUid)
+        assertEquals(1, partial.enc?.version)
+    }
+
+    @Test
+    fun `历史 DTO 的加密字段解析`() {
+        val dto = Gson().fromJson(
+            """{"id":21,"content":"Y2lwaGVy","client_message_id":"cmid-9","enc":{"v":1,"alg":"AES-256-GCM","iv":"aXY"}}""",
+            ChatMessageDto::class.java
+        )
+        assertEquals("cmid-9", dto.clientMessageId)
+        assertEquals("aXY", dto.enc?.iv)
+        assertEquals(1, dto.enc?.version)
+    }
 }

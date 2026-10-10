@@ -659,6 +659,63 @@ class ZeroTalkApiService(
         fallbackMessage = "获取评论列表失败"
     )
 
+
+    /**
+     * 解锁加密房间 (POST /room/encryption/unlock)
+     *
+     * 官方 `unlockEncryption({room_id, password})`。解锁成功后服务端会重新下发
+     * 加密配置（room_kdf_salt / encrypted_dek_client 等），客户端据此在本地解开 DEK，
+     * 之后才能解密该房间的 text 消息。
+     */
+    suspend fun unlockRoomEncryption(
+        roomId: String,
+        password: String
+    ): Result<RoomEncryptionUnlockData> = apiDataRequestRequired(
+        path = "/room/encryption/unlock",
+        type = object : TypeToken<ApiResponse<RoomEncryptionUnlockData>>() {}.type,
+        params = mapOf(
+            "room_id" to roomId,
+            "password" to password
+        ),
+        fallbackMessage = "解锁失败"
+    )
+
+    /**
+     * 为已存在的房间启用端到端加密 (POST /room/encryption/enable)
+     *
+     * 官方 `enableEncryption({room_id, password})`。仅在房主对非加密房间启用时调用；
+     * 返回体可能包含 `encryption` 配置对象（与 bootstrap 的 `encryption` 同构）。
+     */
+    suspend fun enableRoomEncryption(
+        roomId: String,
+        password: String
+    ): Result<RoomEncryptionUnlockData> = apiDataRequestRequired(
+        path = "/room/encryption/enable",
+        type = object : TypeToken<ApiResponse<RoomEncryptionUnlockData>>() {}.type,
+        params = mapOf(
+            "room_id" to roomId,
+            "password" to password
+        ),
+        fallbackMessage = "启用加密失败"
+    )
+
+    /**
+     * 忘记暗号时发起与房主的私聊 (POST /room/encryption/dm-creator)
+     *
+     * 官方 `createEncryptionForgotDm({room_id})`；返回体对齐 `CreateRoomData`
+     * （官方这里返回的也是 dm 房间信息）。
+     */
+    suspend fun createEncryptionForgotDm(
+        roomId: String
+    ): Result<CreateRoomData> = apiDataRequestRequired(
+        path = "/room/encryption/dm-creator",
+        type = object : TypeToken<ApiResponse<CreateRoomData>>() {}.type,
+        params = mapOf(
+            "room_id" to roomId
+        ),
+        fallbackMessage = "联系房主失败"
+    )
+
     /**
      * 发表动态评论 (POST /moment/comment)
      */

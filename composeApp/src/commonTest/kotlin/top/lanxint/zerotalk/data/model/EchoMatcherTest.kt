@@ -19,7 +19,8 @@ class EchoMatcherTest {
         imageUrl: String = "",
         isVoice: Boolean = false,
         audioUrl: String = "",
-        isDice: Boolean = false
+        isDice: Boolean = false,
+        clientMessageId: String = ""
     ) = ChatMessage(
         id = "local_1",
         senderId = "me",
@@ -30,7 +31,8 @@ class EchoMatcherTest {
         imageUrl = imageUrl,
         isVoice = isVoice,
         audioUrl = audioUrl,
-        isDice = isDice
+        isDice = isDice,
+        clientMessageId = clientMessageId
     )
 
     @Test
@@ -91,5 +93,25 @@ class EchoMatcherTest {
     fun `语音事件类型大小写不敏感`() {
         val url = "https://oss.example.com/a.mp3"
         assertTrue(EchoMatcher.isSameKind(echo("[语音 3\"]", isVoice = true, audioUrl = url), "AUDIO", url))
+    }
+
+    // ---- 端到端加密：服务端回推的是密文，只能靠 client_message_id 对账 ----
+
+    @Test
+    fun `加密消息按 client_message_id 匹配（密文与本地明文不同也算同一条）`() {
+        val mine = echo("你好", clientMessageId = "cmid-1")
+        assertTrue(EchoMatcher.isSameKind(mine, "text", "Y2lwaGVy", null, "cmid-1"))
+    }
+
+    @Test
+    fun `client_message_id 不同则不匹配`() {
+        val mine = echo("你好", clientMessageId = "cmid-1")
+        assertFalse(EchoMatcher.isSameKind(mine, "text", "Y2lwaGVy", null, "cmid-2"))
+    }
+
+    @Test
+    fun `本地无 client_message_id 时回落到内容比对`() {
+        assertTrue(EchoMatcher.isSameKind(echo("你好"), "text", "你好", null, "cmid-1"))
+        assertFalse(EchoMatcher.isSameKind(echo("你好"), "text", "Y2lwaGVy", null, "cmid-1"))
     }
 }

@@ -1,5 +1,6 @@
 package top.lanxint.zerotalk.data.network
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 
 /**
@@ -109,8 +110,30 @@ internal fun parseMessageEvent(root: JsonObject): WsServerEvent.Message {
         replyToUsername = str("reply_username"),
         // 官网：is_deleted: !!e.is_deleted
         isDeleted = bool("is_deleted") ?: false,
+        // 端到端加密参数（官方消息行 enc：{v,alg,iv,kid,sid}）
+        enc = parseMessageEnc(raw("enc")),
+        clientMessageId = str("client_message_id"),
         // 发送者称号（官方消息行 title / title_color）
         title = str("title"),
         titleColor = str("title_color")
     )
 }
+
+/**
+ * 解析消息事件里的端到端加密参数（官方 `enc`：`{v,alg,iv,kid,sid}`）。
+ *
+ * 非对象 / 脏字段一律返回 null，交由映射层按普通消息处理；
+ * 解析抽到顶层是为了让 `message` 事件解析保持单一返回点，便于单测。
+ */
+internal fun parseMessageEnc(element: JsonElement?): MessageEncryptionDto? =
+    element?.takeIf { it.isJsonObject }?.asJsonObject?.let { obj ->
+        runCatching {
+            MessageEncryptionDto(
+                version = obj.get("v")?.takeIf { it.isJsonPrimitive }?.asInt ?: 1,
+                algorithm = obj.get("alg")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty(),
+                iv = obj.get("iv")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty(),
+                keyId = obj.get("kid")?.takeIf { it.isJsonPrimitive }?.asString,
+                senderUid = obj.get("sid")?.takeIf { it.isJsonPrimitive }?.asString
+            )
+        }.getOrNull()
+    }
