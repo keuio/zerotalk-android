@@ -27,6 +27,14 @@ data class MomentItem(
     val authorName: String,
     val authorAvatar: String = "",
     val authorGender: String = "女",
+    /**
+     * 作者称号（官方 MomentCard `item.title`）。
+     *
+     * 空串表示未下发 / 无称号，UI 不渲染徽章。
+     */
+    val authorTitle: String = "",
+    /** 作者称号颜色 key（官方 `item.title_color`，白名单外 UI 回落 blue） */
+    val authorTitleColor: String = "",
     val publishTime: String = "1小时前",
     val textContent: String = "",
     val imageUrl: String = "",

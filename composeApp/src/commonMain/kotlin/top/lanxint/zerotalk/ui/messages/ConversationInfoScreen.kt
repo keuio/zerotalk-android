@@ -31,12 +31,21 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.firstOrNull
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
@@ -71,6 +80,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,6 +91,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.lanxint.zerotalk.data.model.MessageCategory
 import top.lanxint.zerotalk.data.model.MomentItem
+import top.lanxint.zerotalk.data.model.normalizeUserTitle
 import top.lanxint.zerotalk.data.model.OtherUserFollowListState
 import top.lanxint.zerotalk.data.model.OtherUserProfile
 import top.lanxint.zerotalk.data.model.OtherUserProfileState
@@ -101,6 +112,7 @@ import top.lanxint.zerotalk.ui.components.LiquidSegmentedControl
 import top.lanxint.zerotalk.ui.components.LiquidToggle
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
 import top.lanxint.zerotalk.ui.components.UserAvatar
+import top.lanxint.zerotalk.ui.components.UserTitleBadge
 import top.lanxint.zerotalk.ui.moments.MomentCard
 import top.lanxint.zerotalk.ui.moments.MomentSheetsHost
 import top.lanxint.zerotalk.ui.moments.MomentsSortCapsule
@@ -132,6 +144,8 @@ import kotlinx.coroutines.launch
  *
  * @param onOpenConversation 私信落地到另一个房间时通知外层切换会话
  * @param profileOnly 纯资料面板模式：群聊 / 群聊面板点成员打开时使用，隐藏「背景」等会话专属设置
+ * @param settingsOnly 纯设置面板模式：公共大厅等「没有单一对端对象」的房间使用，跳过他人资料拉取与
+ *   资料区块（关注 / 私信 / 拉黑、资料页签），只保留会话设置（聊天背景等）
  * @param backEnabled 本实例是否允许拦截返回：作为资料页层级栈中的一层时，只有栈顶那一层传 true
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -142,10 +156,16 @@ fun ConversationInfoScreen(
     backdrop: Backdrop? = null,
     isDark: Boolean,
     currentWallpaperKey: String? = null,
+    /** 需要在资料页动态列表里定位并高亮的动态 id（点聊天里的动态卡片进来时携带） */
+    targetMomentId: Long? = null,
+    /** 大厅专属：非 null 时设置页渲染「退出大厅后继续接收通知」卡片 */
+    hallNotifyAfterExit: Boolean? = null,
+    onHallNotifyAfterExitChange: ((Boolean) -> Unit)? = null,
     /** 背景已写入管理器后回调（仅做本地状态刷新 / 系统提示，不再重复落库） */
     onWallpaperApplied: (String?) -> Unit = {},
     onOpenConversation: ((ConversationItem) -> Unit)? = null,
     profileOnly: Boolean = false,
+    settingsOnly: Boolean = false,
     backEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -184,7 +204,9 @@ fun ConversationInfoScreen(
     // 本实例是否正压着一层下钻出来的次级用户主页（支持逐级下钻与回退）
     val isSubProfilePushed = pageProfileSlot.visible
 
-    LaunchedEffect(globalProfileState, requestUserId, requestUid) {
+    LaunchedEffect(globalProfileState, requestUserId, requestUid, settingsOnly) {
+        // 纯设置面板模式没有对端对象：不订阅全局资料，避免串入上一个用户的主页数据
+        if (settingsOnly) return@LaunchedEffect
         val current = globalProfileState ?: return@LaunchedEffect
         val matchesUser = (requestUserId.isNotBlank() && (current.userId == requestUserId || current.profile?.userId == requestUserId)) ||
             (requestUid.isNotBlank() && (current.uid == requestUid || current.profile?.uid == requestUid))
@@ -199,7 +221,7 @@ fun ConversationInfoScreen(
         }
     }
 
-    val profileState = localProfileState ?: globalProfileState
+    val profileState = if (settingsOnly) null else (localProfileState ?: globalProfileState)
     val followListState = if (isSubProfilePushed) (localFollowListState ?: globalFollowListState) else globalFollowListState
 
     // 分段标签索引 (0: 资料, 1: 背景)
@@ -213,7 +235,9 @@ fun ConversationInfoScreen(
     var reportSubmitting by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
-    LaunchedEffect(conversation.id, requestUserId, requestUid) {
+    LaunchedEffect(conversation.id, requestUserId, requestUid, settingsOnly) {
+        // 纯设置面板模式没有对端对象：不发起他人资料请求
+        if (settingsOnly) return@LaunchedEffect
         // 已经持有该用户的资料或正在加载时，不重复拉取，避免动态分页被重置
         val current = ZeroTalkClientManager.otherUserProfile.value
         val isCurrentTarget = (requestUserId.isNotBlank() && current?.userId == requestUserId) ||
@@ -343,16 +367,31 @@ fun ConversationInfoScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 昵称 (Title 2 级别加粗)
-            BasicText(
-                text = displayName,
-                style = TextStyle(
-                    color = higColors.label,
-                    fontSize = 19.8.sp,
-                    lineHeight = 25.2.sp,
-                    fontWeight = FontWeight.Bold
+            // 昵称 (Title 2 级别加粗) + 用户称号（官方 UserMomentsView：昵称右侧紧邻 UserTitleBadge）
+            val profileTitle = normalizeUserTitle(profile?.title)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BasicText(
+                    text = displayName,
+                    style = TextStyle(
+                        color = higColors.label,
+                        fontSize = 19.8.sp,
+                        lineHeight = 25.2.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    // 昵称过长时省略，称号徽章不参与压缩（flex-shrink:0）
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-            )
+                if (profileTitle.isNotEmpty()) {
+                    Spacer(Modifier.width(6.dp))
+                    UserTitleBadge(
+                        title = profile?.title,
+                        color = profile?.titleColor,
+                        isDark = isDark
+                    )
+                }
+            }
 
             // 性别 · 年龄段 · 地区 统一只在下方「个性签名」卡片内展示，此处不再重复
 
@@ -387,7 +426,8 @@ fun ConversationInfoScreen(
             Spacer(modifier = Modifier.height(18.dp))
 
             // 3 个圆形操作图标：关注、私信、拉黑
-            Row(
+            // 纯设置面板（大厅）没有单一对端对象，整行不渲染
+            if (!settingsOnly) Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(32.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically
@@ -470,8 +510,9 @@ fun ConversationInfoScreen(
             Spacer(modifier = Modifier.height(20.dp))
 
             // 分段标签：资料 / 设置 (LiquidSegmentedControl)
-            // 纯资料面板模式（群成员）不提供设置等会话专属选项
-            if (!profileOnly) {
+            // 纯资料面板模式（群成员）不提供设置等会话专属选项；
+            // 纯设置面板模式（大厅）没有资料可看，直接落在设置页签上
+            if (!profileOnly && !settingsOnly) {
                 LiquidSegmentedControl(
                     options = listOf("资料", "设置"),
                     selectedIndex = selectedTab,
@@ -497,7 +538,11 @@ fun ConversationInfoScreen(
 
     // ---- 3. 内容区块 (卡片式分组，HIG Grouped List) ----
             AnimatedContent(
-                targetState = if (profileOnly) 0 else selectedTab,
+                targetState = when {
+                    profileOnly -> 0
+                    settingsOnly -> 1
+                    else -> selectedTab
+                },
                 transitionSpec = { fadeIn() togetherWith fadeOut() },
                 label = "TabContentTransition"
             ) { currentTab ->
@@ -505,6 +550,8 @@ fun ConversationInfoScreen(
                     ProfileTabContent(
                         state = profileState,
                         isDark = isDark,
+                        scrollState = scrollState,
+                        targetMomentId = targetMomentId,
                         currentMomentSort = momentsSort,
                         onRetry = {
                             // 重试同样只加载数据，不触发全局资料页导航
@@ -541,7 +588,12 @@ fun ConversationInfoScreen(
                         conversation = conversation,
                         onWallpaperApplied = onWallpaperApplied,
                         // 会话列表未必下发数字 user_id：备注接口走 uid（官网也是 uid 优先）
-                        peerUid = remarkPeerUid
+                        peerUid = remarkPeerUid,
+                        // 大厅没有独立免打扰设置（不在 _conversations 里），不渲染通知卡片；
+                        // 改为渲染大厅专属的「退出大厅后继续接收通知」卡片
+                        showNotificationCard = !settingsOnly,
+                        hallNotifyAfterExit = hallNotifyAfterExit,
+                        onHallNotifyAfterExitChange = onHallNotifyAfterExitChange
                     )
                 }
             }
@@ -723,6 +775,9 @@ fun ConversationInfoScreen(
 private fun ProfileTabContent(
     state: OtherUserProfileState?,
     isDark: Boolean,
+    scrollState: ScrollState,
+    /** 点聊天里的动态卡片进来时携带：定位并高亮该动态 */
+    targetMomentId: Long? = null,
     currentMomentSort: MomentsSort,
     onRetry: () -> Unit,
     onOpenFollowList: (FollowListKind) -> Unit,
@@ -771,6 +826,8 @@ private fun ProfileTabContent(
                     profile = profile,
                     isLoadingMore = state.isLoadingMore,
                     isDark = isDark,
+                    scrollState = scrollState,
+                    targetMomentId = targetMomentId,
                     currentSort = currentMomentSort,
                     onSortChange = onMomentSortChange,
                     onToggleLike = onToggleMomentLike,
@@ -940,6 +997,8 @@ private fun ProfileMomentsCard(
     profile: OtherUserProfile,
     isLoadingMore: Boolean,
     isDark: Boolean,
+    scrollState: ScrollState,
+    targetMomentId: Long? = null,
     currentSort: MomentsSort,
     onSortChange: (MomentsSort) -> Unit,
     onToggleLike: (String) -> Unit,
@@ -951,6 +1010,25 @@ private fun ProfileMomentsCard(
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
     val moments = profile.moments
+
+    // ---- 点聊天里的动态卡片进来：定位并高亮目标动态 ----
+    // 资料页的动态列表是 verticalScroll + forEach（非 LazyColumn），所以按实测 Y 坐标滚动。
+    val momentOffsets = remember { mutableStateMapOf<String, Float>() }
+    var flashedMomentId by remember { mutableStateOf<String?>(null) }
+    val flashAlpha = remember { Animatable(0f) }
+    LaunchedEffect(targetMomentId, moments.size) {
+        val target = targetMomentId?.toString() ?: return@LaunchedEffect
+        // 目标不在已加载的分页里时只进资料页，不做定位（与「原消息不在当前列表中」同思路）
+        if (moments.none { it.id == target }) return@LaunchedEffect
+        val y = snapshotFlow { momentOffsets[target] }.filterNotNull().firstOrNull()
+            ?: return@LaunchedEffect
+        scrollState.animateScrollTo(y.toInt())
+        flashedMomentId = target
+        flashAlpha.snapTo(0f)
+        flashAlpha.animateTo(1f, tween(385))
+        flashAlpha.animateTo(0f, tween(715))
+        flashedMomentId = null
+    }
     // 官方状态卡：blocked 为真（对方拉黑了我）时展示「动态不可见」+ blocked_message；
     // moments_public 明确下发 false 且无动态时同样按不可见处理。
     val invisible = profile.blocked || (profile.momentsPublic == false && moments.isEmpty())
@@ -1030,6 +1108,18 @@ private fun ProfileMomentsCard(
                     MomentCard(
                         moment = moment,
                         isDark = isDark,
+                        modifier = Modifier
+                            .onGloballyPositioned { coords ->
+                                momentOffsets[moment.id] = coords.positionInParent().y
+                            }
+                            .background(
+                                if (moment.id == flashedMomentId) {
+                                    Color(0x1A3B82F6).copy(alpha = flashAlpha.value)
+                                } else {
+                                    Color.Transparent
+                                },
+                                RoundedCornerShape(14.dp)
+                            ),
                         onLikeClick = { onToggleLike(moment.id) },
                         onCommentClick = { onComment(moment) },
                         onShareClick = { onShare(moment) },
@@ -1685,7 +1775,12 @@ internal fun ChatSettingsTabContent(
     /** 内容左右留白：会话资料页自带 16dp；暗号房资料页的容器已留白，需传 0.dp 以免双份缩进 */
     horizontalPadding: Dp = 16.dp,
     /** 对端 uid（备注接口的 peer_user_id，uid 优先）；群聊 / 未知时传 null */
-    peerUid: String? = null
+    peerUid: String? = null,
+    /** 是否渲染「通知 / 隐藏提醒」卡片；大厅没有独立免打扰设置，传 false */
+    showNotificationCard: Boolean = true,
+    /** 大厅专属：非 null 时渲染「退出大厅后继续接收通知」卡片（与「隐藏提醒」同位置同样式） */
+    hallNotifyAfterExit: Boolean? = null,
+    onHallNotifyAfterExitChange: ((Boolean) -> Unit)? = null
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
@@ -1744,40 +1839,82 @@ internal fun ChatSettingsTabContent(
             .padding(horizontal = horizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // ---- 通知：消息免打扰 ----
-        AppleHigFillCard(
-            isDark = isDark,
-            modifier = Modifier.fillMaxWidth(),
-            contentPaddingValues = PaddingValues(16.dp)
-        ) {
-            BasicText(
-                text = "通知",
-                style = AppleHigTypography.subhead.copy(color = higColors.secondaryLabel)
-            )
-            Spacer(Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth().height(44.dp),
-                verticalAlignment = Alignment.CenterVertically
+        // ---- 通知：消息免打扰（大厅没有独立免打扰设置，整卡不渲染）----
+        if (showNotificationCard) {
+            AppleHigFillCard(
+                isDark = isDark,
+                modifier = Modifier.fillMaxWidth(),
+                contentPaddingValues = PaddingValues(16.dp)
             ) {
                 BasicText(
-                    text = "隐藏提醒",
-                    style = TextStyle(color = higColors.label, fontSize = 15.3.sp, fontWeight = FontWeight.Normal),
-                    modifier = Modifier.weight(1f)
+                    text = "通知",
+                    style = AppleHigTypography.subhead.copy(color = higColors.secondaryLabel)
                 )
-                LiquidToggle(
-                    selected = { muted },
-                    onSelect = { next ->
-                        ZeroTalkClientManager.setRoomMuted(conversation.id, next) { success, message ->
-                            if (success) {
-                                muted = next
-                                notificationState.show(if (next) "已开启消息免打扰" else "已关闭消息免打扰")
-                            } else {
-                                notificationState.show(message ?: "免打扰设置失败")
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(
+                        text = "隐藏提醒",
+                        style = TextStyle(color = higColors.label, fontSize = 15.3.sp, fontWeight = FontWeight.Normal),
+                        modifier = Modifier.weight(1f)
+                    )
+                    LiquidToggle(
+                        selected = { muted },
+                        onSelect = { next ->
+                            ZeroTalkClientManager.setRoomMuted(conversation.id, next) { success, message ->
+                                if (success) {
+                                    muted = next
+                                    notificationState.show(if (next) "已开启消息免打扰" else "已关闭消息免打扰")
+                                } else {
+                                    notificationState.show(message ?: "免打扰设置失败")
+                                }
                             }
-                        }
-                    },
-                    backdrop = cardBackdrop,
-                    isDark = isDark
+                        },
+                        backdrop = cardBackdrop,
+                        isDark = isDark
+                    )
+                }
+            }
+        }
+
+        // ---- 通知：大厅专属「退出大厅后继续接收通知」（与私聊「隐藏提醒」同位置同样式）----
+        if (hallNotifyAfterExit != null) {
+            AppleHigFillCard(
+                isDark = isDark,
+                modifier = Modifier.fillMaxWidth(),
+                contentPaddingValues = PaddingValues(16.dp)
+            ) {
+                BasicText(
+                    text = "通知",
+                    style = AppleHigTypography.subhead.copy(color = higColors.secondaryLabel)
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(
+                        text = "退出大厅后继续接收通知",
+                        style = TextStyle(
+                            color = higColors.label,
+                            fontSize = 15.3.sp,
+                            fontWeight = FontWeight.Normal
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    LiquidToggle(
+                        selected = { hallNotifyAfterExit },
+                        onSelect = { next -> onHallNotifyAfterExitChange?.invoke(next) },
+                        backdrop = cardBackdrop,
+                        isDark = isDark
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                BasicText(
+                    text = "实验性功能：开启后离开大厅仍保持在大厅房间，可继续收到大厅消息",
+                    style = AppleHigTypography.caption1.copy(color = higColors.tertiaryLabel)
                 )
             }
         }
@@ -2208,6 +2345,8 @@ fun OtherUserProfileScreen(
         isDark = isDark,
         onOpenConversation = onOpenConversation,
         profileOnly = true,
+        // 点聊天里的动态卡片进来时携带：资料页加载完后定位并高亮该动态
+        targetMomentId = target.momentId,
         // 本面板是资料页层级栈中的一层：只有栈顶那一层才允许拦截返回
         backEnabled = isTopLayer,
         modifier = modifier

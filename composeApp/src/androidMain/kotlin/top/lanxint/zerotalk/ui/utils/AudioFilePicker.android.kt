@@ -1,5 +1,6 @@
 package top.lanxint.zerotalk.ui.utils
 
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -64,11 +65,27 @@ actual fun rememberAudioFilePickerLauncher(
                 // 3. 读取音频字节
                 val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 if (bytes != null && bytes.isNotEmpty()) {
+                    // 3.5 读音频时长：服务端不下发语音时长（官方同样靠音频元数据现算），
+                    // 本地回显必须自带，否则气泡会显示 0"
+                    val durationSec = runCatching {
+                        val retriever = MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(context, uri)
+                            val ms = retriever
+                                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                ?.toLongOrNull() ?: 0L
+                            (ms / 1000L).toInt()
+                        } finally {
+                            runCatching { retriever.release() }
+                        }
+                    }.getOrDefault(0)
+
                     val result = SelectedAudioFile(
                         filename = rawName,
                         byteArray = bytes,
                         mimeType = mimeType,
-                        ext = ext
+                        ext = ext,
+                        durationSec = durationSec
                     )
                     withContext(Dispatchers.Main) {
                         onAudioSelected(result)

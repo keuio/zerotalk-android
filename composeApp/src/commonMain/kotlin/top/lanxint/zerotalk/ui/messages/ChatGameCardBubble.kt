@@ -2,8 +2,6 @@ package top.lanxint.zerotalk.ui.messages
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +23,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -233,15 +233,18 @@ fun ChatGameCardBubble(
                     .background(if (canClick) accentColor else Color(0xFF8E8E93).copy(alpha = 0.2f))
                     .then(
                         if (canClick) {
-                            Modifier.clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) {
+                            // 用 tapPreservingLongPress 而非 clickable：clickable 会消费 down，
+                            // 导致长按落在按钮上时父级的消息菜单（引用/撤回）收不到事件。
+                            // 官方在 DOM 里按钮的 @click 不消费长按，故整卡任意位置都能长按。
+                            val enterGame = {
                                 if (isWaiting && !isMine) {
                                     ZeroTalkClientManager.joinGame(invite.gameType, invite.gameId)
                                 }
                                 onEnterGame(invite.gameType, invite.gameId)
                             }
+                            Modifier
+                                .tapPreservingLongPress(key = invite.gameId, onTap = enterGame)
+                                .semantics { onClick(label = buttonText) { enterGame(); true } }
                         } else Modifier
                     ),
                 contentAlignment = Alignment.Center

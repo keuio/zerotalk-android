@@ -1,21 +1,15 @@
 package top.lanxint.zerotalk.ui.messages
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,7 +18,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
@@ -38,13 +31,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -61,16 +51,12 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Casino
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.SportsEsports
@@ -78,7 +64,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -95,8 +80,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -119,7 +102,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
@@ -130,13 +112,25 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import top.lanxint.zerotalk.data.model.ChatMessage
+import top.lanxint.zerotalk.data.model.MomentItem
+import top.lanxint.zerotalk.data.model.MomentShareCardData
+import top.lanxint.zerotalk.data.model.toMomentItem
+import top.lanxint.zerotalk.ui.moments.MomentSheetsHost
 import top.lanxint.zerotalk.data.model.ConversationItem
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
+import top.lanxint.zerotalk.ui.components.ChatComposerAction
+import top.lanxint.zerotalk.ui.components.ChatComposerBar
+import top.lanxint.zerotalk.ui.components.ChatComposerQuote
+import top.lanxint.zerotalk.ui.components.ChatContentCaptureLayer
 import top.lanxint.zerotalk.ui.components.GenderBadge
-import top.lanxint.zerotalk.ui.components.IosLiquidBackButton
+import top.lanxint.zerotalk.ui.components.UserTitleBadge
+import top.lanxint.zerotalk.ui.components.IosChatNavBar
 import top.lanxint.zerotalk.ui.components.LiquidButton
 import top.lanxint.zerotalk.ui.components.LocalImageViewer
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
+import top.lanxint.zerotalk.ui.components.ContextMenuItem
+import top.lanxint.zerotalk.ui.components.MessageContextMenuOverlay
+import top.lanxint.zerotalk.ui.components.buildContextMenuItems
 import top.lanxint.zerotalk.ui.components.UserAvatar
 import top.lanxint.zerotalk.ui.navigation.rememberHasUserProfileLayers
 import top.lanxint.zerotalk.ui.navigation.rememberUserProfileLayerSlot
@@ -150,15 +144,8 @@ import top.lanxint.zerotalk.ui.utils.rememberAudioFilePickerLauncher
 import top.lanxint.zerotalk.ui.theme.AppleHigColorTokens
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import com.kashif_e.backdrop.Backdrop
-import com.kashif_e.backdrop.backdrops.layerBackdrop
 import com.kashif_e.backdrop.backdrops.rememberCanvasBackdrop
 import com.kashif_e.backdrop.backdrops.rememberLayerBackdrop
-import com.kashif_e.backdrop.drawBackdrop
-import com.kashif_e.backdrop.effects.blur
-import com.kashif_e.backdrop.effects.colorControls
-import com.kashif_e.backdrop.effects.lens
-import com.kashif_e.backdrop.highlight.Highlight
-import com.kashif_e.backdrop.shadow.Shadow
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 import androidx.compose.runtime.rememberUpdatedState
@@ -169,6 +156,7 @@ import top.lanxint.zerotalk.data.model.REAL_USER_ID_PLACEHOLDERS
 import top.lanxint.zerotalk.data.model.UserProfileLayerHost
 import top.lanxint.zerotalk.data.model.UserProfileTarget
 import top.lanxint.zerotalk.data.model.quotePreviewText
+import top.lanxint.zerotalk.data.model.resolveQuotedText
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.NetworkImageLoader
 import kotlinx.coroutines.withTimeoutOrNull
@@ -200,7 +188,7 @@ import top.lanxint.zerotalk.ui.game.GameSessionScreen
  *    - 群聊（暗号房）：QQ 群聊式布局——头像独占最左一列，右侧竖排「昵称在上、气泡在下」，
  *      昵称/性别仅在同一发送者连续消息的首条展示；气泡为正常的圆气泡（四角同半径，无尖尾）；
  *      自己的消息不展示头像与昵称，蓝色圆气泡靠右；
- *    - 消息长按交互：唤出毛玻璃悬浮菜单（复制、引用、撤回），撤回直接移除并回填输入框；
+ *    - 消息长按交互：唤出毛玻璃悬浮菜单（复制、引用、撤回），撤回后就地标记为「该消息已被撤回」（不再移除）；
  * 4. 底部输入与 [+] 扩展栏：
  *    - 左侧独立毛玻璃圆钮 `+`，点击呼出包含“照片”、“文件”、“骰子”、“游戏”的扩展面板；
  *    - 胶囊输入框（CapsuleGlassButton 架构），内置麦克风切换；
@@ -214,28 +202,6 @@ private data class BubbleAnchorInfo(
     val bounds: Rect,
     val hasTail: Boolean,
     val isLastMineMessage: Boolean
-)
-
-private enum class SFSymbolType {
-    REPLY,
-    UNDO_SEND,
-    RECALL_AND_EDIT,
-    EDIT,
-    COPY,
-    SPEAK,
-    TRANSLATE,
-    SAVE_IMAGE,
-    TRANSCRIBE,
-    PAT,
-    MENTION,
-    TRASH,
-    MORE
-}
-
-private data class ContextMenuItem(
-    val title: String,
-    val icon: SFSymbolType,
-    val onClick: () -> Unit
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -354,7 +320,8 @@ fun PrivateChatScreen(
             ZeroTalkClientManager.sendRoomAudio(
                 roomId = conversation.id,
                 audioBytes = audioFile.byteArray,
-                durationSec = 0,
+                // 选文件时已由平台读取音频元数据得到时长（服务端不下发语音时长）
+                durationSec = audioFile.durationSec.coerceAtLeast(1),
                 contentType = audioFile.mimeType,
                 fileExt = audioFile.ext,
                 audioSource = "file",
@@ -428,6 +395,8 @@ fun PrivateChatScreen(
     var showMyGameSessionsSheet by remember { mutableStateOf(false) }
     val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsState()
     var showConversationInfo by remember(conversation.id) { mutableStateOf(false) }
+    // 点动态卡片评论数打开的动态（复用动态主界面的评论抽屉）
+    var momentCardComment by remember(conversation.id) { mutableStateOf<MomentItem?>(null) }
     var showSecretRoomInfo by remember(conversation.id) { mutableStateOf(false) }
     var showMessageSearch by remember { mutableStateOf(false) }
     var messageSearchQuery by remember { mutableStateOf("") }
@@ -503,6 +472,29 @@ fun PrivateChatScreen(
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
     }
 
+    // 被引用消息定位后的高亮闪烁目标：1.2s 后清空（对齐官方 setTimeout(...,1200) 移除 chat-msg--flash）
+    var flashedMessageId by remember(conversation.id) { mutableStateOf<String?>(null) }
+
+    // 点击引用条 -> 滚动定位到被引用的那条消息并高亮。
+    // 官方行为（私聊与大厅同一实现）：目标不在当前列表时只弹提示，绝不自动补历史。
+    val scrollToQuotedMessage: (Long) -> Unit = { replyToId ->
+        val quotedIndex = messageList.indexOfFirst { it.serverId == replyToId }
+        if (quotedIndex >= 0) {
+            // 真实列表结构：index 0 = 常驻的 history_loading_indicator，
+            // index 1 = 可选的 peer 资料卡（showPeerCard），其后才是消息本体。
+            val targetIndex = 1 + (if (showPeerCard) 1 else 0) + quotedIndex
+            val targetId = messageList[quotedIndex].id
+            coroutineScope.launch {
+                listState.animateScrollToItem(targetIndex)
+                flashedMessageId = targetId
+                delay(1200)
+                if (flashedMessageId == targetId) flashedMessageId = null
+            }
+        } else {
+            notificationState.show("原消息不在当前列表中")
+        }
+    }
+
     // 上拉到顶后继续上拉 -> 请求更早的历史消息，并在插入后补偿滚动位置避免跳动
     val currentHasMore by rememberUpdatedState(hasMoreHistory)
     val currentLoadingHistory by rememberUpdatedState(isLoadingHistory)
@@ -534,7 +526,9 @@ fun PrivateChatScreen(
         if (messageList.isEmpty()) return@LaunchedEffect
         val tailId = messageList.last().id
         val isInitial = anchoredTailId == null
-        val headerCount = (if (isLoadingHistory) 1 else 0) + (if (showPeerCard) 1 else 0)
+        // LazyColumn 首项 "history_loading_indicator" 是无条件声明的（非加载态只是空内容），
+        // 因此头部项数恒为 1 + (peer 卡片 ? 1 : 0)；旧写法在非加载态少算 1，只是被 coerceAtLeast 掩盖。
+        val headerCount = 1 + (if (showPeerCard) 1 else 0)
         val targetIndex = (headerCount + messageList.size - 1).coerceAtLeast(0)
         if (isInitial || anchoredTailId != tailId) {
             anchoredTailId = tailId
@@ -578,7 +572,8 @@ fun PrivateChatScreen(
     // 监听键盘弹出、抽屉展开、或引用消息变化，平滑且 100% 将最后一条消息顶起
     LaunchedEffect(showActionSheet, isImeOpen, quotingMessage) {
         if ((showActionSheet || isImeOpen || quotingMessage != null) && messageList.isNotEmpty()) {
-            val headerCount = (if (isLoadingHistory) 1 else 0) + (if (showPeerCard) 1 else 0)
+            // 同上：首项历史加载指示器恒存在，头部项数 = 1 + (peer 卡片 ? 1 : 0)
+            val headerCount = 1 + (if (showPeerCard) 1 else 0)
             val targetIndex = (headerCount + messageList.size - 1).coerceAtLeast(0)
             delay(30)
             listState.animateScrollToItem(targetIndex)
@@ -642,16 +637,10 @@ fun PrivateChatScreen(
         )
 
         // ---- 1. 统一内容捕获层：背景壁纸 + 消息流 LazyColumn，统一录入 chatBackdrop 供 5 个 LiquidButton 光学折射穿透 ----
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .drawWithContent {
-                    // 实时感知 LazyListState 滚动偏移，确保滑动的每一帧都触发统一图层重绘与 Backdrop 录制
-                    listState.firstVisibleItemScrollOffset
-                    listState.firstVisibleItemIndex
-                    drawContent()
-                }
-                .layerBackdrop(chatBackdrop)
+        // 复用 ui/components/ChatContentCaptureLayer（与公共大厅同一份实现）。
+        ChatContentCaptureLayer(
+            backdrop = chatBackdrop,
+            listState = listState
         ) {
             // 背景层：壁纸与沉浸滤镜
             // 本地背景文件（离线可显示）优先；文件缺失 / 未设置时回退素雅纯色
@@ -828,9 +817,33 @@ fun PrivateChatScreen(
                     val searchMatch = messageSearchQuery.isNotBlank() && searchText.contains(messageSearchQuery, ignoreCase = true)
                     val bottomSpacing = MessageTimeHelper.computeMessageBottomSpacing(messageList, index)
 
+                    // 被引用消息定位后的高亮闪烁：复刻官方 .chat-msg--flash 的 chatMsgFlash 1.1s ease 曲线，
+                    // 即 0% 透明 -> 35% #3b82f61a -> 100% 透明（0 -> 385ms 淡入，385ms -> 1100ms 回落）。
+                    val isFlashed = flashedMessageId == msg.id
+                    val flashAlpha = remember(msg.id) { Animatable(0f) }
+                    LaunchedEffect(isFlashed) {
+                        if (isFlashed) {
+                            flashAlpha.snapTo(0f)
+                            flashAlpha.animateTo(1f, animationSpec = tween(durationMillis = 385))
+                            flashAlpha.animateTo(0f, animationSpec = tween(durationMillis = 715))
+                        } else {
+                            flashAlpha.snapTo(0f)
+                        }
+                    }
+
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .then(
+                                if (isFlashed) {
+                                    Modifier.background(
+                                        Color(0xFF3B82F6).copy(alpha = 0.1f * flashAlpha.value),
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
                             .then(if (searchMatch) Modifier.background(Color(0x3348A6FF), RoundedCornerShape(8.dp)) else Modifier)
                     ) {
                         // 触发时间分隔条：与上一条消息相差 ≥ 5 分钟，或为会话首条
@@ -866,15 +879,16 @@ fun PrivateChatScreen(
                             )
                         } else {
                             // ---- 真实对话气泡 (私聊：iMessage 小尖尾；群聊：普通圆气泡无尾巴) ----
-                            val isLastMineMessage = msg.isMine &&
-                                    msg.id == messageList.filter { it.isMine && !it.isSystem && !it.isVoiceCall }.lastOrNull()?.id
+                            val isLastMineMessage = msg.isMine && !msg.isDeleted &&
+                                    msg.id == messageList.filter { it.isMine && !it.isSystem && !it.isVoiceCall && !it.isDeleted }.lastOrNull()?.id
 
                             // 群聊（暗号房）统一使用正常的圆气泡，不携带尖尾；
                             // 私聊仍依据 iMessage 原生规则计算尾巴（连续我方或对方均仅最底部一条带尾巴）
                             val hasTail = !isGroupRoom && computeBubbleHasTail(messageList, index)
 
                             val isFirstInGroup = MessageTimeHelper.isFirstOfSenderGroup(messageList, index)
-                            val isGroupPeer = !msg.isMine && isGroupRoom
+                            // 已撤回消息整条替换为居中占位，不再展示头像 / 昵称列
+                            val isGroupPeer = !msg.isMine && isGroupRoom && !msg.isDeleted
 
                             BubbleMessageItem(
                                 message = msg,
@@ -889,6 +903,19 @@ fun PrivateChatScreen(
                                 reserveAvatarSpace = isGroupPeer,
                                 showSenderInfo = isGroupPeer && isFirstInGroup,
                                 higColors = higColors,
+                                // 动态分享卡片：点主体进作者资料页并定位该动态；点评论数打开评论
+                                onMomentCardClick = { d ->
+                                    ZeroTalkClientManager.openOtherUserProfile(
+                                        userId = d.userId.toString(),
+                                        uid = d.uid,
+                                        name = d.username,
+                                        avatarUrl = d.avatarUrl,
+                                        momentId = d.momentId
+                                    )
+                                },
+                                onMomentCardCommentClick = { d -> momentCardComment = d.toMomentItem() },
+                                // 被引用消息已撤回时，引用条本地兜底显示「该消息已被撤回」
+                                quotedTextOverride = messageList.resolveQuotedText(msg),
                                 isLifted = isMenuShowing && activeBubbleAnchor?.message?.id == msg.id,
                                 // 点群成员头像/昵称 → 打开其资料面板（带已知昵称/头像占位）
                                 // 服务端事件缺 from_uid 时 senderId 会退化成 peer/me 占位，这类不可跳转
@@ -906,13 +933,18 @@ fun PrivateChatScreen(
                                         )
                                     }
                                 } else null,
+                                // 点击引用条 -> 跳转到被引用的消息（找不到只提示，不补历史）
+                                onQuoteClick = scrollToQuotedMessage,
                                 onLongPress = { bounds ->
-                                    activeBubbleAnchor = BubbleAnchorInfo(msg, bounds, hasTail, isLastMineMessage)
-                                    isMenuShowing = true
+                                    // 已撤回消息整条替换为占位，没有任何可执行操作项，不弹菜单（对齐官网）
+                                    if (!msg.isDeleted) {
+                                        activeBubbleAnchor = BubbleAnchorInfo(msg, bounds, hasTail, isLastMineMessage)
+                                        isMenuShowing = true
+                                    }
                                 },
                                 // 双击对方消息气泡 = 拍一拍（官网同款交互，双击阈值 380ms）；
                                 // 图片气泡不接管双击，避免单击预览被双击等待拖慢
-                                onDoubleTapPat = if (!msg.isMine && !msg.isSystem && !msg.isImage) {
+                                onDoubleTapPat = if (!msg.isMine && !msg.isSystem && !msg.isImage && !msg.isDeleted) {
                                     {
                                         notificationState.show(
                                             ZeroTalkClientManager.sendPat(conversation.id, msg.senderId)
@@ -932,23 +964,62 @@ fun PrivateChatScreen(
         }
 
         // ---- 2. 顶部 iOS 26 原生导航栏（3 个 LiquidButton，悬浮在最上层）----
-        TopNavigationBar(
-            conversation = conversation,
-            unreadCount = 520, // 完美复刻图中 '< 520' 胶囊返回
+        // 与公共大厅共用 ui/components/IosChatNavBar（消除重复实现）；
+        // 参数与旧的 PrivateChatScreen.TopNavigationBar 一一对应，外观 / 行为保持不变。
+        IosChatNavBar(
             onBack = onBack,
-            onTitleClick = {
-                if (isGroupRoom) showSecretRoomInfo = true else showConversationInfo = true
-            },
-            // 右上角统一为搜索按键（私聊 / 群聊行为对齐）：语音通话已移入底部 [+] 扩展面板
-            onSearchClick = {
-                showMessageSearch = !showMessageSearch
-                if (!showMessageSearch) messageSearchQuery = ""
-            },
-            backdrop = chatBackdrop,
+            title = conversation.targetName,
             isDark = isDark,
             isWhiteBackground = isWhiteBackground,
             surfaceColor = buttonSurfaceColor,
             surfaceAlpha = buttonSurfaceAlpha,
+            backdrop = chatBackdrop,
+            unreadCount = 520, // 完美复刻图中 '< 520' 胶囊返回
+            showChevron = true,
+            onTitleClick = {
+                if (isGroupRoom) showSecretRoomInfo = true else showConversationInfo = true
+            },
+            titleAvatar = {
+                // 上层：放大圆形头像 (60dp)，覆盖在胶囊顶部（真实头像优先，失败回落渐变首字母）
+                UserAvatar(
+                    url = conversation.targetAvatar,
+                    name = conversation.targetName,
+                    size = 60.dp,
+                    gradient = conversation.avatarGradient,
+                    fallbackTextStyle = TextStyle(
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    modifier = Modifier.border(
+                        1.5.dp,
+                        if (isWhiteBackground) Color(0x33000000) else Color(0x66FFFFFF),
+                        CircleShape
+                    )
+                )
+            },
+            trailing = {
+                // 右上角统一为搜索按键（私聊 / 群聊行为对齐）：语音通话已移入底部 [+] 扩展面板
+                LiquidButton(
+                    onClick = {
+                        showMessageSearch = !showMessageSearch
+                        if (!showMessageSearch) messageSearchQuery = ""
+                    },
+                    modifier = Modifier.size(41.dp),
+                    backdrop = chatBackdrop,
+                    isDark = isDark,
+                    surfaceColor = buttonSurfaceColor,
+                    surfaceAlpha = buttonSurfaceAlpha,
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "搜索聊天记录",
+                        tint = controlContentColor,
+                        modifier = Modifier.size(25.dp)
+                    )
+                }
+            },
             modifier = Modifier.drawWithContent {
                 listState.firstVisibleItemScrollOffset
                 listState.firstVisibleItemIndex
@@ -986,625 +1057,214 @@ fun PrivateChatScreen(
             }
         }
 
-        // ---- 2.5 抽屉展开时的全屏透明拦截层（点击聊天背景区域平滑收起抽屉，同时不阻挡视觉）----
-        if (showActionSheet) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { showActionSheet = false }
-                    )
-            )
-        }
+        // ---- 3. 底部输入控制栏（公共组件 ChatComposerBar：[+] + 输入框 + 引用条 + 扩展抽屉）----
+        ChatComposerBar(
+            drawerExpanded = showActionSheet,
+            onDrawerExpandedChange = { showActionSheet = it },
+            inputText = inputText,
+            onInputTextChange = { inputText = it },
+            onSend = {
+                val contentToSend = inputText.trim()
+                val quoted = quotingMessage?.quotePreviewText()
+                val quotedIsMine = quotingMessage?.isMine
+                val quotedSenderName = quotingMessage?.senderName
+                val replyToId = quotingMessage?.serverId?.takeIf { it > 0L }
+                val mentionIds = mentionTargets
+                    .map { it.first }
+                    .filter(String::isNotBlank)
+                    .distinct()
+                inputText = ""
+                mentionTargets = emptyList()
+                quotingMessage = null
+                // 管理器统一管理乐观回显与服务端引用/@对账
+                ZeroTalkClientManager.sendRoomMessage(
+                    conversation.id, contentToSend,
+                    quotedText = quoted,
+                    quotedIsMine = quotedIsMine,
+                    quotedSenderName = quotedSenderName,
+                    replyToId = replyToId,
+                    mentionIds = mentionIds
+                )
+            },
+            quote = quotingMessage?.let { qm ->
+                ChatComposerQuote(
+                    text = qm.quotePreviewText(),
+                    isMine = qm.isMine,
+                    cancelContentDescription = "Cancel quote"
+                )
+            },
+            onCancelQuote = { quotingMessage = null },
+            // 抽屉扩展项：全集与顺序与重构前完全一致（组件点击时会先收起抽屉，与旧实现一致）
+            actions = listOf(
+                ChatComposerAction(
+                    id = "photo",
+                    label = "照片",
+                    icon = Icons.Default.Image,
+                    color = Color(0xFF34C759)
+                ) {
+                    // 实测链路：presign(upload_source=chat_image, room_id) → PUT → bind → WS type=image
+                    chatPhotoPicker.launch()
+                },
+                ChatComposerAction(
+                    id = "voice_file",
+                    label = "语音文件",
+                    icon = Icons.AutoMirrored.Filled.VolumeUp,
+                    color = Color(0xFF5856D6)
+                ) {
+                    // 实测链路：presign(upload_source=chat_audio, audio_source=file) → PUT → bind → WS type=audio
+                    chatAudioFilePicker.launch()
+                },
+                ChatComposerAction(
+                    id = "music_share",
+                    label = "分享歌曲",
+                    icon = Icons.Default.MusicNote,
+                    color = Color(0xFF007AFF)
+                ) {
+                    showMusicShareSheet = true
+                },
+                ChatComposerAction(
+                    id = "room_music",
+                    label = "房间音乐",
+                    icon = Icons.Default.GraphicEq,
+                    color = Color(0xFFFF2D55)
+                ) {
+                    showRoomMusicSheet = true
+                },
+                ChatComposerAction(
+                    id = "dice",
+                    label = "摇骰子",
+                    icon = Icons.Default.Casino,
+                    color = Color(0xFFFF9500)
+                ) {
+                    ZeroTalkClientManager.sendRoomDice(conversation.id)
+                },
+                ChatComposerAction(
+                    id = "game",
+                    label = "游戏",
+                    icon = Icons.Default.SportsEsports,
+                    color = Color(0xFFAF52DE)
+                ) {
+                    showGamePickerSheet = true
+                },
+                ChatComposerAction(
+                    id = "voice_call",
+                    label = "语音通话",
+                    icon = Icons.Default.Call,
+                    color = Color(0xFF34C759)
+                ) {
+                    // 对齐官网 useVoiceCall 的判定：
+                    // ① 群聊先选成员（voice-picker-panel「请选择一位成员发起语音通话」）
+                    // ② 私聊需双方互发文字后才能发起
+                    // 注：to_user_id 可空，服务端会按房间推导对端（官网同样只在已知时携带）
+                    val toUserId = conversation.targetUserId.toLongOrNull()?.takeIf { it > 0 }
+                    val hasBothSidesText = liveMessages.any { it.isMine } &&
+                        liveMessages.any { !it.isMine }
+                    when {
+                        isGroupRoom -> showVoiceCallPicker = true
+                        !hasBothSidesText ->
+                            notificationState.show("私聊需双方互发文字后才能发起语音通话")
 
-        // ---- 3. 底部输入控制栏（2 个 LiquidButton：[+] 与 输入框，完全悬浮透空）----
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .imePadding()
-                .navigationBarsPadding()
-                .padding(start = 16.dp, end = 16.dp, bottom = if (showActionSheet) 4.dp else 12.dp)
-                .onGloballyPositioned { coordinates ->
-                    bottomBarTopYPx = coordinates.boundsInRoot().top
-                }
-                .drawWithContent {
-                    listState.firstVisibleItemScrollOffset
-                    listState.firstVisibleItemIndex
-                    drawContent()
-                }
-        ) {
-            // 引用回复预览条 (整体高度 36dp，水平内边距 12dp，背景 secondarySystemBackground)
-            AnimatedVisibility(
-                visible = quotingMessage != null,
-                enter = fadeIn() + scaleIn(),
-                exit = fadeOut() + scaleOut()
-            ) {
-                quotingMessage?.let { qm ->
-                    val previewBg = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
-                    val barLineColor = if (qm.isMine) Color(0xFF007AFF) else Color(0xFF8E8E93)
-                    val previewText = qm.quotePreviewText()
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 6.dp)
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(previewBg)
-                            .border(
-                                0.5.dp,
-                                if (isDark) Color(0x2EFFFFFF) else Color(0x18000000),
-                                RoundedCornerShape(8.dp)
-                            )
-                            .padding(start = 12.dp, end = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // 左侧竖线指示条 (宽度 2dp，原消息气泡同色)
-                        Box(
-                            modifier = Modifier
-                                .width(2.dp)
-                                .height(18.dp)
-                                .clip(RoundedCornerShape(1.dp))
-                                .background(barLineColor)
+                        else -> ZeroTalkClientManager.voiceCall.startCall(
+                            roomId = conversation.id,
+                            toUserId = toUserId,
+                            toUid = conversation.targetUid.takeIf { it.isNotBlank() },
+                            peerLabel = conversation.targetName,
+                            peerAvatarUrl = conversation.targetAvatar
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        // 预览文字 (15sp Subhead，单行截断)
-                        BasicText(
-                            text = previewText,
-                            style = TextStyle(
-                                color = higColors.label,
-                                fontSize = 15.sp,
-                                lineHeight = 20.sp,
-                                fontWeight = FontWeight.Normal
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        // 关闭叉号按钮：视觉 24dp，热区 44dp
-                        Box(
-                            modifier = Modifier
-                                .width(44.dp)
-                                .fillMaxHeight()
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    onClick = { quotingMessage = null }
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(24.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isDark) Color(0x33FFFFFF) else Color(0x14000000)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Cancel quote",
-                                    modifier = Modifier.size(13.dp),
-                                    tint = if (isDark) Color(0xCCFFFFFF) else Color(0x99000000)
-                                )
-                            }
-                        }
                     }
                 }
-            }
-
-            // 输入栏主体
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // 左侧独立 [+] LiquidButton 按钮 (36dp，展开时顺滑旋转 45° 为 ×)
-                LiquidButton(
-                    onClick = {
-                        if (showActionSheet) {
-                            showActionSheet = false
-                        } else {
-                            keyboardController?.hide()
-                            focusManager.clearFocus()
-                            showActionSheet = true
-                        }
-                    },
-                    modifier = Modifier.size(36.dp),
-                    backdrop = chatBackdrop,
-                    isDark = isDark,
-                    surfaceColor = buttonSurfaceColor,
-                    surfaceAlpha = buttonSurfaceAlpha,
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = if (showActionSheet) "收起扩展" else "展开扩展",
-                        tint = controlContentColor,
-                        modifier = Modifier
-                            .size(18.dp)
-                            .graphicsLayer { rotationZ = plusRotation }
-                    )
-                }
-
-                // 中央消息输入框 (基于 LiquidButton 架构，高度 36dp)
-                LiquidButton(
-                    onClick = {
-                        if (showActionSheet) showActionSheet = false
-                        if (!isVoiceMode) {
-                            inputFocusRequester.requestFocus()
-                            keyboardController?.show()
-                        }
-                    },
+            ),
+            isDark = isDark,
+            backdrop = chatBackdrop,
+            controlContentColor = controlContentColor,
+            surfaceColor = buttonSurfaceColor,
+            surfaceAlpha = buttonSurfaceAlpha,
+            isVoiceMode = isVoiceMode,
+            onToggleVoiceMode = { isVoiceMode = !isVoiceMode },
+            inputFocusRequester = inputFocusRequester,
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                bottom = if (showActionSheet) 4.dp else 12.dp
+            ),
+            onBottomBarTopChanged = { bottomBarTopYPx = it },
+            // 列表滚动时持续重绘外壳，保证 Backdrop 每帧重新录制
+            tailModifier = Modifier.drawWithContent {
+                listState.firstVisibleItemScrollOffset
+                listState.firstVisibleItemIndex
+                drawContent()
+            },
+            // 语音录制状态机保留在页面内，只把「按住说话」输入区交给公共外壳
+            voiceContent = {
+                val recordingNow = chatAudioRecorder.isRecording.value
+                Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(36.dp),
-                    backdrop = chatBackdrop,
-                    isDark = isDark,
-                    isInteractive = false,
-                    surfaceColor = buttonSurfaceColor,
-                    surfaceAlpha = buttonSurfaceAlpha,
-                    contentPadding = PaddingValues(start = 12.dp, end = 8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (isVoiceMode) {
-                            // 按住说话：上滑取消，松开发送
-                            // 实测链路：webm 录音 → presign(upload_source=chat_audio, audio_source=record) → PUT → bind → WS type=audio
-                            val recordingNow = chatAudioRecorder.isRecording.value
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxSize()
-                                    .pointerInput(conversation.id) {
-                                        val cancelThresholdPx = 56.dp.toPx()
-                                        awaitEachGesture {
-                                            val down = awaitFirstDown()
-                                            isVoiceCancelZone = false
-                                            chatAudioRecorder.start()
-                                            if (!chatAudioRecorder.isRecording.value) {
-                                                // 首次使用需先授予麦克风权限（或录音启动失败），本次不发送
-                                                notificationState.show("需要麦克风权限，请授权后重新按住说话")
-                                                return@awaitEachGesture
-                                            }
-                                            var canceled = false
-                                            while (true) {
-                                                val event = awaitPointerEvent()
-                                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                                if (!change.pressed) break
-                                                // 手指上滑超过阈值进入取消区，回落到阈值内可恢复发送
-                                                canceled = (down.position.y - change.position.y) > cancelThresholdPx
-                                                isVoiceCancelZone = canceled
-                                                change.consume()
-                                            }
-                                            isVoiceCancelZone = false
-                                            val bytes = chatAudioRecorder.stop()
-                                            val durationSec = chatAudioRecorder.recordedSeconds.toInt()
-                                            when {
-                                                canceled -> notificationState.show("已取消发送")
-                                                bytes == null || bytes.isEmpty() ->
-                                                    notificationState.show("录音时间太短")
-                                                else -> {
-                                                    val format = chatAudioRecorder.actualFormat
-                                                    ZeroTalkClientManager.sendRoomAudio(
-                                                        roomId = conversation.id,
-                                                        audioBytes = bytes,
-                                                        durationSec = durationSec.coerceAtLeast(1),
-                                                        contentType = format.contentType,
-                                                        fileExt = format.fileExt,
-                                                        audioSource = "record",
-                                                        onError = { notificationState.show(it) }
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                BasicText(
-                                    text = when {
-                                        isVoiceCancelZone -> "松开取消"
-                                        recordingNow -> "松开发送"
-                                        else -> "按住说话"
-                                    },
-                                    style = TextStyle(
-                                        color = when {
-                                            isVoiceCancelZone -> controlContentColor.copy(alpha = 0.45f)
-                                            recordingNow -> Color(0xFFFF453A)
-                                            else -> controlContentColor.copy(alpha = 0.45f)
-                                        },
-                                        fontSize = 17.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                )
-                            }
-                        } else {
-                            // 键盘文本输入模式
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) {
-                                        if (showActionSheet) showActionSheet = false
-                                        inputFocusRequester.requestFocus()
-                                        keyboardController?.show()
-                                    },
-                                contentAlignment = Alignment.CenterStart
-                            ) {
-                                BasicTextField(
-                                    value = inputText,
-                                    onValueChange = { inputText = it },
-                                    singleLine = true,
-                                    textStyle = TextStyle(
-                                        color = controlContentColor,
-                                        fontSize = 17.sp,
-                                        lineHeight = 21.sp
-                                    ),
-                                    cursorBrush = SolidColor(Color(0xFF007AFF)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .focusRequester(inputFocusRequester)
-                                        .onFocusChanged { focusState ->
-                                            if (focusState.isFocused && showActionSheet) {
-                                                showActionSheet = false
-                                            }
-                                        },
-                                    decorationBox = { innerTextField ->
-                                        if (inputText.isEmpty()) {
-                                            BasicText(
-                                                text = "发信息",
-                                                style = TextStyle(
-                                                    color = controlContentColor.copy(alpha = 0.45f),
-                                                    fontSize = 17.sp
-                                                )
-                                            )
-                                        }
-                                        innerTextField()
-                                    }
-                                )
-                            }
-                        }
-
-                        // 右侧动态图标：麦克风图标 <-> 蓝色发送箭头（带弹性缩放与淡入淡出转换动画）
-                        val hasText = inputText.trim().isNotEmpty()
-                        Box(
-                            modifier = Modifier.size(28.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            AnimatedContent(
-                                targetState = hasText,
-                                transitionSpec = {
-                                    if (targetState) {
-                                        // 转换为发送按钮：弹性放大淡入，麦克风缩小淡出
-                                        (fadeIn(animationSpec = tween(160)) +
-                                                scaleIn(initialScale = 0.35f, animationSpec = spring(dampingRatio = 0.62f, stiffness = 450f)))
-                                            .togetherWith(
-                                                fadeOut(animationSpec = tween(120)) +
-                                                        scaleOut(targetScale = 0.4f, animationSpec = tween(120))
-                                            )
-                                    } else {
-                                        // 转换为语音/键盘：弹性放大淡入，发送按钮缩小淡出
-                                        (fadeIn(animationSpec = tween(160)) +
-                                                scaleIn(initialScale = 0.4f, animationSpec = spring(dampingRatio = 0.68f, stiffness = 450f)))
-                                            .togetherWith(
-                                                fadeOut(animationSpec = tween(120)) +
-                                                        scaleOut(targetScale = 0.35f, animationSpec = tween(120))
-                                            )
-                                    }
-                                },
-                                contentAlignment = Alignment.Center,
-                                label = "SendVoiceTransition"
-                            ) { targetHasText ->
-                                if (targetHasText) {
-                                    // 纯蓝圆形发送箭头
-                                    Box(
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF007AFF))
-                                            .clickable {
-                                                val contentToSend = inputText.trim()
-                                                val quoted = quotingMessage?.quotePreviewText()
-                                                val quotedIsMine = quotingMessage?.isMine
-                                                val quotedSenderName = quotingMessage?.senderName
-                                                val replyToId = quotingMessage?.serverId?.takeIf { it > 0L }
-                                                val mentionIds = mentionTargets
-                                                    .map { it.first }
-                                                    .filter(String::isNotBlank)
-                                                    .distinct()
-                                                inputText = ""
-                                                mentionTargets = emptyList()
-                                                quotingMessage = null
-                                                // 管理器统一管理乐观回显与服务端引用/@对账
-                                                ZeroTalkClientManager.sendRoomMessage(
-                                                    conversation.id, contentToSend,
-                                                    quotedText = quoted,
-                                                    quotedIsMine = quotedIsMine,
-                                                    quotedSenderName = quotedSenderName,
-                                                    replyToId = replyToId,
-                                                    mentionIds = mentionIds
-                                                )
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.ArrowUpward,
-                                            contentDescription = "Send",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                } else {
-                                    // 麦克风图标，点击切换语音录制 / 键盘
-                                    Box(
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .clip(CircleShape)
-                                            .clickable { isVoiceMode = !isVoiceMode },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        AnimatedContent(
-                                            targetState = isVoiceMode,
-                                            transitionSpec = {
-                                                (fadeIn(animationSpec = tween(150)) +
-                                                        scaleIn(initialScale = 0.6f, animationSpec = spring(dampingRatio = 0.7f, stiffness = 450f)))
-                                                    .togetherWith(
-                                                        fadeOut(animationSpec = tween(100)) +
-                                                                scaleOut(targetScale = 0.6f, animationSpec = tween(100))
-                                                    )
-                                            },
-                                            contentAlignment = Alignment.Center,
-                                            label = "VoiceKeyboardTransition"
-                                        ) { targetVoiceMode ->
-                                            if (targetVoiceMode) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Keyboard,
-                                                    contentDescription = "Keyboard",
-                                                    tint = controlContentColor,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            } else {
-                                                Icon(
-                                                    imageVector = Icons.Default.Mic,
-                                                    contentDescription = "Microphone",
-                                                    tint = controlContentColor,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        }
-                                    }
+                        .fillMaxSize()
+                        .pointerInput(conversation.id) {
+                            val cancelThresholdPx = 56.dp.toPx()
+                            awaitEachGesture {
+                                val down = awaitFirstDown()
+                                isVoiceCancelZone = false
+                                chatAudioRecorder.start()
+                                if (!chatAudioRecorder.isRecording.value) {
+                                    // 首次使用需先授予麦克风权限（或录音启动失败），本次不发送
+                                    notificationState.show("需要麦克风权限，请授权后重新按住说话")
+                                    return@awaitEachGesture
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ---- 4. 底部 [+] 扩展抽屉面板（展开时自然将上方输入栏平滑顶起）----
-            AnimatedVisibility(
-                visible = showActionSheet,
-                enter = expandVertically(
-                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
-                    expandFrom = Alignment.Top
-                ) + fadeIn(animationSpec = tween(150)),
-                exit = shrinkVertically(
-                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
-                    shrinkTowards = Alignment.Top
-                ) + fadeOut(animationSpec = tween(120))
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Spacer(Modifier.height(10.dp)) // 输入框与扩展面板之间的 10dp 呼吸悬浮空隙
-
-                    val drawerSurfaceShape = RoundedCornerShape(32.dp)
-                    val drawerModifier = if (chatBackdrop != null) {
-                        Modifier.drawBackdrop(
-                            backdrop = chatBackdrop,
-                            shape = { drawerSurfaceShape },
-                            effects = {
-                                colorControls(
-                                    brightness = if (isDark) 0.06f else 0.14f,
-                                    saturation = 1.45f
-                                )
-                                blur(if (isDark) 16.dp.toPx() else 20.dp.toPx())
-                                lens(
-                                    refractionHeight = 22.dp.toPx(),
-                                    refractionAmount = 40.dp.toPx(),
-                                    depthEffect = true
-                                )
-                            },
-                            highlight = { Highlight.Plain },
-                            shadow = { Shadow(radius = 18.dp, color = Color.Black.copy(alpha = if (isDark) 0.35f else 0.16f)) },
-                            onDrawSurface = {
-                                drawRect(
-                                    if (isDark) Color(0xFF161820).copy(alpha = 0.76f)
-                                    else Color(0xFFFFFFFF).copy(alpha = 0.75f)
-                                )
-                            }
-                        )
-                    } else {
-                        Modifier
-                            .shadow(
-                                elevation = 18.dp,
-                                shape = drawerSurfaceShape,
-                                ambientColor = Color.Black.copy(alpha = if (isDark) 0.35f else 0.16f),
-                                spotColor = Color.Black.copy(alpha = if (isDark) 0.35f else 0.16f)
-                            )
-                            .background(if (isDark) Color(0xFF1C1F28) else Color(0xFFFFFFFF), drawerSurfaceShape)
-                            .border(
-                                width = 0.5.dp,
-                                color = if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.06f),
-                                shape = drawerSurfaceShape
-                            )
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(280.dp)
-                            .then(drawerModifier)
-                            .pointerInput(Unit) {
-                                detectVerticalDragGestures { _, dragAmount ->
-                                    if (dragAmount > 20f) {
-                                        showActionSheet = false
-                                    }
+                                var canceled = false
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!change.pressed) break
+                                    // 手指上滑超过阈值进入取消区，回落到阈值内可恢复发送
+                                    canceled = (down.position.y - change.position.y) > cancelThresholdPx
+                                    isVoiceCancelZone = canceled
+                                    change.consume()
                                 }
-                            },
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        // 顶部拖拽把手指示条 (36dp x 5dp)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 10.dp, bottom = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(width = 36.dp, height = 5.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (isDark) Color.White.copy(alpha = 0.35f)
-                                        else Color.Black.copy(alpha = 0.20f)
-                                    )
-                            )
-                        }
-
-                        // 功能图标两排布局，每排4个等宽竖向对齐（第1排：照片、语音文件、分享歌曲、房间音乐；第2排：摇骰子、游戏、语音通话、留白占位）
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(horizontal = 8.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            // 第一排 (照片、语音文件、分享歌曲、房间音乐)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                ActionSheetGridItem(
-                                    icon = Icons.Default.Image,
-                                    title = "照片",
-                                    color = Color(0xFF34C759),
-                                    textColor = if (isDark) Color.White else Color(0xFF1C1C1E),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    showActionSheet = false
-                                    // 实测链路：presign(upload_source=chat_image, room_id) → PUT → bind → WS type=image
-                                    chatPhotoPicker.launch()
-                                }
-
-                                ActionSheetGridItem(
-                                    icon = Icons.AutoMirrored.Filled.VolumeUp,
-                                    title = "语音文件",
-                                    color = Color(0xFF5856D6),
-                                    textColor = if (isDark) Color.White else Color(0xFF1C1C1E),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    showActionSheet = false
-                                    // 实测链路：presign(upload_source=chat_audio, audio_source=file) → PUT → bind → WS type=audio
-                                    chatAudioFilePicker.launch()
-                                }
-
-                                ActionSheetGridItem(
-                                    icon = Icons.Default.MusicNote,
-                                    title = "分享歌曲",
-                                    color = Color(0xFF007AFF),
-                                    textColor = if (isDark) Color.White else Color(0xFF1C1C1E),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    showActionSheet = false
-                                    showMusicShareSheet = true
-                                }
-
-                                ActionSheetGridItem(
-                                    icon = Icons.Default.GraphicEq,
-                                    title = "房间音乐",
-                                    color = Color(0xFFFF2D55),
-                                    textColor = if (isDark) Color.White else Color(0xFF1C1C1E),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    showActionSheet = false
-                                    showRoomMusicSheet = true
-                                }
-                            }
-
-                            // 第二排 (摇骰子、游戏、语音通话、留白占位)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                ActionSheetGridItem(
-                                    icon = Icons.Default.Casino,
-                                    title = "摇骰子",
-                                    color = Color(0xFFFF9500),
-                                    textColor = if (isDark) Color.White else Color(0xFF1C1C1E),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    showActionSheet = false
-                                    ZeroTalkClientManager.sendRoomDice(conversation.id)
-                                }
-
-                                ActionSheetGridItem(
-                                    icon = Icons.Default.SportsEsports,
-                                    title = "游戏",
-                                    color = Color(0xFFAF52DE),
-                                    textColor = if (isDark) Color.White else Color(0xFF1C1C1E),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    showActionSheet = false
-                                    showGamePickerSheet = true
-                                }
-
-                                ActionSheetGridItem(
-                                    icon = Icons.Default.Call,
-                                    title = "语音通话",
-                                    color = Color(0xFF34C759),
-                                    textColor = if (isDark) Color.White else Color(0xFF1C1C1E),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    showActionSheet = false
-                                    // 对齐官网 useVoiceCall 的判定：
-                                    // ① 群聊先选成员（voice-picker-panel「请选择一位成员发起语音通话」）
-                                    // ② 私聊需双方互发文字后才能发起
-                                    // 注：to_user_id 可空，服务端会按房间推导对端（官网同样只在已知时携带）
-                                    val toUserId = conversation.targetUserId.toLongOrNull()?.takeIf { it > 0 }
-                                    val hasBothSidesText = liveMessages.any { it.isMine } &&
-                                        liveMessages.any { !it.isMine }
-                                    when {
-                                        isGroupRoom -> showVoiceCallPicker = true
-                                        !hasBothSidesText ->
-                                            notificationState.show("私聊需双方互发文字后才能发起语音通话")
-
-                                        else -> ZeroTalkClientManager.voiceCall.startCall(
+                                isVoiceCancelZone = false
+                                val bytes = chatAudioRecorder.stop()
+                                val durationSec = chatAudioRecorder.recordedSeconds.toInt()
+                                when {
+                                    canceled -> notificationState.show("已取消发送")
+                                    bytes == null || bytes.isEmpty() ->
+                                        notificationState.show("录音时间太短")
+                                    else -> {
+                                        val format = chatAudioRecorder.actualFormat
+                                        ZeroTalkClientManager.sendRoomAudio(
                                             roomId = conversation.id,
-                                            toUserId = toUserId,
-                                            toUid = conversation.targetUid.takeIf { it.isNotBlank() },
-                                            peerLabel = conversation.targetName,
-                                            peerAvatarUrl = conversation.targetAvatar
+                                            audioBytes = bytes,
+                                            durationSec = durationSec.coerceAtLeast(1),
+                                            contentType = format.contentType,
+                                            fileExt = format.fileExt,
+                                            audioSource = "record",
+                                            onError = { notificationState.show(it) }
                                         )
                                     }
                                 }
-
-                                Spacer(modifier = Modifier.weight(1f))
                             }
-                        }
-
-                        Spacer(Modifier.height(16.dp))
-                    }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        text = when {
+                            isVoiceCancelZone -> "松开取消"
+                            recordingNow -> "松开发送"
+                            else -> "按住说话"
+                        },
+                        style = TextStyle(
+                            color = when {
+                                isVoiceCancelZone -> controlContentColor.copy(alpha = 0.45f)
+                                recordingNow -> Color(0xFFFF453A)
+                                else -> controlContentColor.copy(alpha = 0.45f)
+                            },
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
                 }
             }
-        }
+        )
 
         // ---- 5. iMessage 原生 ContextMenu 上下文菜单与悬浮放大预览气泡 ----
         activeBubbleAnchor?.let { anchor ->
@@ -1617,33 +1277,18 @@ fun PrivateChatScreen(
                     },
                     onRecall = {
                         val msg = anchor.message
-                        messageList = messageList.filter { it.id != msg.id }
-                        val nowMs = System.currentTimeMillis()
-                        messageList = messageList + ChatMessage(
-                            id = "sys_recall_$nowMs",
-                            senderId = "system",
-                            content = "你撤回了一条消息",
-                            timestamp = MessageTimeHelper.formatTimeShort(nowMs),
-                            isMine = false,
-                            isSystem = true,
-                            timestampMs = nowMs
-                        )
-                        notificationState.show("已撤回消息")
+                        // 必须发 {event:"recall_message"}：此前只改本地列表，服务端与对端都不知道，
+                        // 重进页面消息还会回来（假撤回）
+                        ZeroTalkClientManager.recallMessage(conversation.id, msg.serverId) { ok, err ->
+                            notificationState.show(if (ok) "已撤回消息" else (err ?: "撤回失败"))
+                        }
                         dismissContextMenu()
                     },
                     onRecallAndEdit = {
                         val msg = anchor.message
-                        messageList = messageList.filter { it.id != msg.id }
-                        val nowMs = System.currentTimeMillis()
-                        messageList = messageList + ChatMessage(
-                            id = "sys_recall_$nowMs",
-                            senderId = "system",
-                            content = "你撤回了一条消息",
-                            timestamp = MessageTimeHelper.formatTimeShort(nowMs),
-                            isMine = false,
-                            isSystem = true,
-                            timestampMs = nowMs
-                        )
+                        ZeroTalkClientManager.recallMessage(conversation.id, msg.serverId) { ok, err ->
+                            if (!ok) notificationState.show(err ?: "撤回失败")
+                        }
                         isVoiceMode = false
                         inputText = msg.content
                         notificationState.show("已撤回，可重新编辑")
@@ -1779,6 +1424,16 @@ fun PrivateChatScreen(
                 }
             )
         }
+
+        // ---- 6.9 动态评论抽屉（点聊天里动态卡片的评论数打开）----
+        MomentSheetsHost(
+            commentTarget = momentCardComment,
+            shareTarget = null,
+            isDark = isDark,
+            backdrop = chatBackdrop,
+            onDismissComment = { momentCardComment = null },
+            onDismissShare = {}
+        )
 
         // ---- 7. 顶部联系人「对话资料详情页」仅用于私聊 ----
         AnimatedVisibility(
@@ -1941,127 +1596,6 @@ fun PrivateChatScreen(
 }
 
 /**
- * 顶部原生 iOS 26 导航栏
- */
-@Composable
-private fun TopNavigationBar(
-    conversation: ConversationItem,
-    unreadCount: Int,
-    onBack: () -> Unit,
-    onTitleClick: () -> Unit,
-    onSearchClick: () -> Unit,
-    backdrop: Backdrop?,
-    isDark: Boolean,
-    isWhiteBackground: Boolean = false,
-    surfaceColor: Color = if (isDark) Color.White else Color.Black,
-    surfaceAlpha: Float = 0.06f,
-    modifier: Modifier = Modifier
-) {
-    val contentColor = if (isWhiteBackground) Color(0xFF1C1C1E) else Color.White
-    val badgeBg = if (isWhiteBackground) Color(0xFF1C1C1E) else Color.White
-    val badgeTextColor = if (isWhiteBackground) Color.White else Color(0xFF1C1C1E)
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = 21.dp, vertical = 6.dp)
-            .then(modifier)
-    ) {
-        // 左侧通用液态毛玻璃胶囊返回键：< 520 (高度 41dp，圆润无棱角 < 图标，角标小圆胶囊 27dp 高)
-        IosLiquidBackButton(
-            onClick = onBack,
-            unreadCount = unreadCount,
-            backdrop = backdrop,
-            isDark = isDark,
-            isWhiteBackground = isWhiteBackground,
-            surfaceColor = surfaceColor,
-            surfaceAlpha = surfaceAlpha,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(top = 8.dp)
-        )
-
-        // 居中联系人组合：头像在名字胶囊上层 (先声明胶囊昵称在下层，后声明圆形头像在上层)
-        Box(
-            modifier = Modifier.align(Alignment.TopCenter),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            // 下层：悬浮 LiquidButton 胶囊昵称 [陈默 ›] (高度 41dp，文字 21sp)
-            LiquidButton(
-                onClick = onTitleClick,
-                modifier = Modifier
-                    .padding(top = 50.dp)
-                    .height(41.dp),
-                backdrop = backdrop,
-                isDark = isDark,
-                surfaceColor = surfaceColor,
-                surfaceAlpha = surfaceAlpha,
-                contentPadding = PaddingValues(horizontal = 14.dp)
-            ) {
-                BasicText(
-                    text = conversation.targetName,
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                )
-                BasicText(
-                    text = "›",
-                    style = TextStyle(
-                        color = contentColor.copy(alpha = 0.7f),
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                )
-            }
-
-            // 上层：放大圆形头像 (60dp)，覆盖在胶囊顶部（真实头像优先，失败回落渐变首字母）
-            UserAvatar(
-                url = conversation.targetAvatar,
-                name = conversation.targetName,
-                size = 60.dp,
-                gradient = conversation.avatarGradient,
-                fallbackTextStyle = TextStyle(
-                    color = Color.White,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
-                ),
-                modifier = Modifier
-                    .border(1.5.dp, if (isWhiteBackground) Color(0x33000000) else Color(0x66FFFFFF), CircleShape)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onTitleClick
-                    )
-            )
-        }
-
-        // 右侧 LiquidButton 圆形搜索按键 (尺寸 41dp，图标 25dp)
-        LiquidButton(
-            onClick = onSearchClick,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 8.dp)
-                .size(41.dp),
-            backdrop = backdrop,
-            isDark = isDark,
-            surfaceColor = surfaceColor,
-            surfaceAlpha = surfaceAlpha,
-            contentPadding = PaddingValues(0.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Search,
-                contentDescription = "搜索聊天记录",
-                tint = contentColor,
-                modifier = Modifier.size(25.dp)
-            )
-        }
-    }
-}
-
-/**
  * 依据 iMessage 原生规则计算当前消息气泡是否携带尾巴（仅私聊使用，群聊统一为无尾巴圆气泡）：
  * 不管连续我方多条消息还是连续对方多条消息，都仅最底部一条带尾巴；
  * 跨自然日或时间间隔 > 60 分钟触发时间分隔条时，分隔条前后消息均按规范携带尾巴。
@@ -2086,9 +1620,17 @@ private fun BubbleMessageItem(
     showAvatar: Boolean = false,
     reserveAvatarSpace: Boolean = false,
     onSenderClick: (() -> Unit)? = null,
+    /** 点击引用条：回传被引用消息的 serverId，由调用方在 messageList 中定位并滚动高亮 */
+    onQuoteClick: ((Long) -> Unit)? = null,
+    /** 引用条预览文案覆盖（被引用消息已撤回时显示「该消息已被撤回」） */
+    quotedTextOverride: String? = null,
     onLongPress: (Rect) -> Unit,
     /** 双击气泡触发的动作（拍一拍）；为 null 时不接管双击，单击保持即时响应 */
-    onDoubleTapPat: (() -> Unit)? = null
+    onDoubleTapPat: (() -> Unit)? = null,
+    /** 点动态分享卡片主体 → 作者资料页并定位到该动态 */
+    onMomentCardClick: ((MomentShareCardData) -> Unit)? = null,
+    /** 点动态分享卡片的评论数 → 打开评论 */
+    onMomentCardCommentClick: ((MomentShareCardData) -> Unit)? = null
 ) {
     val isMine = message.isMine
     // 本地 uid -> 备注 映射（collectAsState 订阅：备注保存 / 清空后气泡上的发言人名字立即刷新）
@@ -2175,7 +1717,11 @@ private fun BubbleMessageItem(
                                 color = if (isWhiteBackground) Color(0xFF64748B) else Color(0xB3FFFFFF),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium
-                            )
+                            ),
+                            // 昵称过长时省略，把空间让给性别 / 称号徽章（徽章 flex-shrink:0）
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         GenderBadge(
                             gender = message.senderGender,
@@ -2183,6 +1729,12 @@ private fun BubbleMessageItem(
                             fontSize = 10.sp,
                             horizontalPadding = 5.dp,
                             verticalPadding = 1.dp
+                        )
+                        // 发送者称号（官方消息行顺序：username → gender → UserTitleBadge）
+                        UserTitleBadge(
+                            title = message.authorTitle,
+                            color = message.authorTitleColor,
+                            isDark = isDark
                         )
                     }
                 }
@@ -2201,7 +1753,12 @@ private fun BubbleMessageItem(
                     message = message,
                     hasTail = hasTail,
                     isDark = isDark,
+                    isWhiteBackground = isWhiteBackground,
                     higColors = higColors,
+                    onQuoteClick = onQuoteClick,
+                    quotedTextOverride = quotedTextOverride,
+                    onMomentCardClick = onMomentCardClick,
+                    onMomentCardCommentClick = onMomentCardCommentClick,
                     onImageClick = { url ->
                         imageViewer.open(url)
                     },
@@ -2210,8 +1767,9 @@ private fun BubbleMessageItem(
                     },
                     modifier = Modifier
                         .then(
-                            // 图片 / 游戏卡片 / 骰子 / 歌单 / 表情包为「自撑尺寸」的媒体内容，不施加气泡最小宽度
-                            if (message.isImage || message.isGame || message.isDice ||
+                            // 图片 / 游戏卡片 / 骰子 / 歌单 / 表情包为「自撑尺寸」的媒体内容，不施加气泡最小宽度；
+                            // 已撤回消息是整条居中占位，同样需要占满整行
+                            if (message.isDeleted || message.isImage || message.isGame || message.isDice ||
                                 message.isMusicPlaylist || message.isSticker
                             ) {
                                 Modifier
@@ -2268,341 +1826,9 @@ private fun BubbleMessageItem(
 }
 
 /**
- * SF Symbol 风格原生极简矢量图标
- */
-@Composable
-private fun SFSymbolIcon(
-    symbol: SFSymbolType,
-    tint: Color,
-    modifier: Modifier = Modifier
-) {
-    Canvas(modifier = modifier.size(20.dp)) {
-        val w = size.width
-        val h = size.height
-
-        when (symbol) {
-            SFSymbolType.REPLY -> {
-                // SF Symbol: arrowshape.turn.up.left
-                val strokeWidth = 1.8.dp.toPx()
-                val path = Path().apply {
-                    moveTo(w * 0.12f, h * 0.38f)
-                    lineTo(w * 0.42f, h * 0.12f)
-                    moveTo(w * 0.12f, h * 0.38f)
-                    lineTo(w * 0.42f, h * 0.64f)
-                    moveTo(w * 0.14f, h * 0.38f)
-                    cubicTo(
-                        w * 0.50f, h * 0.38f,
-                        w * 0.84f, h * 0.46f,
-                        w * 0.84f, h * 0.86f
-                    )
-                }
-                drawPath(path, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            }
-            SFSymbolType.UNDO_SEND -> {
-                // SF Symbol: arrow.uturn.backward.circle
-                val strokeWidth = 1.5.dp.toPx()
-                drawCircle(
-                    color = tint,
-                    radius = w * 0.44f,
-                    center = Offset(w * 0.5f, h * 0.5f),
-                    style = Stroke(width = strokeWidth)
-                )
-                val arcRect = Rect(w * 0.27f, h * 0.27f, w * 0.73f, h * 0.73f)
-                drawArc(
-                    color = tint,
-                    startAngle = 50f,
-                    sweepAngle = 265f,
-                    useCenter = false,
-                    topLeft = arcRect.topLeft,
-                    size = arcRect.size,
-                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                )
-                val head = Path().apply {
-                    moveTo(w * 0.20f, h * 0.46f)
-                    lineTo(w * 0.34f, h * 0.30f)
-                    lineTo(w * 0.34f, h * 0.58f)
-                    close()
-                }
-                drawPath(head, color = tint, style = Fill)
-            }
-            SFSymbolType.RECALL_AND_EDIT -> {
-                // SF Symbol: 撤回箭头 + 重新编辑铅笔组合
-                val strokeWidth = 1.4.dp.toPx()
-                // 1. 上半部：撤回弧线与箭头 (从右向左弯曲)
-                val arcRect = Rect(w * 0.16f, h * 0.12f, w * 0.68f, h * 0.58f)
-                drawArc(
-                    color = tint,
-                    startAngle = 10f,
-                    sweepAngle = -200f,
-                    useCenter = false,
-                    topLeft = arcRect.topLeft,
-                    size = arcRect.size,
-                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                )
-                val arrowHead = Path().apply {
-                    moveTo(w * 0.12f, h * 0.35f)
-                    lineTo(w * 0.28f, h * 0.20f)
-                    lineTo(w * 0.28f, h * 0.46f)
-                    close()
-                }
-                drawPath(arrowHead, color = tint, style = Fill)
-
-                // 2. 下半部：斜向编辑铅笔
-                drawLine(
-                    color = tint,
-                    start = Offset(w * 0.48f, h * 0.82f),
-                    end = Offset(w * 0.82f, h * 0.48f),
-                    strokeWidth = strokeWidth * 1.5f,
-                    cap = StrokeCap.Round
-                )
-                val tip = Path().apply {
-                    moveTo(w * 0.36f, h * 0.88f)
-                    lineTo(w * 0.42f, h * 0.74f)
-                    lineTo(w * 0.52f, h * 0.84f)
-                    close()
-                }
-                drawPath(tip, color = tint, style = Fill)
-            }
-            SFSymbolType.EDIT -> {
-                // SF Symbol: pencil
-                val strokeWidth = 1.6.dp.toPx()
-                drawLine(
-                    color = tint,
-                    start = Offset(w * 0.32f, h * 0.68f),
-                    end = Offset(w * 0.75f, h * 0.25f),
-                    strokeWidth = strokeWidth * 1.5f,
-                    cap = StrokeCap.Round
-                )
-                val tip = Path().apply {
-                    moveTo(w * 0.18f, h * 0.82f)
-                    lineTo(w * 0.25f, h * 0.64f)
-                    lineTo(w * 0.36f, h * 0.75f)
-                    close()
-                }
-                drawPath(tip, color = tint, style = Fill)
-            }
-            SFSymbolType.COPY -> {
-                // SF Symbol: doc.on.doc
-                val strokeWidth = 1.5.dp.toPx()
-                val r = 2.dp.toPx()
-                val backPath = Path().apply {
-                    moveTo(w * 0.58f, h * 0.16f)
-                    lineTo(w * 0.22f + r, h * 0.16f)
-                    arcTo(Rect(w * 0.22f, h * 0.16f, w * 0.22f + 2 * r, h * 0.16f + 2 * r), 270f, -90f, false)
-                    lineTo(w * 0.22f, h * 0.68f - r)
-                    arcTo(Rect(w * 0.22f, h * 0.68f - 2 * r, w * 0.22f + 2 * r, h * 0.68f), 180f, -90f, false)
-                    lineTo(w * 0.36f, h * 0.68f)
-                }
-                drawPath(backPath, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round))
-                drawRoundRect(
-                    color = tint,
-                    topLeft = Offset(w * 0.36f, h * 0.30f),
-                    size = Size(w * 0.48f, h * 0.58f),
-                    cornerRadius = CornerRadius(r, r),
-                    style = Stroke(width = strokeWidth)
-                )
-            }
-            SFSymbolType.SPEAK -> {
-                // SF Symbol: speaker.wave.2
-                val strokeWidth = 1.5.dp.toPx()
-                val body = Path().apply {
-                    moveTo(w * 0.15f, h * 0.38f)
-                    lineTo(w * 0.28f, h * 0.38f)
-                    lineTo(w * 0.46f, h * 0.22f)
-                    lineTo(w * 0.46f, h * 0.78f)
-                    lineTo(w * 0.28f, h * 0.62f)
-                    lineTo(w * 0.15f, h * 0.62f)
-                    close()
-                }
-                drawPath(body, color = tint, style = Fill)
-                val arc1 = Rect(w * 0.42f, h * 0.34f, w * 0.64f, h * 0.66f)
-                drawArc(color = tint, startAngle = -45f, sweepAngle = 90f, useCenter = false, topLeft = arc1.topLeft, size = arc1.size, style = Stroke(width = strokeWidth, cap = StrokeCap.Round))
-                val arc2 = Rect(w * 0.46f, h * 0.24f, w * 0.82f, h * 0.76f)
-                drawArc(color = tint, startAngle = -45f, sweepAngle = 90f, useCenter = false, topLeft = arc2.topLeft, size = arc2.size, style = Stroke(width = strokeWidth, cap = StrokeCap.Round))
-            }
-            SFSymbolType.TRANSLATE -> {
-                // SF Symbol: character.bubble / translate
-                val strokeWidth = 1.5.dp.toPx()
-                val bubble = Path().apply {
-                    moveTo(w * 0.16f, h * 0.22f)
-                    lineTo(w * 0.84f, h * 0.22f)
-                    lineTo(w * 0.84f, h * 0.64f)
-                    lineTo(w * 0.52f, h * 0.64f)
-                    lineTo(w * 0.36f, h * 0.80f)
-                    lineTo(w * 0.36f, h * 0.64f)
-                    lineTo(w * 0.16f, h * 0.64f)
-                    close()
-                }
-                drawPath(bubble, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-                drawLine(color = tint, start = Offset(w * 0.30f, h * 0.38f), end = Offset(w * 0.70f, h * 0.38f), strokeWidth = strokeWidth, cap = StrokeCap.Round)
-                drawLine(color = tint, start = Offset(w * 0.30f, h * 0.50f), end = Offset(w * 0.56f, h * 0.50f), strokeWidth = strokeWidth, cap = StrokeCap.Round)
-            }
-            SFSymbolType.SAVE_IMAGE -> {
-                // SF Symbol: square.and.arrow.down
-                val strokeWidth = 1.6.dp.toPx()
-                drawLine(color = tint, start = Offset(w * 0.5f, h * 0.15f), end = Offset(w * 0.5f, h * 0.60f), strokeWidth = strokeWidth, cap = StrokeCap.Round)
-                val head = Path().apply {
-                    moveTo(w * 0.34f, h * 0.45f)
-                    lineTo(w * 0.50f, h * 0.60f)
-                    lineTo(w * 0.66f, h * 0.45f)
-                }
-                drawPath(head, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-                val tray = Path().apply {
-                    moveTo(w * 0.20f, h * 0.50f)
-                    lineTo(w * 0.20f, h * 0.82f)
-                    lineTo(w * 0.80f, h * 0.82f)
-                    lineTo(w * 0.80f, h * 0.50f)
-                }
-                drawPath(tray, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            }
-            SFSymbolType.TRANSCRIBE -> {
-                // SF Symbol: waveform
-                val strokeWidth = 1.6.dp.toPx()
-                val heights = listOf(0.3f, 0.6f, 0.9f, 0.5f, 0.8f, 0.4f)
-                heights.forEachIndexed { i, factor ->
-                    val x = w * (0.20f + i * 0.12f)
-                    val halfH = (h * 0.7f * factor) / 2
-                    drawLine(
-                        color = tint,
-                        start = Offset(x, h * 0.5f - halfH),
-                        end = Offset(x, h * 0.5f + halfH),
-                        strokeWidth = strokeWidth,
-                        cap = StrokeCap.Round
-                    )
-                }
-            }
-            SFSymbolType.TRASH -> {
-                // SF Symbol: trash
-                val strokeWidth = 1.5.dp.toPx()
-                val body = Path().apply {
-                    moveTo(w * 0.26f, h * 0.32f)
-                    lineTo(w * 0.30f, h * 0.86f)
-                    lineTo(w * 0.70f, h * 0.86f)
-                    lineTo(w * 0.74f, h * 0.32f)
-                }
-                drawPath(body, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-                drawLine(
-                    color = tint,
-                    start = Offset(w * 0.18f, h * 0.28f),
-                    end = Offset(w * 0.82f, h * 0.28f),
-                    strokeWidth = strokeWidth,
-                    cap = StrokeCap.Round
-                )
-                val handle = Path().apply {
-                    moveTo(w * 0.40f, h * 0.28f)
-                    lineTo(w * 0.40f, h * 0.16f)
-                    lineTo(w * 0.60f, h * 0.16f)
-                    lineTo(w * 0.60f, h * 0.28f)
-                }
-                drawPath(handle, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            }
-            SFSymbolType.PAT, SFSymbolType.MENTION, SFSymbolType.MORE -> {
-                // SF Symbol: ellipsis.circle
-                val strokeWidth = 1.5.dp.toPx()
-                drawCircle(
-                    color = tint,
-                    radius = w * 0.44f,
-                    center = Offset(w * 0.5f, h * 0.5f),
-                    style = Stroke(width = strokeWidth)
-                )
-                val dotR = 1.25.dp.toPx()
-                val cy = h * 0.5f
-                drawCircle(color = tint, radius = dotR, center = Offset(w * 0.32f, cy))
-                drawCircle(color = tint, radius = dotR, center = Offset(w * 0.50f, cy))
-                drawCircle(color = tint, radius = dotR, center = Offset(w * 0.68f, cy))
-            }
-        }
-    }
-}
-
-/**
- * iOS 26 原生 Liquid Glass 垂直上下文菜单列表
- */
-@Composable
-private fun AppleContextMenu(
-    items: List<ContextMenuItem>,
-    backdrop: Backdrop?,
-    isDark: Boolean,
-    modifier: Modifier = Modifier
-) {
-    val fallbackBackdrop = rememberCanvasBackdrop {
-        drawRect(if (isDark) Color(0xFF1B1E26) else Color(0xFFF2F4F8))
-    }
-    val actualBackdrop = backdrop ?: fallbackBackdrop
-
-    val surfaceColor = if (isDark) Color(0xFF1E1E22).copy(alpha = 0.68f) else Color(0xFFF9F9FB).copy(alpha = 0.68f)
-    val labelColor = if (isDark) Color.White else Color(0xFF1C1C1E)
-    val secondaryLabelColor = if (isDark) Color(0x99FFFFFF) else Color(0xFF8E8E93)
-    val dividerColor = if (isDark) Color(0x1FFFFFFF) else Color(0x14000000)
-
-    Column(
-        modifier = modifier
-            .width(250.dp)
-            .drawBackdrop(
-                backdrop = actualBackdrop,
-                shape = { RoundedCornerShape(16.dp) },
-                effects = {
-                    colorControls(
-                        brightness = if (isDark) 0.05f else 0.15f,
-                        saturation = 1.4f
-                    )
-                    blur(if (isDark) 16.dp.toPx() else 20.dp.toPx())
-                    lens(16.dp.toPx(), 32.dp.toPx(), depthEffect = true)
-                },
-                highlight = { Highlight.Plain },
-                shadow = { Shadow(radius = 20.dp, color = Color.Black.copy(if (isDark) 0.45f else 0.18f)) },
-                onDrawSurface = { drawRect(surfaceColor) }
-            )
-            .clip(RoundedCornerShape(16.dp))
-    ) {
-        items.forEachIndexed { index, item ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = item.onClick
-                    )
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                BasicText(
-                    text = item.title,
-                    style = TextStyle(
-                        color = labelColor,
-                        fontSize = 17.sp,
-                        lineHeight = 22.sp,
-                        fontWeight = FontWeight.Normal
-                    )
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                SFSymbolIcon(
-                    symbol = item.icon,
-                    tint = secondaryLabelColor,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            if (index < items.size - 1) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(0.5.dp)
-                        .padding(start = 16.dp)
-                        .background(dividerColor)
-                )
-            }
-        }
-    }
-}
-
-/**
- * iMessage 长按气泡全屏浮层：
- * 1. 背景遮罩变暗；
- * 2. 悬浮放大预览气泡（原地 1.1 倍放大 + 柔和外阴影 + 保持尾巴与样式）；
- * 3. 独立 ContextMenu Popover（智能避让屏幕边缘，自适应位于气泡下方或上方）。
+ * iMessage 长按气泡全屏浮层（私聊包装层）：
+ * 复用公共 [MessageContextMenuOverlay]，把私聊的 iMessage 气泡作为放大预览 slot 传入，
+ * 保证私聊长按交互与抽出前完全一致。
  */
 @Composable
 private fun BubbleContextMenuOverlay(
@@ -2616,134 +1842,17 @@ private fun BubbleContextMenuOverlay(
     onDismiss: () -> Unit,
     menuItems: List<ContextMenuItem>
 ) {
-    val overlayAlpha = remember { Animatable(0f) }
-    val bubbleScale = remember { Animatable(1.0f) }
-    val bubbleOffsetY = remember { Animatable(0f) }
-    val menuScale = remember { Animatable(0.75f) }
-    val menuAlpha = remember { Animatable(0f) }
-
-    LaunchedEffect(isShowing) {
-        if (isShowing) {
-            launch {
-                overlayAlpha.animateTo(
-                    targetValue = 1f,
-                    animationSpec = tween(durationMillis = 200)
-                )
-            }
-            launch {
-                bubbleScale.animateTo(
-                    targetValue = 1.1f,
-                    animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f)
-                )
-            }
-            launch {
-                bubbleOffsetY.animateTo(
-                    targetValue = -4f,
-                    animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f)
-                )
-            }
-            launch {
-                menuScale.animateTo(
-                    targetValue = 1f,
-                    animationSpec = spring(dampingRatio = 0.75f, stiffness = 420f)
-                )
-            }
-            launch {
-                menuAlpha.animateTo(
-                    targetValue = 1f,
-                    animationSpec = tween(durationMillis = 180)
-                )
-            }
-        } else {
-            launch {
-                overlayAlpha.animateTo(
-                    targetValue = 0f,
-                    animationSpec = tween(durationMillis = 180)
-                )
-            }
-            launch {
-                bubbleScale.animateTo(
-                    targetValue = 1.0f,
-                    animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f)
-                )
-            }
-            launch {
-                bubbleOffsetY.animateTo(
-                    targetValue = 0f,
-                    animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f)
-                )
-            }
-            launch {
-                menuScale.animateTo(
-                    targetValue = 0.75f,
-                    animationSpec = spring(dampingRatio = 0.75f, stiffness = 420f)
-                )
-            }
-            launch {
-                menuAlpha.animateTo(
-                    targetValue = 0f,
-                    animationSpec = tween(durationMillis = 150)
-                )
-            }
-        }
-    }
-
-    val density = LocalDensity.current
-    val bubbleLeft = with(density) { anchor.bounds.left.toDp() }
-    val bubbleTop = with(density) { anchor.bounds.top.toDp() }
-    val bubbleRight = with(density) { anchor.bounds.right.toDp() }
-    val bubbleBottom = with(density) { anchor.bounds.bottom.toDp() }
-    val bubbleWidth = with(density) { anchor.bounds.width.toDp() }
-    val bubbleHeight = with(density) { anchor.bounds.height.toDp() }
-
-    val menuWidth = 250.dp
-    val menuHeight = 44.dp * menuItems.size
-
-    // 气泡 1.1 倍放大并上浮 4dp 后的实际视觉边界：
-    val scaledExtraHeight = bubbleHeight * 0.1f
-    val effectiveBubbleBottom = bubbleBottom - 4.dp + scaledExtraHeight
-    val effectiveBubbleTop = bubbleTop - 4.dp - scaledExtraHeight
-
-    val spaceBelow = screenHeight - effectiveBubbleBottom - 88.dp
-    val isMenuBelow = spaceBelow >= (menuHeight + 16.dp)
-
-    val menuTop = if (isMenuBelow) {
-        (effectiveBubbleBottom + 10.dp).coerceIn(80.dp, screenHeight - menuHeight - 16.dp)
-    } else {
-        (effectiveBubbleTop - menuHeight - 10.dp).coerceIn(80.dp, screenHeight - menuHeight - 16.dp)
-    }
-
-    val menuLeft = if (anchor.message.isMine) {
-        (bubbleRight - menuWidth).coerceIn(16.dp, screenWidth - menuWidth - 14.dp)
-    } else {
-        bubbleLeft.coerceIn(14.dp, screenWidth - menuWidth - 16.dp)
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.45f * overlayAlpha.value))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onDismiss
-            )
-    ) {
-        // 1. 悬浮放大预览气泡 (原地 1.1 倍放大 + 轻微上浮 -4dp + 柔和外阴影)
-        Box(
-            modifier = Modifier
-                .offset(x = bubbleLeft, y = bubbleTop + bubbleOffsetY.value.dp)
-                .size(width = bubbleWidth, height = bubbleHeight)
-                .graphicsLayer {
-                    scaleX = bubbleScale.value
-                    scaleY = bubbleScale.value
-                    transformOrigin = TransformOrigin(
-                        pivotFractionX = if (anchor.message.isMine) 0.85f else 0.15f,
-                        pivotFractionY = if (isMenuBelow) 0f else 1f
-                    )
-                    shadowElevation = (18f * overlayAlpha.value).dp.toPx()
-                }
-        ) {
+    MessageContextMenuOverlay(
+        bounds = anchor.bounds,
+        isMine = anchor.message.isMine,
+        isShowing = isShowing,
+        backdrop = backdrop,
+        isDark = isDark,
+        screenWidth = screenWidth,
+        screenHeight = screenHeight,
+        onDismiss = onDismiss,
+        menuItems = menuItems,
+        preview = {
             BubbleContentBox(
                 message = anchor.message,
                 hasTail = anchor.hasTail,
@@ -2752,83 +1861,7 @@ private fun BubbleContextMenuOverlay(
                 modifier = Modifier.fillMaxSize()
             )
         }
-
-        // 2. 下方/上方独立 ContextMenu Popover (避让屏幕边缘)
-        Box(
-            modifier = Modifier
-                .offset(x = menuLeft, y = menuTop)
-                .graphicsLayer {
-                    scaleX = menuScale.value
-                    scaleY = menuScale.value
-                    alpha = menuAlpha.value
-                    transformOrigin = TransformOrigin(
-                        pivotFractionX = if (anchor.message.isMine) 0.9f else 0.1f,
-                        pivotFractionY = if (isMenuBelow) 0.0f else 1.0f
-                    )
-                }
-        ) {
-            AppleContextMenu(
-                items = menuItems,
-                backdrop = backdrop,
-                isDark = isDark
-            )
-        }
-    }
-}
-
-/**
- * 依据消息归属动态构建 ContextMenu 选项：
- * - 我方：回复、撤回、[撤回并编辑]、[编辑]、拷贝
- * - 对方：回复、拷贝
- * - 房管（viewer_can_delete_message）：额外可删除他人消息
- */
-private fun buildContextMenuItems(
-    message: ChatMessage,
-    onReply: () -> Unit,
-    onRecall: () -> Unit,
-    onRecallAndEdit: () -> Unit,
-    onEdit: () -> Unit,
-    onCopy: () -> Unit,
-    includeGroupActions: Boolean,
-    onPat: () -> Unit,
-    onMention: () -> Unit,
-    canModerateDelete: Boolean,
-    onModerateDelete: () -> Unit
-): List<ContextMenuItem> {
-    val list = mutableListOf<ContextMenuItem>()
-
-    // 1. 回复
-    list.add(ContextMenuItem("回复", SFSymbolType.REPLY, onReply))
-
-    // 2. 仅我方包含：撤回、撤回并编辑、编辑
-    if (message.isMine) {
-        list.add(ContextMenuItem("撤回", SFSymbolType.UNDO_SEND, onRecall))
-        // 动态分享卡片的 content 是卡片 JSON，不能进输入框编辑（官网同样排除非文本类型）
-        if (!message.isImage && !message.isVoice && !message.isDice && !message.isMomentShare &&
-            !message.isMusicPlaylist && !message.isSticker
-        ) {
-            list.add(ContextMenuItem("撤回并编辑", SFSymbolType.RECALL_AND_EDIT, onRecallAndEdit))
-            list.add(ContextMenuItem("编辑", SFSymbolType.EDIT, onEdit))
-        }
-    }
-
-    // 对方消息：拍一拍（私聊 / 群聊均可用，官网亦然），@提及仅群聊
-    if (!message.isMine) {
-        list.add(ContextMenuItem("拍一拍", SFSymbolType.PAT, onPat))
-        if (includeGroupActions) {
-            list.add(ContextMenuItem("@提及", SFSymbolType.MENTION, onMention))
-        }
-    }
-
-    // 3. 拷贝 (我方与对方均支持)
-    list.add(ContextMenuItem("拷贝", SFSymbolType.COPY, onCopy))
-
-    // 4. 房管删除他人消息（仅服务端已同步的消息可删）
-    if (!message.isMine && canModerateDelete && message.serverId > 0L) {
-        list.add(ContextMenuItem("删除消息", SFSymbolType.TRASH, onModerateDelete))
-    }
-
-    return list
+    )
 }
 
 /**
@@ -2906,56 +1939,6 @@ private fun SystemMessageItem(
                 )
             )
         }
-    }
-}
-
-/**
- * 扩展 Sheet 宫格图标项
- */
-@Composable
-private fun ActionSheetGridItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    color: Color,
-    textColor: Color = Color.White,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick
-            )
-            .padding(horizontal = 4.dp, vertical = 6.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(46.dp)
-                .clip(CircleShape)
-                .background(color.copy(alpha = 0.16f))
-                .border(1.dp, color.copy(alpha = 0.3f), CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = title,
-                tint = color,
-                modifier = Modifier.size(22.dp)
-            )
-        }
-        BasicText(
-            text = title,
-            style = TextStyle(
-                color = textColor,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.Medium
-            )
-        )
     }
 }
 

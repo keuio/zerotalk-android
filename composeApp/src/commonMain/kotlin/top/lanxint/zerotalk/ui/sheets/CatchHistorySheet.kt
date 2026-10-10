@@ -1,6 +1,7 @@
 package top.lanxint.zerotalk.ui.sheets
 
 import androidx.compose.foundation.background
+import top.lanxint.zerotalk.ui.components.rememberSheetContentHeight
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
@@ -96,8 +97,8 @@ fun SheetCatchHistoryContent(
     }
 
     val listState = rememberLazyListState()
-    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-    val fixedContentHeight = screenHeight * 0.75f
+    // 固定高度（屏高 75%）保持分页浏览的稳定观感；与通知中心 / 安全中心共用同一实现
+    val fixedContentHeight = rememberSheetContentHeight()
 
     // 本 Sheet 内容的返回总入口：先关内部子页面（评论 / 分享），没有子页面时交回宿主关闭整个 Sheet。
     // 始终 enabled —— 不再依赖「后注册优先」的组合顺序与宿主抢返回事件（宿主用 sheetContentHandlesBack 显式让位）

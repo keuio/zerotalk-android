@@ -159,6 +159,33 @@ data class MomentShareCardData(
 )
 
 /**
+ * 把动态卡片数据转成 [MomentItem]，用于「看评论」复用 [top.lanxint.zerotalk.ui.moments.MomentCommentSheet]。
+ *
+ * 注意：卡片数据是服务端下发的截断摘要（正文 ≤280 字、图片 ≤9 张），
+ * 因此构造出的对象只适合展示评论，正文可能已被截断。
+ */
+fun MomentShareCardData.toMomentItem(): MomentItem = MomentItem(
+    id = momentId.toString(),
+    authorId = userId.toString(),
+    authorUid = uid,
+    authorName = username,
+    authorAvatar = avatarUrl,
+    authorGender = when (gender.lowercase()) {
+        "female" -> "女"
+        "male" -> "男"
+        else -> "女"
+    },
+    publishTime = createdAt.orEmpty(),
+    textContent = excerpt,
+    imageUrl = images.firstOrNull().orEmpty(),
+    images = images,
+    audioUrl = audioUrl.orEmpty(),
+    music = music,
+    likesCount = likeCount,
+    commentsCount = commentCount
+)
+
+/**
  * 网易云歌单卡片数据（对齐官方 `musicPlayer-*.js` 的 `Yr()` 解析结果）
  *
  * 官方解析规则（逐字段对齐）：
@@ -209,9 +236,19 @@ data class ChatMessage(
     /** 语音通话记录展示文案（已从 `content` 的 `text` 解析） */
     val voiceCallText: String = "",
     val isSystem: Boolean = false,
+    /**
+     * 服务端标记的「已撤回 / 已删除」（官网 `is_deleted`）
+     *
+     * 撤回后消息**保留在列表里**，但服务端已清空 `content` / `image_url`。
+     * 渲染层必须在类型分发之前整条替换为「该消息已被撤回」，否则图片会变占位框、
+     * 骰子会变 `?`（此前完全没有消费该字段，重进会话即复现）。
+     */
+    val isDeleted: Boolean = false,
     val quotedText: String? = null,
     val quotedIsMine: Boolean? = null,
     val quotedSenderName: String? = null,
+    /** 被引用消息的服务端 id（点击引用条跳转用；服务端下发 reply_to_id，此前在映射层被丢弃） */
+    val replyToId: Long? = null,
     val isDice: Boolean = false,
     val diceValue: Int = 0,
     val isImage: Boolean = false,
@@ -248,6 +285,14 @@ data class ChatMessage(
     val senderAvatar: String = "",
     /** 发送方性别：male / female / unknown */
     val senderGender: String = "",
+    /**
+     * 发送方称号（官方 UserTitleBadge 的 `title`，服务端在消息对象上下发）。
+     *
+     * 空串表示未下发 / 无称号，UI 不渲染徽章（不要显示占位）。
+     */
+    val authorTitle: String = "",
+    /** 发送方称号颜色 key（官方 `title_color`，白名单外 UI 回落 blue） */
+    val authorTitleColor: String = "",
     /** 会话摘要文案（图片 / 拍一拍等非文本消息用于列表展示） */
     val previewText: String = "",
     /**
@@ -282,12 +327,98 @@ data class ChatMessage(
 )
 
 /**
+ * 官方撤回占位文案。
+ *
+ * 官网 `publicAnnouncementDismiss-*.js` 在类型分发之前执行：
+ * `e.msg.is_deleted ? <div class="Xu">该消息已被撤回</div> : …`，
+ * 会话列表摘要与引用摘要也用同一文案。
+ */
+const val RECALLED_MESSAGE_TEXT = "该消息已被撤回"
+
+/**
+ * 把消息归一化为「已撤回」状态（对齐官网 `handleMessageRecall` 的本地标记 + 清空）。
+ *
+ * 官网撤回时执行：
+ * `is_deleted = true; content = ""; image_url = null; reply_preview = null;
+ *  mention_ids = []; mention_users = [];`
+ * 这里同步清空本模型里等价的正文 / 媒体地址 / 引用摘要，并把会话摘要固定为
+ * [RECALLED_MESSAGE_TEXT]，避免撤回后的会话列表仍显示旧内容。
+ *
+ * 类型标记（[ChatMessage.isImage] / [ChatMessage.isDice] 等）保留不动，
+ * 渲染层以 [ChatMessage.isDeleted] 优先短路，不会再出现占位框与 `?`。
+ */
+fun ChatMessage.asRecalled(): ChatMessage = copy(
+    isDeleted = true,
+    content = "",
+    imageUrl = "",
+    audioUrl = "",
+    stickerUrl = "",
+    quotedText = null,
+    quotedSenderName = null,
+    quotedIsMine = null,
+    previewText = RECALLED_MESSAGE_TEXT
+)
+
+/**
+ * 是否仍提供「撤回 / 撤回并编辑 / 编辑」操作项。
+ *
+ * 对齐官网：`e.isOwnMessage(e.msg) && !e.msg.is_deleted && e.msg.id`。
+ * 已撤回消息在官网被整条替换为「该消息已被撤回」，不再有操作入口。
+ */
+fun ChatMessage.canRecallOrEdit(): Boolean = isMine && !isDeleted
+
+/**
+ * 是否仍提供「拷贝」操作项。
+ *
+ * 已撤回消息的 content 已被清空，拷贝没有意义（官网同样不再提供）。
+ */
+fun ChatMessage.canCopy(): Boolean = !isDeleted
+
+/**
+ * 解析引用条应展示的文案。
+ *
+ * 服务端撤回时会同步把所有引用它的消息 `reply_preview` 改成「该消息已被撤回」；
+ * 这里对「被引用消息仍在同一列表且 isDeleted」的情况做本地兜底，
+ * 避免服务端漏改时引用条仍显示已被清空的旧内容。
+ */
+fun List<ChatMessage>.resolveQuotedText(message: ChatMessage): String {
+    val target = message.replyToId
+        ?.takeIf { it > 0L }
+        ?.let { id -> firstOrNull { it.serverId == id } }
+    return if (target?.isDeleted == true) RECALLED_MESSAGE_TEXT else message.quotedText.orEmpty()
+}
+
+/**
+ * 就地应用一次撤回事件（对齐官网 `handleMessageRecall` 对消息列表的改写）。
+ *
+ * - 命中 [messageId] 的消息改写为 [ChatMessage.asRecalled]；
+ * - 引用它的消息把引用摘要改成 [RECALLED_MESSAGE_TEXT]；
+ * - **不移除任何元素**：官网撤回后消息保留在列表里，由渲染层整条替换为占位。
+ *
+ * 抽成纯函数便于单元测试覆盖「标记而非移除」这一行为。
+ */
+fun List<ChatMessage>.applyRecall(messageId: Long): List<ChatMessage> =
+    if (messageId <= 0L) {
+        this
+    } else {
+        map { msg ->
+            when {
+                msg.serverId == messageId -> msg.asRecalled()
+                msg.replyToId == messageId -> msg.copy(quotedText = RECALLED_MESSAGE_TEXT)
+                else -> msg
+            }
+        }
+    }
+
+/**
  * 引用回复时展示的「被引用消息」摘要。
  *
  * 骰子按官网口径展示为 `[骰子 N]`；拍一拍直接用已归因文案，
  * 避免把服务端 JSON（`{"a":…,"t":…}`）原样贴进引用条。
+ * 已撤回消息（`is_deleted`）固定展示 [RECALLED_MESSAGE_TEXT]（对齐官网）。
  */
 fun ChatMessage.quotePreviewText(): String = when {
+    isDeleted -> RECALLED_MESSAGE_TEXT
     isVoiceCall -> voiceCallText.ifBlank { "[语音通话]" }
     isVoice -> "[语音 ${voiceDurationSec}\"]"
     isImage -> "[图片]"
@@ -304,9 +435,9 @@ fun ChatMessage.quotePreviewText(): String = when {
  * 新消息通知（用于全局弹窗展示），由 WebSocket 实时推送触发。
  *
  * @param roomName 房间显示名称
- * @param senderName 发送者昵称（仅 DM 场景需要显示，群聊置空）
+ * @param senderName 发送者昵称（私聊与群聊都传；横幅在群聊里显示为「发送人：内容」）
  * @param content 消息正文
- * @param isGroup 是否为群聊（群聊不显示发送者昵称）
+ * @param isGroup 是否为群聊
  */
 data class IncomingMessageNotification(
     val roomName: String,

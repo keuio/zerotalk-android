@@ -3,8 +3,8 @@ package top.lanxint.zerotalk.ui.messages
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,12 +42,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -55,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import top.lanxint.zerotalk.data.model.ChatMessage
 import top.lanxint.zerotalk.data.model.MomentShareCardData
 import top.lanxint.zerotalk.data.model.MusicPlaylist
+import top.lanxint.zerotalk.data.model.RECALLED_MESSAGE_TEXT
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.ChatDice
@@ -77,7 +84,9 @@ fun BubbleQuotedBox(
     quotedIsMine: Boolean?,
     isMine: Boolean,
     higColors: AppleHigColorTokens,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** 点击引用条：跳转到被引用消息（官方 scrollToQuotedMessage）。为 null 时不注册手势。 */
+    onClick: (() -> Unit)? = null
 ) {
     // 引用条位于气泡内部，颜色必须跟随**气泡底色**、而不是主题：
     // 对方气泡恒为深灰 Color(0xB32C2C2E)、我方气泡恒为蓝 Color(0xFF007AFF)（两种主题下都一样），
@@ -93,6 +102,15 @@ fun BubbleQuotedBox(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            // 必须用 tapPreservingLongPress 而非 clickable：后者会消费 down，
+            // 导致父级气泡的长按菜单（引用/撤回）失效
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .tapPreservingLongPress(key = quotedText, onTap = onClick)
+                        .semantics { onClick(label = "跳转到被引用的消息") { onClick.invoke(); true } }
+                } else Modifier
+            )
             .clip(RoundedCornerShape(8.dp))
             .background(
                 // 气泡底色两种主题下一致，遮罩也保持一致
@@ -155,7 +173,21 @@ fun BubbleVoiceContent(
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .clickable(enabled = audioUrl.isNotBlank(), onClick = onTogglePlay)
+            // 语音条整条可点，但**不能吞掉 down**：Modifier.clickable 会消费 down，
+            // 父级气泡的 detectTapGestures 便永远收不到长按（撤回 / 引用菜单弹不出来）。
+            .then(
+                if (audioUrl.isNotBlank()) {
+                    Modifier
+                        .tapPreservingLongPress(audioUrl, onTogglePlay)
+                        // 手势不再走 clickable，这里补回无障碍「点击」动作（TalkBack 可直接播放 / 暂停）
+                        .semantics {
+                            onClick(label = if (isPlaying) "停止播放" else "播放语音") {
+                                onTogglePlay()
+                                true
+                            }
+                        }
+                } else Modifier
+            )
             .padding(horizontal = 2.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -179,10 +211,61 @@ fun BubbleVoiceContent(
 }
 
 /**
+ * 「可单击、但不吞长按」的点击修饰符（聊天媒体块专用）。
+ *
+ * 为什么不能用 `Modifier.clickable`：Compose 的指针事件在 Main pass 上**子节点先于父节点**，
+ * 而 `clickable` 会消费 down。父级气泡用 `detectTapGestures` / `combinedClickable` 处理长按
+ * （撤回 / 引用 / 拷贝菜单），其 `awaitFirstDown()` 默认 `requireUnconsumed = true`，
+ * 于是子节点一旦自带 `clickable`，父级的**长按就永远收不到**（图片、语音、表情包都踩过这个坑）。
+ *
+ * 这里手写手势：down 与移动一律不消费，父级照常判定长按；只有「按住在
+ * `ViewConfiguration.longPressTimeoutMillis` 内抬起、位移不超过 touchSlop、且没有第二根手指」
+ * 才消费 up 并回调。这样单击、长按、列表滑动三种意图互不干扰。
+ *
+ * @param key 与 `pointerInput` 相同的重启键；媒体块用自身 url 即可。
+ * @param onTap 短按回调。
+ */
+internal fun Modifier.tapPreservingLongPress(key: Any?, onTap: () -> Unit): Modifier = pointerInput(key) {
+    val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+    val touchSlop = viewConfiguration.touchSlop
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var isTap = false
+        while (true) {
+            val event = awaitPointerEvent()
+            // 多指按下：按取消处理，避免误判成单击
+            if (event.changes.size > 1) break
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (change.changedToUpIgnoreConsumed()) {
+                // up 已被更内层的控件消费 → 说明点击归内层处理，这里不再重复触发
+                // （嵌套可点区域时避免父子同时响应，例如动态卡片里的「评论」）
+                if (change.isConsumed) break
+                // 超过长按阈值才抬起 → 父级已按长按处理，这里不再回调
+                isTap = change.uptimeMillis - down.uptimeMillis < longPressTimeout
+                if (isTap) change.consume()
+                break
+            }
+            // 已被消费 / 抬手 / 位移超过 touchSlop → 放弃本次点击
+            if (!change.pressed || change.isConsumed) break
+            if ((change.position - down.position).getDistance() > touchSlop) break
+        }
+        if (isTap) onTap()
+    }
+}
+
+/**
  * 图片消息展示相框组件
  *
  * 遵循标准比例约束规范：限制最大宽 220dp、最大高 260dp，最小 80dp，
  * 根据图片真实宽高比自适应尺寸，保持原图比例不拉伸变形。
+ *
+ * **单击 / 长按都交给父级气泡**：私聊 `detectTapGestures`、大厅 `combinedClickable`
+ * 已分别处理「单击开图」与「长按弹菜单」。这里若再自建 `clickable`，子节点会消费 down，
+ * 父级 `awaitFirstDown(requireUnconsumed = true)` 便永远收不到事件 —— 图片长按
+ * （撤回 / 引用 / 拷贝）会彻底失效。因此 [onClick] 只用于补无障碍点击动作，不再参与手势。
+ *
+ * @param onClick 保留以兼容既有调用点（私聊 / 大厅均以具名参数传入）；
+ *   仅作为 TalkBack 的点击动作，不注册任何指针手势。
  */
 @Composable
 fun BubbleImageContent(
@@ -194,6 +277,7 @@ fun BubbleImageContent(
     height: Dp? = null,
     onClick: (() -> Unit)? = null
 ) {
+    val onImageTap = onClick
     var bitmap by remember(imageUrl) { mutableStateOf<ImageBitmap?>(null) }
     var isLoading by remember(imageUrl) { mutableStateOf(true) }
 
@@ -247,12 +331,14 @@ fun BubbleImageContent(
                 shape
             )
             .then(
-                if (onClick != null) {
-                    Modifier.clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onClick
-                    )
+                if (onImageTap != null) {
+                    // 只补无障碍点击动作，**不**注册 clickable：指针手势留给父级，长按才收得到
+                    Modifier.semantics {
+                        onClick(label = "查看图片") {
+                            onImageTap.invoke()
+                            true
+                        }
+                    }
                 } else Modifier
             ),
         contentAlignment = Alignment.Center
@@ -296,6 +382,38 @@ fun BubbleImageContent(
 }
 
 /**
+ * 已撤回消息的整条占位（对齐官网 `e.msg.is_deleted ? <div class="Xu">该消息已被撤回</div> : …`）。
+ *
+ * 发生在类型分发之前：图片 / 骰子 / 歌单 / 表情包等一律不再渲染，
+ * 因此不会再出现占位框与 `?`。
+ *
+ * @param textColor 文案颜色由调用方按页面底色给出（与系统提示同款弱化风格）
+ */
+@Composable
+fun RecalledMessageNotice(
+    textColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            text = RECALLED_MESSAGE_TEXT,
+            style = TextStyle(
+                color = textColor,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Normal,
+                textAlign = TextAlign.Center
+            )
+        )
+    }
+}
+
+/**
  * 统一聊天气泡核心内容容器
  *
  * 供私聊 `PrivateChatScreen` 与公共大厅 `PublicChatroomScreen` 全量复用：
@@ -312,11 +430,37 @@ fun BubbleContentBox(
     customBgColor: Color? = null,
     showBorder: Boolean = true,
     onImageClick: ((String) -> Unit)? = null,
-    onEnterGame: ((gameType: String, gameId: Long) -> Unit)? = null
+    onEnterGame: ((gameType: String, gameId: Long) -> Unit)? = null,
+    /** 点击引用条：回传被引用消息的服务端 id，由调用方滚动定位 */
+    onQuoteClick: ((Long) -> Unit)? = null,
+    /** 页面底色是否为纯白：已撤回占位文案据此切换配色（与系统提示一致） */
+    isWhiteBackground: Boolean = false,
+    /** 引用条预览文案覆盖（被引用消息已撤回时由调用方改写为「该消息已被撤回」） */
+    quotedTextOverride: String? = null,
+    /**
+     * 文本气泡行尾的附加槽位（公共大厅用于在气泡内保留消息时间戳）。
+     * 为 null 时保持原有单行文本排版，私聊 / 群聊调用点不受影响。
+     */
+    trailingContent: (@Composable () -> Unit)? = null,
+    /** 点击动态分享卡片主体：进入作者资料页并定位到该动态 */
+    onMomentCardClick: ((MomentShareCardData) -> Unit)? = null,
+    /** 点击动态分享卡片的评论数：打开该动态的评论 */
+    onMomentCardCommentClick: ((MomentShareCardData) -> Unit)? = null
 ) {
+    // 已撤回：类型分发之前整条替换为「该消息已被撤回」（对齐官网 is_deleted 分支）
+    if (message.isDeleted) {
+        RecalledMessageNotice(
+            textColor = if (isWhiteBackground) Color(0x73000000) else Color(0xAAFFFFFF),
+            modifier = modifier
+        )
+        return
+    }
     val isMine = message.isMine
+    val quotedText = quotedTextOverride ?: message.quotedText
     val voicePlayer = rememberMomentAudioPlayer()
     var isVoicePlaying by remember(message.id) { mutableStateOf(false) }
+    // 服务端不下发语音时长（官方同样靠音频元数据现算）：消息本身没有时长时，用播放器就绪后回传的值
+    var resolvedVoiceDuration by remember(message.id) { mutableStateOf(0) }
 
     val bubbleShape = customShape ?: remember(isMine, hasTail) {
         if (hasTail) {
@@ -387,7 +531,13 @@ fun BubbleContentBox(
         MomentShareCardBubble(
             data = message.momentShare,
             isDark = isDark,
-            modifier = modifier
+            modifier = modifier,
+            onClick = message.momentShare
+                ?.takeIf { onMomentCardClick != null }
+                ?.let { d -> { onMomentCardClick?.invoke(d) } },
+            onCommentClick = message.momentShare
+                ?.takeIf { onMomentCardCommentClick != null }
+                ?.let { d -> { onMomentCardCommentClick?.invoke(d) } }
         )
     } else if (message.isSticker) {
         // 表情包：官网裸媒体块（`.msg-media-wrap--sticker`），有图渲染图片，
@@ -420,14 +570,17 @@ fun BubbleContentBox(
                 )
         ) {
             Column {
-                // 如果存在引用前置
-                if (!message.quotedText.isNullOrEmpty()) {
+                // 如果存在引用前置（已撤回目标由调用方改写为「该消息已被撤回」）
+                if (!quotedText.isNullOrEmpty()) {
                     BubbleQuotedBox(
-                        quotedText = message.quotedText,
+                        quotedText = quotedText,
                         quotedSenderName = message.quotedSenderName,
                         quotedIsMine = message.quotedIsMine,
                         isMine = isMine,
-                        higColors = higColors
+                        higColors = higColors,
+                        onClick = message.replyToId
+                            ?.takeIf { it > 0L && onQuoteClick != null }
+                            ?.let { id -> { onQuoteClick?.invoke(id) } }
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                 }
@@ -436,7 +589,7 @@ fun BubbleContentBox(
                 if (message.isVoice) {
                     BubbleVoiceContent(
                         audioUrl = message.audioUrl,
-                        durationSec = message.voiceDurationSec,
+                        durationSec = message.voiceDurationSec.takeIf { it > 0 } ?: resolvedVoiceDuration,
                         isPlaying = isVoicePlaying,
                         onTogglePlay = {
                             if (isVoicePlaying) {
@@ -446,7 +599,8 @@ fun BubbleContentBox(
                                 voicePlayer.play(
                                     url = message.audioUrl,
                                     onComplete = { isVoicePlaying = false },
-                                    onError = { isVoicePlaying = false }
+                                    onError = { isVoicePlaying = false },
+                                    onDuration = { resolvedVoiceDuration = it }
                                 )
                                 isVoicePlaying = true
                             }
@@ -455,14 +609,24 @@ fun BubbleContentBox(
                 } else {
                     // 普通文本 / 拍一拍
                     val textContent = if (message.isPat) message.patText.ifBlank { "拍了拍" } else message.content
-                    BasicText(
-                        text = textContent,
-                        style = TextStyle(
-                            color = Color.White,
-                            fontSize = 17.sp,
-                            lineHeight = 22.sp
-                        )
+                    val textStyle = TextStyle(
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        lineHeight = 22.sp
                     )
+                    if (trailingContent == null) {
+                        BasicText(text = textContent, style = textStyle)
+                    } else {
+                        // 行尾附加槽位（公共大厅：气泡内保留消息时间戳）
+                        // 不能用 Row + weight：那会让气泡恒为最大宽度。
+                        // 改用先量尾部、再用剩余宽度量正文的布局，气泡宽度仍按正文收缩。
+                        RowWithTrailing(
+                            spacing = 8.dp,
+                            trailing = { trailingContent() }
+                        ) {
+                            BasicText(text = textContent, style = textStyle)
+                        }
+                    }
                 }
             }
         }
@@ -603,17 +767,23 @@ fun StickerBubble(
         return
     }
 
+    val onStickerTap = onClick
     AsyncNetworkImage(
         url = resolvedUrl,
         contentDescription = "表情包",
         modifier = modifier
             .size(120.dp)
             .then(
-                if (onClick != null) {
-                    Modifier.clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { onClick(resolvedUrl) }
+                if (onStickerTap != null) {
+                    // 与图片同理：不吞 down，长按才能冒泡到父级气泡；单击仍打开大图
+                    Modifier
+                        .tapPreservingLongPress(resolvedUrl) { onStickerTap(resolvedUrl) }
+                        .semantics {
+                            onClick(label = "查看表情包") {
+                                onStickerTap(resolvedUrl)
+                                true
+                            }
+                        }
                 } else {
                     Modifier
                 }
@@ -643,7 +813,11 @@ fun StickerBubble(
 fun MomentShareCardBubble(
     data: MomentShareCardData?,
     isDark: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** 点击卡片主体：进入作者资料页并定位到这条动态（官方点卡片跳动态详情，这里按需求走资料页） */
+    onClick: (() -> Unit)? = null,
+    /** 点击右下角评论数：打开这条动态的评论（保留原有入口） */
+    onCommentClick: (() -> Unit)? = null
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val cardShape = RoundedCornerShape(16.dp)
@@ -657,6 +831,14 @@ fun MomentShareCardBubble(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            // 用 tapPreservingLongPress 而非 clickable：后者会消费 down，父级长按菜单会失效
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .tapPreservingLongPress(key = data?.momentId, onTap = onClick)
+                        .semantics { onClick(label = "查看动态") { onClick.invoke(); true } }
+                } else Modifier
+            )
             .clip(cardShape)
             .background(cardBg)
             .border(0.5.dp, borderColor, cardShape)
@@ -755,8 +937,54 @@ fun MomentShareCardBubble(
             MomentShareStat(
                 icon = Icons.AutoMirrored.Filled.Chat,
                 count = data.commentCount,
-                color = statColor
+                color = statColor,
+                modifier = if (onCommentClick != null) {
+                    Modifier
+                        .tapPreservingLongPress(key = "comment_" + data.momentId, onTap = onCommentClick)
+                        .semantics { onClick(label = "查看评论") { onCommentClick.invoke(); true } }
+                } else Modifier
             )
+        }
+    }
+}
+
+/**
+ * 「正文 + 行尾槽位」布局：先量尾部（时间戳等）拿到固有宽度，再用剩余宽度量正文。
+ *
+ * 为什么不用 Row：
+ * - 普通 Row 里正文先被量到整行宽度，尾部只能分到 0 宽 → 尾部被逐字挤成竖排；
+ * - Row + weight 又会让整行撑满，气泡恒为最大宽度（正文短时很难看）。
+ * 这里显式先量尾部，正文按「剩余宽度」换行，容器宽度仍按两者实际宽度收缩，尾部恒单行。
+ */
+@Composable
+private fun RowWithTrailing(
+    spacing: Dp,
+    trailing: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Layout(
+        modifier = modifier,
+        content = {
+            content()
+            trailing()
+        }
+    ) { measurables, constraints ->
+        val spacingPx = spacing.roundToPx()
+        val trailingPlaceable = measurables[1].measure(
+            constraints.copy(minWidth = 0, maxWidth = constraints.maxWidth)
+        )
+        val contentMax = (constraints.maxWidth - trailingPlaceable.width - spacingPx)
+            .coerceAtLeast(0)
+        val contentPlaceable = measurables[0].measure(
+            constraints.copy(minWidth = 0, maxWidth = contentMax)
+        )
+        val width = (contentPlaceable.width + spacingPx + trailingPlaceable.width)
+            .coerceAtMost(constraints.maxWidth)
+        val height = maxOf(contentPlaceable.height, trailingPlaceable.height)
+        layout(width, height) {
+            contentPlaceable.place(0, height - contentPlaceable.height)
+            trailingPlaceable.place(width - trailingPlaceable.width, height - trailingPlaceable.height)
         }
     }
 }
@@ -820,9 +1048,10 @@ private fun MomentShareGenderBadge(gender: String) {
 private fun MomentShareStat(
     icon: ImageVector,
     count: Int,
-    color: Color
+    color: Color,
+    modifier: Modifier = Modifier
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = icon,
             contentDescription = null,

@@ -9,7 +9,9 @@ data class SelectedAudioFile(
     val filename: String,
     val byteArray: ByteArray,
     val mimeType: String,
-    val ext: String
+    val ext: String,
+    /** 音频时长（秒）。服务端不下发语音时长，本地回显必须自带，否则气泡显示 0" */
+    val durationSec: Int = 0
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

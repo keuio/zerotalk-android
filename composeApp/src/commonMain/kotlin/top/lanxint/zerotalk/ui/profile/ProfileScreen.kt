@@ -391,11 +391,6 @@ fun ProfileScreen(
             // 通知中心：入口行带未读数角标（点击进入官方「通知中心」面板）
             AppleHigRow(
                 title = "通知中心",
-                subtitle = if (notificationUnreadCount > 0) {
-                    "有 $notificationUnreadCount 条未读通知"
-                } else {
-                    "系统提醒与互动消息"
-                },
                 icon = Icons.Default.Notifications,
                 iconBgColor = Color(0xFFF59E0B),
                 isDark = isDark,

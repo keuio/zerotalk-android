@@ -4,6 +4,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import top.lanxint.zerotalk.data.model.ChatMessage
+import top.lanxint.zerotalk.data.model.EchoMatcher
 import top.lanxint.zerotalk.data.model.ConversationItem
 import top.lanxint.zerotalk.data.model.IncomingMessageNotification
 import top.lanxint.zerotalk.data.log.ZtLog
@@ -241,12 +242,18 @@ object ZeroTalkClientManager {
     private val _roomHistoryLoading = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val roomHistoryLoading: StateFlow<Map<String, Boolean>> = _roomHistoryLoading.asStateFlow()
 
+    /** 各房间是否正在「补缺口」增量拉取（after_id 补页），避免并发重复拉取 */
+    private val _roomNewerLoading = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+
     /** 各房间是否为「群聊房间」（暗号房 / 公共房，需要展示发送者头像昵称性别） */
     private val _groupRooms = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val groupRooms: StateFlow<Map<String, Boolean>> = _groupRooms.asStateFlow()
 
     /** 各房间当前已知最早一条服务端消息 id（分页游标） */
     private val oldestServerMessageId = mutableMapOf<String, Long>()
+
+    /** WS 帧缺失 message_id 时生成本地唯一 id 的序号（避免同一毫秒碰撞被合并误删） */
+    private var wsMessageFallbackSeq = 0L
 
     /**
      * 成员资料目录（uid -> 昵称/头像/性别）
@@ -337,10 +344,8 @@ object ZeroTalkClientManager {
      * 只按内容比对会匹配失败，进而让自己的骰子消息被当成重复消息丢弃，
      * 气泡永远停在空内容——这正是「骰子消息内容为空」的根因。
      */
-    private fun isSameEchoKind(echo: ChatMessage, event: WsServerEvent.Message): Boolean {
-        if (echo.content == event.content) return true
-        return echo.isDice && event.type.equals("dice", ignoreCase = true)
-    }
+    private fun isSameEchoKind(echo: ChatMessage, event: WsServerEvent.Message): Boolean =
+        EchoMatcher.isSameKind(echo, event.type, event.content, event.imageUrl)
 
     private val _conversations = MutableStateFlow<List<ConversationItem>>(emptyList())
     val conversations: StateFlow<List<ConversationItem>> = _conversations.asStateFlow()
@@ -967,10 +972,17 @@ object ZeroTalkClientManager {
                 } else {
                     notification.senderName.ifBlank { notification.roomName }
                 }
+                // 群聊：标题是群名，正文带上发送人（形如「张三：内容」），与应用内横幅口径一致
+                val body = if (notification.isGroup) {
+                    val name = notification.senderName.trim()
+                    if (name.isNotBlank()) name + "：" + notification.content else notification.content
+                } else {
+                    notification.content
+                }
                 ZtLog.d("ZeroTalk", "[NOTIFY] post title=$title roomId=${notification.roomId}")
                 SystemNotificationBridge.postMessage(
                     title = title,
-                    body = notification.content,
+                    body = body,
                     roomId = notification.roomId
                 )
             }
@@ -1390,7 +1402,7 @@ object ZeroTalkClientManager {
      * @param onResult 发送结果回调（false 表示 WebSocket 未就绪/发送失败，调用方应提示用户）
      */
     fun sendHallMessage(content: String, onResult: ((Boolean) -> Unit)? = null) {
-        sendHallMessage(content, emptyList(), "text", onResult)
+        sendHallMessage(content, emptyList(), "text", onResult = onResult)
     }
 
     /**
@@ -1404,6 +1416,10 @@ object ZeroTalkClientManager {
         content: String,
         mentionIds: List<String>,
         messageType: String = "text",
+        replyToId: Long? = null,
+        quotedText: String? = null,
+        quotedIsMine: Boolean? = null,
+        quotedSenderName: String? = null,
         onResult: ((Boolean) -> Unit)? = null
     ) {
         if (content.isBlank()) {
@@ -1426,7 +1442,7 @@ object ZeroTalkClientManager {
             }
 
             // 3. 发送并在本机即时回显
-            val success = wsClient.sendMessage(content, messageType, mentionIds = mentionIds)
+            val success = wsClient.sendMessage(content, messageType, replyToId, mentionIds)
             if (success) {
                 val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
                 // 本地即时回显与历史 / 实时消息共用 buildChatMessage：
@@ -1442,7 +1458,11 @@ object ZeroTalkClientManager {
                         serverId = 0L,
                         isMine = true,
                         senderName = _userProfile.value.name,
-                        senderAvatar = _userProfile.value.avatarUrl
+                        senderAvatar = _userProfile.value.avatarUrl,
+                        quotedText = quotedText,
+                        quotedIsMine = quotedIsMine,
+                        quotedSenderName = quotedSenderName,
+                        replyToId = replyToId
                     )
                 )
                 _hallMessages.value = _hallMessages.value + myMsg
@@ -1453,7 +1473,13 @@ object ZeroTalkClientManager {
 
     /** UI 进入 / 退出聊天页时同步「正在查看的会话」 */
     fun setViewingRoom(roomId: String?) {
-        viewingRoomId = roomId?.takeIf { it.isNotBlank() }
+        val next = roomId?.takeIf { it.isNotBlank() }
+        val changed = next != viewingRoomId
+        viewingRoomId = next
+        // 重新聚焦到某个会话（含从后台回来 / 从列表再次进入）时补拉断线期间漏掉的消息（官方 te）
+        if (changed && next != null) {
+            catchUpNewerMessages(next)
+        }
     }
 
     /**
@@ -1508,7 +1534,8 @@ object ZeroTalkClientManager {
         _newMessageNotification.tryEmit(
             IncomingMessageNotification(
                 roomName = event.roomName.ifBlank { "聊天房间" },
-                senderName = if (isGroup) "" else event.senderName,
+                // 群聊同样带上发送人（通知横幅会显示为「发送人：内容」）
+                senderName = event.senderName,
                 content = event.preview.ifBlank { "[新消息]" },
                 isGroup = isGroup,
                 roomId = event.roomId
@@ -1740,19 +1767,11 @@ object ZeroTalkClientManager {
                     senderAvatar = _userProfile.value.avatarUrl,
                     quotedText = quotedText,
                     quotedIsMine = quotedIsMine,
-                    quotedSenderName = quotedSenderName
+                    quotedSenderName = quotedSenderName,
+                    replyToId = replyToId
                 )
             )
-            val currentList = _roomMessages.value[roomId] ?: emptyList()
-            _roomMessages.value = _roomMessages.value + (roomId to (currentList + myMsg))
-            val existing = _conversations.value.find { it.id == roomId }
-            if (existing != null) {
-                val updated = existing.copy(
-                    lastMessage = myMsg.previewText,
-                    timestamp = nowTimeStr
-                )
-                _conversations.value = listOf(updated) + _conversations.value.filter { it.id != roomId }
-            }
+            appendLocalOutgoing(roomId, myMsg, myMsg.previewText)
         }
     }
 
@@ -1886,13 +1905,34 @@ object ZeroTalkClientManager {
             audioSource = audioSource,
             previewText = preview
         )
-        val currentList = _roomMessages.value[roomId] ?: emptyList()
-        _roomMessages.value = _roomMessages.value + (roomId to (currentList + myMsg))
-        val existing = _conversations.value.find { it.id == roomId }
-        if (existing != null) {
-            val updated = existing.copy(lastMessage = preview, timestamp = nowTimeStr)
-            _conversations.value = listOf(updated) + _conversations.value.filter { it.id != roomId }
+        appendLocalOutgoing(roomId, myMsg, preview)
+    }
+
+    /**
+     * 本地乐观回显统一落库（图片 / 语音 / 音乐 / 骰子 / 游戏邀请 / 文本共用）。
+     *
+     * 「大厅 vs 房间」由 [isHallRoom]（底层是纯函数 [isHallEchoTarget]）判定：
+     * - 大厅：只追加进 [_hallMessages]（大厅界面订阅它）；大厅不是会话列表里的会话项，
+     *   因此**不动** [_conversations]，否则会话列表会凭空多出一行「零语大厅」；
+     * - 普通房间：追加进 [_roomMessages][roomId]，并把会话摘要更新为 `preview` 后置顶。
+     *
+     * 这是「大厅发骰子 / 图片 / 游戏邀请本地看不到」的修复点：此前这些回显无条件写入
+     * [_roomMessages]，而大厅读的是 [_hallMessages]，只能等服务端广播。
+     *
+     * @param roomId 目标房间（大厅或普通房间）
+     * @param message 已构建好的本地回显消息
+     * @param preview 会话列表摘要文案（大厅路径忽略）
+     */
+    private fun appendLocalOutgoing(roomId: String, message: ChatMessage, preview: String) {
+        if (isHallRoom(roomId)) {
+            _hallMessages.value = _hallMessages.value + message
+            return
         }
+        val currentList = _roomMessages.value[roomId] ?: emptyList()
+        _roomMessages.value = _roomMessages.value + (roomId to (currentList + message))
+        val existing = _conversations.value.find { it.id == roomId } ?: return
+        val updated = existing.copy(lastMessage = preview, timestamp = message.timestamp)
+        _conversations.value = listOf(updated) + _conversations.value.filter { it.id != roomId }
     }
 
     /**
@@ -1929,13 +1969,7 @@ object ZeroTalkClientManager {
                 musicData = music,
                 previewText = preview
             )
-            val currentList = _roomMessages.value[roomId] ?: emptyList()
-            _roomMessages.value = _roomMessages.value + (roomId to (currentList + myMsg))
-            val existing = _conversations.value.find { it.id == roomId }
-            if (existing != null) {
-                val updated = existing.copy(lastMessage = preview, timestamp = nowTimeStr)
-                _conversations.value = listOf(updated) + _conversations.value.filter { it.id != roomId }
-            }
+            appendLocalOutgoing(roomId, myMsg, preview)
         }
     }
 
@@ -1964,13 +1998,7 @@ object ZeroTalkClientManager {
                 diceValue = 0,
                 previewText = preview
             )
-            val currentList = _roomMessages.value[roomId] ?: emptyList()
-            _roomMessages.value = _roomMessages.value + (roomId to (currentList + myMsg))
-            val existing = _conversations.value.find { it.id == roomId }
-            if (existing != null) {
-                val updated = existing.copy(lastMessage = preview, timestamp = nowTimeStr)
-                _conversations.value = listOf(updated) + _conversations.value.filter { it.id != roomId }
-            }
+            appendLocalOutgoing(roomId, myMsg, preview)
         }
     }
 
@@ -1997,13 +2025,7 @@ object ZeroTalkClientManager {
                 senderAvatar = _userProfile.value.avatarUrl,
                 previewText = contentText
             )
-            val currentList = _roomMessages.value[roomId] ?: emptyList()
-            _roomMessages.value = _roomMessages.value + (roomId to (currentList + myMsg))
-            val existing = _conversations.value.find { it.id == roomId }
-            if (existing != null) {
-                val updated = existing.copy(lastMessage = contentText, timestamp = nowTimeStr)
-                _conversations.value = listOf(updated) + _conversations.value.filter { it.id != roomId }
-            }
+            appendLocalOutgoing(roomId, myMsg, contentText)
         }
     }
 
@@ -2011,6 +2033,18 @@ object ZeroTalkClientManager {
 
     private val gson = Gson()
     private var gamePollJob: Job? = null
+
+    /**
+     * 进入对局页前的 WS 房间（[openGameSession] 首次进入时记录）。
+     *
+     * 对局房间可能 ≠ 原聊天房间，而 `join_room` 是全局单连接：退出对局页时必须恢复，
+     * 否则聊天消息路由会一直停在对局房间。
+     */
+    private var gameSessionPreviousRoomId: String? = null
+
+    /** 进入对局页后实际 join 的对局房间；为 null 表示房间未变、退出时无需恢复 */
+    private var gameSessionJoinedRoomId: String? = null
+
     private val _activeGameSession = MutableStateFlow<GameSessionDetail?>(null)
     val activeGameSession: StateFlow<GameSessionDetail?> = _activeGameSession.asStateFlow()
 
@@ -2035,29 +2069,53 @@ object ZeroTalkClientManager {
      * 进入/打开指定游戏对局页，启动双通道状态同步与自适应 HTTP 轮询
      */
     fun openGameSession(gameType: String, gameId: Long) {
+        // 首次进入（没有在跑的对局轮询）时记录「进入前的 WS 房间」，退出时由
+        // closeGameSession 恢复：对局房间可能 ≠ 原聊天房间，不恢复会把聊天消息路由留在对局房间。
+        // 卡片点击会连续调用 joinGame + onEnterGame，第二次不再覆盖已记录的原房间。
+        if (gamePollJob == null) {
+            gameSessionPreviousRoomId = wsClient.currentRoomId
+            gameSessionJoinedRoomId = null
+        }
         _activeGameType.value = gameType
         _activeGameId.value = gameId
         gamePollJob?.cancel()
         gamePollJob = scope.launch {
             // 立即拉取一次对局详情
-            apiService.getGameDetail(gameType, gameId).onSuccess { detail ->
-                _activeGameSession.value = detail
-            }
+            apiService.getGameDetail(gameType, gameId)
+                .onSuccess { detail ->
+                    _activeGameSession.value = detail
+                    // 官方 ChessView 进入对局页会先 join_room(对局房间)，之后才收得到 <type>_update
+                    joinGameRoomIfNeeded(detail.roomId)
+                }
+                .onFailure { e ->
+                    ZtLog.w("ZeroTalk", "[GAME] 立即拉取对局详情失败 game=$gameId: ${e.message}")
+                }
             // 依规范设置轮询周期：围棋 1600ms，谁是卧底 2500ms，其他棋类 8000ms
             val intervalMs = when (gameType) {
                 GameType.GO -> 1600L
                 GameType.UNDERCOVER -> 2500L
                 else -> 8000L
             }
+            var consecutiveFailures = 0
             while (isActive && _activeGameId.value == gameId) {
-                delay(intervalMs)
+                // 连续失败时按 2x/3x/4x 退避（上限 4 倍），任意一次成功立即恢复原周期
+                delay(intervalMs * (consecutiveFailures + 1).coerceAtMost(4))
                 val current = _activeGameSession.value
                 if (current != null && current.status !in listOf("waiting", "playing")) {
                     break // 对局已结束或已取消，停止轮询
                 }
-                apiService.getGameDetail(gameType, gameId).onSuccess { updated ->
-                    _activeGameSession.value = resolveGameSession(_activeGameSession.value, updated)
-                }
+                apiService.getGameDetail(gameType, gameId)
+                    .onSuccess { updated ->
+                        consecutiveFailures = 0
+                        _activeGameSession.value = resolveGameSession(_activeGameSession.value, updated)
+                    }
+                    .onFailure { e ->
+                        consecutiveFailures++
+                        ZtLog.w(
+                            "ZeroTalk",
+                            "[GAME] 轮询对局详情失败 game=$gameId 第 $consecutiveFailures 次: ${e.message}"
+                        )
+                    }
             }
         }
     }
@@ -2068,6 +2126,17 @@ object ZeroTalkClientManager {
     fun closeGameSession() {
         gamePollJob?.cancel()
         gamePollJob = null
+        // 只有确实切换过房间才恢复，避免无谓的 join_room 抖动。
+        // 恢复目标优先用「进入对局前的 WS 房间」，其次用当前查看的会话
+        // （从「我的对局」等入口进入、进入前不在任何房间时的兜底）。
+        val joinedGameRoom = gameSessionJoinedRoomId
+        val restoreRoom = gameSessionPreviousRoomId?.takeIf { it.isNotBlank() }
+            ?: viewingRoomId?.takeIf { it.isNotBlank() }
+        gameSessionPreviousRoomId = null
+        gameSessionJoinedRoomId = null
+        if (joinedGameRoom != null && !restoreRoom.isNullOrBlank() && wsClient.currentRoomId != restoreRoom) {
+            wsClient.joinRoom(restoreRoom)
+        }
         _activeGameSession.value = null
         _activeGameId.value = null
         _activeGameType.value = null
@@ -2075,21 +2144,91 @@ object ZeroTalkClientManager {
     }
 
     /**
+     * 进入对局页后 join 对局房间，以接收房间级的 `<type>_update` WS 广播。
+     *
+     * 官方 ChessView 进入对局页时会 `join_room(game.room_id)` 并等 `join_success` 后才订阅
+     * `chess_update`（`tmp/_ws_log2.txt` 实测：join_room → join_success → chess_update）。
+     * `roomId` 为空（服务端未下发）时保持现状，仅靠 HTTP 轮询兜底。
+     */
+    private fun joinGameRoomIfNeeded(roomId: String?) {
+        val room = roomId?.trim().orEmpty()
+        if (room.isEmpty()) return
+        if (wsClient.currentRoomId == room) return
+        if (wsClient.joinRoom(room)) {
+            gameSessionJoinedRoomId = room
+        }
+    }
+
+    /**
      * 遵循官方规范的棋盘防回滚冲突决议
      */
     fun resolveGameSession(current: GameSessionDetail?, new: GameSessionDetail): GameSessionDetail {
         if (current == null) return new
-        // 1. 新 version 比旧 version 小 -> 丢弃，保留旧棋盘
-        if (new.version < current.version) return current
-        // 2. 旧 version > 0 但新 version 缺失或为 0 -> 丢弃
-        if (current.version > 0 && new.version <= 0) return current
-        // 3. 旧棋盘有子而新棋盘全空且 move_count > 0 -> 保留旧棋盘
-        val curPieces = current.board.count { it != '.' && it != '0' }
-        val newPieces = new.board.count { it != '.' && it != '0' }
-        if (curPieces > 0 && newPieces == 0 && new.moveCount > 0) {
-            return new.copy(board = current.board)
+        val resolvedBoard = GameBoardResolve.resolveBoard(
+            prevBoard = current.board,
+            nextBoard = new.board,
+            prevVersion = current.version,
+            nextVersion = new.version,
+            prevMoveCount = current.moveCount,
+            nextMoveCount = new.moveCount,
+            // 棋类官方传 allowFewerStones = true（吃子导致子数减少不算异常）
+            allowFewerStones = allowsFewerStones(new.gameType.ifBlank { current.gameType })
+        )
+        return if (resolvedBoard == new.board) new else new.copy(board = resolvedBoard)
+    }
+
+    /** 棋类（吃子会让子数减少）允许新棋盘子数变少；非棋类（谁是卧底）不允许 */
+    private fun allowsFewerStones(gameType: String?): Boolean = when (gameType?.lowercase()) {
+        GameType.GOBANG, GameType.GO, GameType.XIANGQI, GameType.CHESS -> true
+        else -> false
+    }
+
+    /**
+     * 用 `*_update` / `*_joined` 携带的对局状态刷新聊天里的对局卡片。
+     *
+     * 官方 `ge(d)`（`publicAnnouncementDismiss-*.js`）用 `d.invite` 重写该条消息的 content，
+     * 卡片状态（等人应战 / 对局中 / 已结束 / 已取消）因此实时更新。
+     *
+     * 本客户端此前只更新 `_roomMessages`，导致：
+     * - **大厅卡片永不刷新**（大厅读 `_hallMessages`）——只能退出重进大厅；
+     * - `invite` 缺失的 `*_update`（文档实测 `xiangqi_update` 只带 `game`）不刷新。
+     *
+     * 这里按房间归属同时覆盖两处 store，并在 `invite` 缺失时用完整对局构造卡片兜底；
+     * 合并时只让状态相关字段覆盖，身份 / 头像等沿用旧卡片（[ChatGameInvite.overlayOn]）。
+     */
+    private fun applyGameInviteToCards(event: WsServerEvent.GameUpdate) {
+        val invite = event.invite
+            ?: event.game?.toChatGameInvite(fallbackGameType = event.gameType)
+            ?: return
+        if (invite.gameId <= 0L) return
+        val targetRoom = event.roomId ?: wsClient.currentRoomId ?: return
+
+        fun matches(message: ChatMessage): Boolean =
+            message.gameInvite?.gameId == invite.gameId ||
+                (event.messageId != null && event.messageId > 0L && message.serverId == event.messageId)
+
+        fun rewrite(list: List<ChatMessage>): List<ChatMessage> {
+            var changed = false
+            val mapped = list.map { message ->
+                if (!matches(message)) return@map message
+                val merged = invite.overlayOn(message.gameInvite)
+                if (merged != message.gameInvite) changed = true
+                message.copy(gameInvite = merged)
+            }
+            return if (changed) mapped else list
         }
-        return new
+
+        // 大厅卡片存在 _hallMessages（isHallRoom 兼容大厅 room_id 变动 / 多公共房间）
+        if (isHallRoom(targetRoom)) {
+            _hallMessages.value = rewrite(_hallMessages.value)
+        }
+        // 普通房间（以及多公共房间时该房间自身的列表）
+        _roomMessages.value[targetRoom]?.let { current ->
+            val updated = rewrite(current)
+            if (updated !== current) {
+                _roomMessages.value = _roomMessages.value + (targetRoom to updated)
+            }
+        }
     }
 
     /**
@@ -2282,6 +2421,8 @@ object ZeroTalkClientManager {
                 authorName = dto.username.ifBlank { "零语匿友" },
                 authorAvatar = dto.avatarUrl ?: "",
                 authorGender = if (dto.gender == "female") "女" else "男",
+                authorTitle = dto.title.orEmpty(),
+                authorTitleColor = dto.titleColor.orEmpty(),
                 publishTime = formatRelativeTime(dto.createdAt),
                 textContent = dto.content,
                 imageUrl = imgList.firstOrNull() ?: "",
@@ -2541,7 +2682,9 @@ object ZeroTalkClientManager {
         uid: String? = null,
         name: String = "",
         avatarUrl: String = "",
-        navigate: Boolean = true
+        navigate: Boolean = true,
+        /** 打开后在该用户的资料页里定位并高亮这条动态（点聊天里的动态卡片时传） */
+        momentId: Long? = null
     ) {
         val numericId = userId.orEmpty().trim()
         val hexUid = uid.orEmpty().trim()
@@ -2552,7 +2695,7 @@ object ZeroTalkClientManager {
             // 两个标识都为空时不打开页面，避免叠出一层注定报错的资料页
             if (numericId.isNotBlank() || hexUid.isNotBlank()) {
                 openUserProfileLayer(
-                    target = UserProfileTarget(numericId, hexUid, name, avatarUrl),
+                    target = UserProfileTarget(numericId, hexUid, name, avatarUrl, momentId),
                     host = UserProfileLayerHost.APP
                 )
             }
@@ -3291,6 +3434,8 @@ object ZeroTalkClientManager {
             avatarUrl = NetworkImageUrl.resolveWithStyle(user?.avatarUrl),
             avatarFallback = user?.avatarFallback.orEmpty(),
             bio = user?.bio.orEmpty(),
+            title = user?.title.orEmpty(),
+            titleColor = user?.titleColor.orEmpty(),
             // 计数与可见权限以 user 对象为准（官方 UserMomentsView 读的就是 data.user.*），根级字段仅作兜底
             followingCount = user?.followingCount ?: data.followingCount,
             followerCount = user?.followerCount ?: data.followerCount,
@@ -4022,11 +4167,16 @@ object ZeroTalkClientManager {
                     )
 
                 _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to bootstrap.hasMoreMessages)
-                bootstrap.messages.firstOrNull()?.let { oldestServerMessageId[roomId] = it.id }
+
+                // 记录合并前的本地最大服务端 id：bootstrap 只回最近 N 条，中间漏段要用它补（官方 te）
+                val previousMaxId = ChatMessageMerge.maxServerId(_roomMessages.value[roomId] ?: emptyList())
+                // 去重 + 排序合并，不再整体替换：断线期间实时收到 / 更早加载的消息不能被 bootstrap 覆盖丢失
+                val merged = ChatMessageMerge.merge(_roomMessages.value[roomId] ?: emptyList(), msgList)
+                ChatMessageMerge.minServerId(merged)?.let { oldestServerMessageId[roomId] = it }
 
                 if (msgList.isNotEmpty()) {
-                    _roomMessages.value = _roomMessages.value + (roomId to msgList)
-                    val lastMsg = msgList.last()
+                    _roomMessages.value = _roomMessages.value + (roomId to merged)
+                    val lastMsg = merged.last()
                     _conversations.value = _conversations.value.map { conv ->
                         if (conv.id == roomId) {
                             conv.copy(
@@ -4036,6 +4186,10 @@ object ZeroTalkClientManager {
                         } else conv
                     }
                 }
+
+                // 补缺口（官方 te）：从合并前的本地最大 id 起增量补页，
+                // 填上「本地旧消息」与「bootstrap 最近 N 条」之间的空洞
+                catchUpNewerMessages(roomId, fromId = previousMaxId)
             }
         }
     }
@@ -4060,15 +4214,73 @@ object ZeroTalkClientManager {
 
             val older = data.messages.map { dto -> mapChatMessageDto(dto, roomId) }
             if (older.isNotEmpty()) {
-                data.messages.firstOrNull()?.let { oldestServerMessageId[roomId] = it.id }
+                // 分页游标取更早的最小服务端 id（不能假设服务端按顺序返回）
+                ChatMessageMerge.minServerId(older)?.let { incomingMin ->
+                    val current = oldestServerMessageId[roomId]
+                    oldestServerMessageId[roomId] = if (current == null) incomingMin else minOf(current, incomingMin)
+                }
+                // 去重 + 排序合并（此前是 `older + current` 直接前插，既不判重也会打乱顺序）
                 if (roomId == _hallRoomId.value) {
-                    _hallMessages.value = older + _hallMessages.value
+                    _hallMessages.value = ChatMessageMerge.merge(_hallMessages.value, older)
                 } else {
                     val current = _roomMessages.value[roomId] ?: emptyList()
-                    _roomMessages.value = _roomMessages.value + (roomId to (older + current))
+                    _roomMessages.value = _roomMessages.value + (roomId to ChatMessageMerge.merge(current, older))
                 }
             }
             _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to data.hasMore)
+        }
+    }
+
+    /**
+     * 补缺口：从本地最大服务端 id 起用 `after_id` 增量拉取，对齐官方 `te`（最多 5 页、每页 50）。
+     *
+     * 场景：断线 / 退出大厅期间漏收了一段消息，而 bootstrap 只回最近 N 条，
+     * 于是「本地旧消息」与「服务端最近 N 条」之间出现空洞。这里从 [fromId]
+     * （缺省取当前列表最大 id；传 bootstrap 合并前的最大 id 才能补中间空洞）
+     * 起逐页 `GET /api/chat/messages?after_id=`，去重排序后合并；
+     * `has_more` 为 false 或页上限（[ChatNewerCatchUp.MAX_PAGES]）即停。
+     *
+     * @param roomId 目标房间（大厅或普通房间）
+     * @param fromId 起始游标；null / <=0 时取当前列表的最大服务端 id
+     */
+    private fun catchUpNewerMessages(roomId: String, fromId: Long? = null) {
+        if (_loginData.value == null) return
+        if (roomId.isBlank()) return
+        if (_roomNewerLoading.value[roomId] == true) return
+        val isHall = roomId == _hallRoomId.value
+        val currentList = if (isHall) _hallMessages.value else _roomMessages.value[roomId] ?: emptyList()
+        val startId = fromId?.takeIf { it > 0L } ?: ChatMessageMerge.maxServerId(currentList) ?: return
+
+        _roomNewerLoading.value = _roomNewerLoading.value + (roomId to true)
+        scope.launch {
+            try {
+                var cursor = startId
+                var page = 0
+                while (page < ChatNewerCatchUp.MAX_PAGES) {
+                    page++
+                    val data = apiService.getChatMessages(
+                        roomId = roomId,
+                        afterId = cursor,
+                        limit = ChatNewerCatchUp.PAGE_SIZE
+                    ).getOrNull() ?: break
+                    val newer = data.messages.map { dto -> mapChatMessageDto(dto, roomId) }
+                    if (newer.isEmpty()) break
+                    if (isHall && roomId == _hallRoomId.value) {
+                        _hallMessages.value = ChatMessageMerge.merge(_hallMessages.value, newer)
+                    } else {
+                        val existing = _roomMessages.value[roomId] ?: emptyList()
+                        _roomMessages.value = _roomMessages.value + (roomId to ChatMessageMerge.merge(existing, newer))
+                    }
+                    val next = ChatNewerCatchUp.nextCursor(
+                        cursor = cursor,
+                        pageMaxId = ChatMessageMerge.maxServerId(newer),
+                        hasMore = data.hasMore
+                    ) ?: break
+                    cursor = next
+                }
+            } finally {
+                _roomNewerLoading.value = _roomNewerLoading.value + (roomId to false)
+            }
         }
     }
 
@@ -4077,11 +4289,11 @@ object ZeroTalkClientManager {
      *
      * 兼容大厅 room_id 变动或服务端下发 room_id 与本地不一致的情况。
      */
-    private fun isHallRoom(roomId: String?): Boolean {
-        if (roomId.isNullOrBlank()) return false
-        if (roomId == _hallRoomId.value) return true
-        return _bootstrapData.value?.publicRooms?.any { it.roomId == roomId } == true
-    }
+    private fun isHallRoom(roomId: String?): Boolean = isHallEchoTarget(
+        roomId = roomId,
+        hallRoomId = _hallRoomId.value,
+        publicRoomIds = _bootstrapData.value?.publicRooms?.map { it.roomId }.orEmpty()
+    )
 
     /**
      * 拉取公共大厅历史聊天记录（进入大厅时调用）
@@ -4093,28 +4305,53 @@ object ZeroTalkClientManager {
         scope.launch {
             // 等 WS 入房登记完成再拉历史（服务端可能只对已加入的房间返回消息）
             delay(350)
+            // 记录合并前的本地最大服务端 id：bootstrap 只回最近 N 条，中间漏段要用它补（官方 te）
+            val previousMaxId = ChatMessageMerge.maxServerId(_hallMessages.value)
             val bootstrap = apiService.getChatBootstrap(roomId).getOrNull()
             if (bootstrap != null && bootstrap.messages.isNotEmpty()) {
-                applyHallHistory(roomId, bootstrap.messages, bootstrap.hasMoreMessages)
-                return@launch
+                applyHallHistory(roomId, bootstrap.messages, bootstrap.hasMoreMessages, bootstrap)
+            } else {
+                // 回退：分页接口取最近一页
+                val fallback = apiService.getChatMessages(roomId = roomId, limit = 50).getOrNull()
+                applyHallHistory(
+                    roomId = roomId,
+                    dtos = fallback?.messages ?: emptyList(),
+                    hasMore = fallback?.hasMore ?: (bootstrap?.hasMoreMessages ?: false),
+                    bootstrap = bootstrap
+                )
             }
-            // 回退：分页接口取最近一页
-            val fallback = apiService.getChatMessages(roomId = roomId, limit = 50).getOrNull()
-            applyHallHistory(
-                roomId = roomId,
-                dtos = fallback?.messages ?: emptyList(),
-                hasMore = fallback?.hasMore ?: (bootstrap?.hasMoreMessages ?: false)
-            )
+            // 补缺口（官方 te）：填上「本地旧消息」与「bootstrap 最近 N 条」之间的空洞
+            catchUpNewerMessages(roomId, fromId = previousMaxId)
         }
     }
 
-    private fun applyHallHistory(roomId: String, dtos: List<ChatMessageDto>, hasMore: Boolean) {
+    /**
+     * 应用大厅历史消息。
+     *
+     * @param bootstrap 大厅 bootstrap（含 `viewer_can_delete_message` 等权限字段）。
+     *        大厅界面用 `roomBootstrapMap[hallRoomId]?.viewerCanDeleteMessage` 判断
+     *        「删除消息」菜单项，这里必须落库，否则该权限恒为 false、菜单项永远不出现。
+     *        bootstrap 请求失败（走分页回退）时传 null，保留已有值避免界面闪烁。
+     */
+    private fun applyHallHistory(
+        roomId: String,
+        dtos: List<ChatMessageDto>,
+        hasMore: Boolean,
+        bootstrap: ChatBootstrapData? = null
+    ) {
+        // 与私聊 / 群聊的 loadChatBootstrap 保持同款写法（直接 + 覆盖为该房间最新值）
+        if (bootstrap != null) {
+            _roomBootstrapMap.value = _roomBootstrapMap.value + (roomId to bootstrap)
+        }
         val history = dtos.map { dto -> mapChatMessageDto(dto, roomId) }
         if (history.isNotEmpty()) {
-            // 合并已存在的实时消息，避免覆盖刚收到的内容
-            val existingIds = _hallMessages.value.map { it.id }.toSet()
-            _hallMessages.value = history.filterNot { existingIds.contains(it.id) } + _hallMessages.value
-            dtos.firstOrNull()?.let { oldestServerMessageId[roomId] = it.id }
+            // 去重 + 排序合并（此前是「history 前插 + existing 后接」：
+            // 既补不上中间缺口，又会把较新的实时消息排到较旧的历史消息后面）
+            _hallMessages.value = ChatMessageMerge.merge(_hallMessages.value, history)
+            ChatMessageMerge.minServerId(history)?.let { incomingMin ->
+                val current = oldestServerMessageId[roomId]
+                oldestServerMessageId[roomId] = if (current == null) incomingMin else minOf(current, incomingMin)
+            }
         }
         _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to hasMore)
     }
@@ -4126,7 +4363,7 @@ object ZeroTalkClientManager {
      * [buildChatMessage] 统一做类型判定与字段映射，避免两处各写一遍
      * （isImage / isVoice / isPat / patText / preview 与 20 余个字段的拼装）。
      */
-    private data class RawChatMessage(
+    internal data class RawChatMessage(
         val id: String,
         val senderId: String,
         val content: String,
@@ -4143,15 +4380,22 @@ object ZeroTalkClientManager {
         val senderName: String = "",
         val senderAvatar: String = "",
         val senderGender: String = "",
+        /** 发送者称号（官方 `title`；历史 DTO 与 WS 帧同名字段） */
+        val authorTitle: String = "",
+        /** 发送者称号颜色 key（官方 `title_color`） */
+        val authorTitleColor: String = "",
         val quotedText: String? = null,
         val quotedIsMine: Boolean? = null,
-        val quotedSenderName: String? = null
+        val quotedSenderName: String? = null,
+        val replyToId: Long? = null,
+        /** 服务端标记的「已撤回 / 已删除」（历史 DTO 的 `is_deleted` / WS 帧的 `is_deleted`） */
+        val isDeleted: Boolean = false
     )
 
     /**
      * 历史消息 DTO -> UI 消息模型
      */
-    private fun mapChatMessageDto(dto: ChatMessageDto, roomId: String): ChatMessage {
+    internal fun mapChatMessageDto(dto: ChatMessageDto, roomId: String): ChatMessage {
         val myUid = _loginData.value?.uid
         return buildChatMessage(
             RawChatMessage(
@@ -4169,9 +4413,13 @@ object ZeroTalkClientManager {
                 senderName = dto.username.orEmpty().ifBlank { memberName(dto.uid) },
                 senderAvatar = dto.avatarUrl.orEmpty().ifBlank { memberAvatar(dto.uid) },
                 senderGender = dto.gender.orEmpty().ifBlank { memberGender(dto.uid) },
+                authorTitle = dto.title.orEmpty(),
+                authorTitleColor = dto.titleColor.orEmpty(),
                 quotedText = dto.replyPreview,
                 quotedIsMine = dto.replyToUserId?.let { it == myUid },
-                quotedSenderName = dto.replyUsername
+                quotedSenderName = dto.replyUsername,
+                replyToId = dto.replyToId,
+                isDeleted = dto.isDeleted
             )
         )
     }
@@ -4179,7 +4427,7 @@ object ZeroTalkClientManager {
     /**
      * 归一化输入 -> ChatMessage（历史消息与 WS 实时消息共用）
      */
-    private fun buildChatMessage(raw: RawChatMessage): ChatMessage {
+    internal fun buildChatMessage(raw: RawChatMessage): ChatMessage {
         val msgType = raw.type.lowercase()
         // 表情包：官方 ko() 优先 image_url，否则按 content 的 asset_id 查本地表情包列表。
         // 必须先于 isImage 判定，否则带 image_url 的表情包会被误判成图片消息。
@@ -4209,7 +4457,9 @@ object ZeroTalkClientManager {
         // 动态分享卡片：content 是卡片 JSON，解析失败时 momentShare 为 null（气泡显示「动态卡片已失效」）
         val isMomentShare = msgType == MESSAGE_TYPE_MOMENT_SHARE
         val momentShare = if (isMomentShare) parseMomentShareContent(raw.content) else null
-        val preview = when {
+        // 已撤回消息：会话列表摘要固定为「该消息已被撤回」（对齐官网 `hn`），
+        // 不再按类型显示 [图片] / [骰子] 等旧摘要
+        val preview = if (raw.isDeleted) RECALLED_MESSAGE_TEXT else when {
             isGame -> if (gameInvite != null) "[${GameType.getDisplayName(gameInvite.gameType)}] 对战" else "[游戏对战]"
             isMusic -> if (musicData != null && musicData.name.isNotBlank()) "[歌曲] ${musicData.name}" else "[歌曲]"
             isMusicPlaylist -> MessageContentParser.musicPlaylistPreview(musicPlaylist)
@@ -4222,12 +4472,13 @@ object ZeroTalkClientManager {
             isDice -> if (diceValue in 1..6) "[骰子 $diceValue]" else "[骰子]"
             else -> raw.content
         }
-        return ChatMessage(
+        val message = ChatMessage(
             id = raw.id,
             senderId = raw.senderId,
             content = raw.content,
             timestamp = raw.timestamp,
             isMine = raw.isMine,
+            isDeleted = raw.isDeleted,
             isVoice = isVoice,
             isVoiceCall = isVoiceCall,
             voiceCallText = voiceCallText,
@@ -4249,9 +4500,12 @@ object ZeroTalkClientManager {
             senderName = raw.senderName,
             senderAvatar = raw.senderAvatar,
             senderGender = raw.senderGender,
+            authorTitle = raw.authorTitle,
+            authorTitleColor = raw.authorTitleColor,
             quotedText = raw.quotedText,
             quotedIsMine = raw.quotedIsMine,
             quotedSenderName = raw.quotedSenderName,
+            replyToId = raw.replyToId,
             previewText = preview,
             isMomentShare = isMomentShare,
             momentShare = momentShare,
@@ -4261,6 +4515,8 @@ object ZeroTalkClientManager {
             stickerUrl = sticker?.url.orEmpty(),
             stickerAssetId = sticker?.assetId ?: 0L
         )
+        // 已撤回：对齐官网清空正文 / 媒体地址 / 引用摘要，并标记 is_deleted（保留在列表里）
+        return if (message.isDeleted) message.asRecalled() else message
     }
 
     /**
@@ -4819,6 +5075,43 @@ object ZeroTalkClientManager {
             _hallMessages.value = _hallMessages.value.filterNot { it.serverId == messageId }
             onResult?.invoke(true, null)
         }
+    }
+
+    /**
+     * 撤回自己发送的消息（官网 `{event:"recall_message", message_id}`）
+     *
+     * 私聊 / 暗号房 / 公共大厅通用 —— 由 roomId 决定归属，两处状态都由 [applyMessageRecalled] 处理。
+     *
+     * 与私聊 / 暗号房共用同一条链路：先发 WS 事件，服务端向房间广播 `message_recalled`，
+     * 消息**保留在列表里**并被整条标记为已撤回（对齐官网），系统提示也由 [applyMessageRecalled] 统一追加。
+     * 发送成功后立即本地处理一次，避免服务端广播到达前界面仍显示原消息；
+     * 广播随后到达时消息已标记 `isDeleted`，[applyMessageRecalled] 不会重复插入系统提示。
+     */
+    fun recallMessage(
+        roomId: String,
+        messageId: Long,
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        if (_loginData.value == null) {
+            onResult?.invoke(false, "请先登录账号")
+            return
+        }
+        if (messageId <= 0L) {
+            onResult?.invoke(false, "该消息尚未同步到服务端")
+            return
+        }
+        if (!wsClient.recallMessage(messageId)) {
+            onResult?.invoke(false, "连接未就绪，请稍后再试")
+            return
+        }
+        applyMessageRecalled(
+            roomId = roomId,
+            messageId = messageId,
+            username = _userProfile.value.name.ifBlank { _loginData.value?.username },
+            byModerator = false,
+            byRoomAdmin = false
+        )
+        onResult?.invoke(true, null)
     }
 
     /**
@@ -5462,6 +5755,10 @@ object ZeroTalkClientManager {
                 // WS 重连：为进行中的通话续期；空闲时尝试按服务端状态恢复通话
                 voiceCall.resumeActiveOnReconnect()
                 scope.launch { voiceCall.resumeIfNeeded() }
+                // WS 重连后补拉断线期间漏掉的消息（官方 te）
+                (viewingRoomId ?: wsClient.currentRoomId)?.takeIf { it.isNotBlank() }?.let {
+                    catchUpNewerMessages(it)
+                }
             }
             is WsServerEvent.Matching -> {
                 val current = _matchStatus.value
@@ -5561,7 +5858,15 @@ object ZeroTalkClientManager {
                 // 类型判定（isImage / isVoice / isPat / preview）与字段映射与历史消息共用
                 val newMsg = buildChatMessage(
                     RawChatMessage(
-                        id = "msg_${event.messageId ?: System.currentTimeMillis()}",
+                        id = if (event.messageId != null && event.messageId > 0L) {
+                            "msg_${event.messageId}"
+                        } else {
+                            // 服务端未下发 message_id：serverId 必须保持 0（不能编造服务端 id），
+                            // 本地 id 用「时间戳 + 自增序号」保证唯一，避免同一毫秒碰撞被合并误删。
+                            // 该条无法与历史按 id 去重；自己发的消息会在服务端回推时由
+                            // reconcilePendingEcho 对账替换。
+                            "msg_ws_${System.currentTimeMillis()}_${wsMessageFallbackSeq++}"
+                        },
                         senderId = event.fromUid ?: "peer",
                         content = event.content,
                         type = event.type,
@@ -5575,9 +5880,15 @@ object ZeroTalkClientManager {
                         senderName = senderName,
                         senderAvatar = senderAvatar,
                         senderGender = senderGender,
+                        // 称号（官方消息行 title / title_color）
+                        authorTitle = event.title.orEmpty(),
+                        authorTitleColor = event.titleColor.orEmpty(),
                         quotedText = event.replyPreview,
                         quotedIsMine = event.replyToUserId?.let { it == _loginData.value?.uid },
-                        quotedSenderName = event.replyToUsername
+                        quotedSenderName = event.replyToUsername,
+                        replyToId = event.replyToId,
+                        // 已撤回标记透传（历史 DTO 与 WS 实时帧同源字段）
+                        isDeleted = event.isDeleted
                     )
                 )
                 val preview = newMsg.previewText
@@ -5587,24 +5898,23 @@ object ZeroTalkClientManager {
                     val (afterReconcile, matchedEcho, pendingEcho) = reconcilePendingEcho(_hallMessages.value, event, eventMs)
                     _hallMessages.value = when {
                         matchedEcho -> {
+                            // 服务端不回传语音时长等「只有本地才知道」的字段，合并时必须保留本地回显
                             val merged = if (pendingEcho != null) {
-                                newMsg.copy(
-                                    quotedText = newMsg.quotedText ?: pendingEcho.quotedText,
-                                    quotedIsMine = pendingEcho.quotedIsMine ?: newMsg.quotedIsMine,
-                                    quotedSenderName = pendingEcho.quotedSenderName ?: newMsg.quotedSenderName
-                                )
+                                LocalEchoMerge.merge(newMsg, pendingEcho)
                             } else newMsg
-                            afterReconcile + merged
+                            // 补页可能已插入同一条服务端消息，追加前按 serverId 去重
+                            ChatMessageMerge.appendDeduped(afterReconcile, merged)
                         }
                         // 拍一拍不做本地回显（文案/后缀由服务端生成），回推必须入库
                         isMine && !isPatEvent -> _hallMessages.value
-                        else -> _hallMessages.value + newMsg
+                        else -> ChatMessageMerge.appendDeduped(_hallMessages.value, newMsg)
                     }
                     // 大厅非本人消息实时推到全局通知弹窗
                     if (!isMine) {
                         _newMessageNotification.tryEmit(
                             IncomingMessageNotification(
                                 roomName = "零语大厅",
+                                senderName = senderName,
                                 content = preview,
                                 isGroup = true,
                                 roomId = _hallRoomId.value
@@ -5617,18 +5927,16 @@ object ZeroTalkClientManager {
                     val (afterReconcile, matchedEcho, pendingEcho) = reconcilePendingEcho(currentList, event, eventMs)
                     val updatedList = when {
                         matchedEcho -> {
+                            // 服务端不回传语音时长等「只有本地才知道」的字段，合并时必须保留本地回显
                             val mergedRoom = if (pendingEcho != null) {
-                                newMsg.copy(
-                                    quotedText = newMsg.quotedText ?: pendingEcho.quotedText,
-                                    quotedIsMine = pendingEcho.quotedIsMine ?: newMsg.quotedIsMine,
-                                    quotedSenderName = pendingEcho.quotedSenderName ?: newMsg.quotedSenderName
-                                )
+                                LocalEchoMerge.merge(newMsg, pendingEcho)
                             } else newMsg
-                            afterReconcile + mergedRoom
+                            // 补页可能已插入同一条服务端消息，追加前按 serverId 去重
+                            ChatMessageMerge.appendDeduped(afterReconcile, mergedRoom)
                         }
                         // 拍一拍不做本地回显（文案/后缀由服务端生成），回推必须入库
                         isMine && !isPatEvent -> currentList
-                        else -> currentList + newMsg
+                        else -> ChatMessageMerge.appendDeduped(currentList, newMsg)
                     }
                     if (updatedList !== currentList) {
                         _roomMessages.value = _roomMessages.value + (targetRoom to updatedList)
@@ -5673,7 +5981,8 @@ object ZeroTalkClientManager {
                     _newMessageNotification.tryEmit(
                         IncomingMessageNotification(
                             roomName = roomName,
-                            senderName = if (!isGroup) senderName else "",
+                            // 群聊也带上发送人（通知横幅会显示为「发送人：内容」）
+                            senderName = senderName,
                             content = preview,
                             isGroup = isGroup,
                             roomId = targetRoom.orEmpty()
@@ -5681,23 +5990,24 @@ object ZeroTalkClientManager {
                     )
                 }
             }
+            // 撤回 / 房管删除：官网 case "message_recalled" → handleMessageRecall(...)
+            is WsServerEvent.MessageRecalled -> {
+                applyMessageRecalled(
+                    roomId = event.roomId,
+                    messageId = event.messageId,
+                    username = event.username,
+                    byModerator = event.byModerator,
+                    byRoomAdmin = event.byRoomAdmin
+                )
+            }
             is WsServerEvent.GameUpdate -> {
                 if (event.game != null) {
                     if (_activeGameId.value == event.game.id) {
                         _activeGameSession.value = resolveGameSession(_activeGameSession.value, event.game)
                     }
                 }
-                // 更新房间卡片状态
-                val targetRoom = event.roomId ?: wsClient.currentRoomId
-                if (targetRoom != null && event.invite != null) {
-                    val currentList = _roomMessages.value[targetRoom] ?: emptyList()
-                    val updated = currentList.map { msg ->
-                        if (msg.gameInvite?.gameId == event.invite.gameId || (event.messageId != null && msg.serverId == event.messageId)) {
-                            msg.copy(gameInvite = event.invite)
-                        } else msg
-                    }
-                    _roomMessages.value = _roomMessages.value + (targetRoom to updated)
-                }
+                // 更新房间卡片状态（大厅 _hallMessages + 普通房间 _roomMessages 同时覆盖）
+                applyGameInviteToCards(event)
             }
             is WsServerEvent.GameJoined -> {
                 if (event.game != null) {
@@ -5729,6 +6039,91 @@ object ZeroTalkClientManager {
                 }
             }
             else -> {}
+        }
+    }
+
+    /**
+     * 撤回 / 房管删除消息的公共处理（官网 `handleMessageRecall(event, addSystemMessage)`）。
+     *
+     * 对齐官网行为（**保留在列表里并整条标记为已撤回**，而不是移除）：
+     * - 命中消息改写成 [ChatMessage.asRecalled]：`isDeleted = true` 并清空
+     *   `content` / `image_url` / `audio_url` / `reply_preview`（对齐官网
+     *   `is_deleted = true; content = ""; image_url = null; reply_preview = null;
+     *   mention_ids = []; mention_users = []`）；
+     * - 所有引用它的消息把引用摘要改写成「该消息已被撤回」（官网同款）；
+     * - 若命中消息是该会话最后一条，会话列表摘要同步改成「该消息已被撤回」；
+     * - `username` 非空时追加系统提示：`by_moderator` → 「审核员 X 删除了一条消息」、
+     *   `by_room_admin` → 「管理员 X 删除了一条消息」，否则「X 撤回了一条消息」。
+     *
+     * 幂等：命中消息此前已被标记 `isDeleted`（例如自己撤回时本地已先处理过一次）时
+     * 不再重复插入系统提示；只有确实命中消息时才补提示，避免同一事件重复广播时插入多条。
+     *
+     * @param roomId 服务端事件携带的房间 id（优先据此定位，缺失时全局查找归属房间）
+     */
+    private fun applyMessageRecalled(
+        roomId: String?,
+        messageId: Long,
+        username: String?,
+        byModerator: Boolean,
+        byRoomAdmin: Boolean
+    ) {
+        if (messageId <= 0L) return
+
+        val hallHits = _hallMessages.value.filter { it.serverId == messageId }
+        val roomFound = roomId
+            ?.takeIf { key -> _roomMessages.value[key]?.any { it.serverId == messageId } == true }
+            ?: _roomMessages.value.entries
+                .firstOrNull { (_, list) -> list.any { it.serverId == messageId } }
+                ?.key
+        val roomHits = roomFound
+            ?.let { key -> _roomMessages.value[key]?.filter { it.serverId == messageId } }
+            .orEmpty()
+        if (hallHits.isEmpty() && roomHits.isEmpty()) return
+
+        // 命中消息是否已在本机标记过撤回：本地先处理 + 服务端广播两次到达时用于提示幂等
+        val alreadyDeleted = (hallHits + roomHits).all { it.isDeleted }
+        // 命中消息是否为其会话最后一条：撤回后会话列表摘要要同步改写
+        val wasLastInRoom = roomFound != null &&
+            _roomMessages.value[roomFound]?.lastOrNull()?.serverId == messageId
+
+        if (hallHits.isNotEmpty()) {
+            _hallMessages.value = _hallMessages.value.applyRecall(messageId)
+        }
+        if (roomFound != null && roomHits.isNotEmpty()) {
+            _roomMessages.value = _roomMessages.value + (
+                roomFound to (_roomMessages.value[roomFound] ?: emptyList()).applyRecall(messageId)
+                )
+        }
+        if (wasLastInRoom) {
+            _conversations.value = _conversations.value.map { conv ->
+                if (conv.id == roomFound) conv.copy(lastMessage = RECALLED_MESSAGE_TEXT) else conv
+            }
+        }
+
+        if (alreadyDeleted) return
+        val name = username?.trim().orEmpty()
+        if (name.isEmpty()) return
+        val text = when {
+            byModerator -> "审核员 $name 删除了一条消息"
+            byRoomAdmin -> "管理员 $name 删除了一条消息"
+            else -> "$name 撤回了一条消息"
+        }
+        val nowMs = System.currentTimeMillis()
+        val systemMessage = ChatMessage(
+            id = "sys_recall_${messageId}_$nowMs",
+            senderId = "system",
+            content = text,
+            timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs)),
+            isMine = false,
+            isSystem = true,
+            timestampMs = nowMs
+        )
+        if (hallHits.isNotEmpty()) {
+            _hallMessages.value = _hallMessages.value + systemMessage
+        } else if (roomFound != null) {
+            _roomMessages.value = _roomMessages.value + (
+                roomFound to ((_roomMessages.value[roomFound] ?: emptyList()) + systemMessage)
+                )
         }
     }
 

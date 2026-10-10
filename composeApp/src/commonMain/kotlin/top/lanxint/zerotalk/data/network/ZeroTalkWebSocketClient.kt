@@ -320,44 +320,9 @@ class ZeroTalkWebSocketClient(
                 "user_joined" -> {
                     parseUserJoined(root)
                 }
-                "message" -> {
-                    val data = root.getAsJsonObject("data")
-                    fun str(key: String): String? =
-                        root.get(key)?.takeIf { !it.isJsonNull }?.asString
-                            ?: data?.get(key)?.takeIf { !it.isJsonNull }?.asString
-                    fun long(key: String): Long? = try {
-                        root.get(key)?.takeIf { !it.isJsonNull }?.asLong
-                            ?: data?.get(key)?.takeIf { !it.isJsonNull }?.asLong
-                    } catch (_: Exception) {
-                        null
-                    }
-                    fun bool(key: String): Boolean? = try {
-                        root.get(key)?.takeIf { !it.isJsonNull }?.asBoolean
-                            ?: data?.get(key)?.takeIf { !it.isJsonNull }?.asBoolean
-                    } catch (_: Exception) {
-                        null
-                    }
-                    WsServerEvent.Message(
-                        roomId = str("room_id"),
-                        type = str("type") ?: "text",
-                        content = str("content") ?: "",
-                        // 实测实时推送用 `uid`（不是 `from_uid`），两者都兼容
-                        fromUid = str("from_uid") ?: str("uid"),
-                        username = str("username"),
-                        createdAt = str("created_at"),
-                        // 实测实时推送用 `id`（不是 `message_id`），两者都兼容
-                        messageId = long("message_id") ?: long("id"),
-                        isSelf = bool("is_self"),
-                        imageUrl = str("image_url"),
-                        audioSource = str("audio_source"),
-                        gender = str("gender"),
-                        avatarUrl = str("avatar_url"),
-                        replyToId = long("reply_to_id"),
-                        replyPreview = str("reply_preview"),
-                        replyToUserId = str("reply_to_user_id"),
-                        replyToUsername = str("reply_username")
-                    )
-                }
+                // 字段解析抽到 WsServerEventParsing.parseMessageEvent（含 is_deleted 透传），
+                // 便于单元测试覆盖字段名与容错
+                "message" -> parseMessageEvent(root)
                 "typing" -> {
                     val active = root.get("active")?.asBoolean ?: false
                     WsServerEvent.Typing(active)
@@ -377,6 +342,11 @@ class ZeroTalkWebSocketClient(
                 "room_closed" -> {
                     val roomId = root.get("room_id")?.takeIf { !it.isJsonNull }?.asString
                     WsServerEvent.RoomClosed(roomId)
+                }
+                "message_recalled" -> {
+                    // 撤回 / 房管删除：官网 case "message_recalled" → handleMessageRecall(...)
+                    ZtLog.d("ZeroTalk", "[WS] message_recalled frame")
+                    parseMessageRecalled(root) ?: WsServerEvent.Unknown(event, text)
                 }
                 else -> when {
                     // 语音通话全量下行（voice_invite_sent / ringing / offer / answer / ice / …）

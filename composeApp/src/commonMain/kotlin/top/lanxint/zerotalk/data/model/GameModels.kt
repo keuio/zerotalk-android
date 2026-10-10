@@ -190,3 +190,63 @@ data class ChatGameMessageItem(
     @SerializedName("content") val content: String = "",
     @SerializedName("created_at") val createdAt: String = ""
 )
+
+/**
+ * 对局详情 -> 聊天卡片模型。
+ *
+ * 官方 `*_update` 信封通常同时带 `invite`（精简卡）与 `game`（完整对局）；
+ * 但文档实测 `xiangqi_update` 只带 `game`，此时用完整对局构造卡片，
+ * 否则聊天里的对局卡片会僵死在初始状态直到重进会话。
+ *
+ * @param fallbackGameType 对局对象未带 `game_type` 时用事件名（`xiangqi` 等）兜底
+ */
+fun GameSessionDetail.toChatGameInvite(fallbackGameType: String? = null): ChatGameInvite = ChatGameInvite(
+    gameId = id,
+    gameType = gameType.orEmpty().ifBlank { fallbackGameType.orEmpty() },
+    status = status.orEmpty().ifBlank { "waiting" },
+    whiteUsername = whiteUsername,
+    blackUsername = blackUsername,
+    redUsername = redUsername,
+    whiteAvatarUrl = whiteAvatarUrl,
+    blackAvatarUrl = blackAvatarUrl,
+    redAvatarUrl = redAvatarUrl,
+    creatorUid = creatorUid,
+    whiteUid = whiteUid,
+    blackUid = blackUid,
+    redUid = redUid,
+    winnerUid = winnerUid,
+    result = result.orEmpty().ifBlank { "none" },
+    messageId = messageId,
+    maxPlayers = settings?.maxPlayers ?: 0,
+    playerCount = players.size,
+    phase = phase
+)
+
+/**
+ * 用服务端最新下发的卡片覆盖旧卡片，**保留旧卡片已有的身份 / 头像等字段**。
+ *
+ * 官方 `ge(d)`（`publicAnnouncementDismiss-*.js`）直接用 `invite` 重写整条 content；
+ * 本客户端在 `invite` 缺失时用完整对局构造卡片，可能缺少头像等字段，
+ * 因此按字段做「新值优先、缺失回落旧值」，只让 status / result / winner 等状态字段被覆盖。
+ */
+fun ChatGameInvite.overlayOn(old: ChatGameInvite?): ChatGameInvite {
+    if (old == null) return this
+    return copy(
+        gameType = gameType.ifBlank { old.gameType },
+        whiteUsername = whiteUsername ?: old.whiteUsername,
+        blackUsername = blackUsername ?: old.blackUsername,
+        redUsername = redUsername ?: old.redUsername,
+        whiteAvatarUrl = whiteAvatarUrl ?: old.whiteAvatarUrl,
+        blackAvatarUrl = blackAvatarUrl ?: old.blackAvatarUrl,
+        redAvatarUrl = redAvatarUrl ?: old.redAvatarUrl,
+        creatorUid = creatorUid ?: old.creatorUid,
+        whiteUid = whiteUid ?: old.whiteUid,
+        blackUid = blackUid ?: old.blackUid,
+        redUid = redUid ?: old.redUid,
+        winnerUid = winnerUid ?: old.winnerUid,
+        messageId = if (messageId > 0L) messageId else old.messageId,
+        maxPlayers = if (maxPlayers > 0) maxPlayers else old.maxPlayers,
+        playerCount = if (playerCount > 0) playerCount else old.playerCount,
+        phase = phase ?: old.phase
+    )
+}

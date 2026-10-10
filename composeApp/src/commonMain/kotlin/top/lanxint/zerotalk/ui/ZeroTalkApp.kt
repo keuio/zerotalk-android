@@ -773,11 +773,18 @@ fun ZeroTalkApp() {
         // 个人资料与设置模态底栏 (Profile & Settings Sheets)
         val currentProfileSheet = activeProfileSheet
         if (currentProfileSheet != null) {
-            // 安全中心内容较长，默认半屏（PartiallyExpanded）展开、可上滑拖至全屏 —— 与「捞取历史记录」一致；
-            // 其余资料 / 设置类 Sheet 内容较短，仍直接全屏展开
-            val isSecurityCenter = currentProfileSheet is ProfileSheetType.SettingDetail &&
-                currentProfileSheet.item == ProfileSettingItem.SECURITY_CENTER
-            val profileSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = !isSecurityCenter)
+            // 安全中心与通知中心的内容都是固定屏高 75%（见 SheetContentHeight.kt），
+            // 与「捞取历史记录」保持一致：刚打开先落在半屏（PartialExpanded），用户上滑后再完整展开；
+            // 其余资料页面板以表单/短内容为主，仍直接完整展开，避免只露出一半内容
+            val profileStartsHalfExpanded = when (currentProfileSheet) {
+                is ProfileSheetType.SettingDetail ->
+                    currentProfileSheet.item == ProfileSettingItem.SECURITY_CENTER
+                is ProfileNotificationCenter -> true
+                else -> false
+            }
+            val profileSheetState = rememberModalBottomSheetState(
+                skipPartiallyExpanded = !profileStartsHalfExpanded
+            )
 
             val pTitle = when (currentProfileSheet) {
                 is ProfileSheetType.Login -> "登录账号"

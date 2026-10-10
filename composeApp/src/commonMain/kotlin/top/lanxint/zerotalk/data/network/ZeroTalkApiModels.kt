@@ -156,6 +156,10 @@ data class MomentItemDto(
     @SerializedName("audience_mode") val audienceMode: String? = null,
     @SerializedName("audience_mutual") val audienceMutual: Boolean? = null,
     @SerializedName("created_at") val createdAt: String = "",
+    /** 作者称号（官方 MomentCard `item.title`）；未下发为 null */
+    @SerializedName("title") val title: String? = null,
+    /** 作者称号颜色 key（官方 `item.title_color`） */
+    @SerializedName("title_color") val titleColor: String? = null,
     // ---- 捞取相关字段（仅 /moment/fish 与 /api/moment/fish-history 返回，其余接口为空） ----
     @SerializedName("fish_log_id") val fishLogId: Long = 0,
     @SerializedName("fished_at") val fishedAt: JsonElement? = null
@@ -260,7 +264,48 @@ sealed class WsServerEvent {
          * 该字段比「按 from_uid / 昵称推断」更可靠：实时推送里发送者字段是 `uid`，
          * 而缺失时的昵称兜底会在改名后失效。
          */
-        val isSelf: Boolean? = null
+        val isSelf: Boolean? = null,
+        /**
+         * 服务端标记的「已撤回 / 已删除」（官网 `is_deleted`，WS 实时帧同样携带）。
+         *
+         * 官网 `ws.on("message", …)` 把它归一化为 `is_deleted: !!e.is_deleted`；
+         * 消息可能以「已撤回」状态实时到达，映射层必须透传到 ChatMessage。
+         */
+        val isDeleted: Boolean = false,
+        /** 发送者称号（官方消息行 `msg.title`）；未下发为 null */
+        val title: String? = null,
+        /** 发送者称号颜色 key（官方消息行 `msg.title_color`） */
+        val titleColor: String? = null
+    ) : WsServerEvent()
+
+    /**
+     * 消息撤回 / 房管删除（官网 `message_recalled`）
+     *
+     * 官网 `handleMessageRecall(event, addSystemMessage)` 的行为（逐字段对齐）：
+     * - 用 `message_id` 定位消息，标记 `is_deleted=true` 并清空 `content` / `image_url` /
+     *   `reply_preview` / `mention_ids` / `mention_users`；
+     * - 所有 `reply_to_id == message_id` 的消息，引用摘要改为「该消息已被撤回」；
+     * - `username` 非空且该消息此前未被标记删除时追加系统提示：
+     *   `by_moderator` → 「审核员 X 删除了一条消息」；
+     *   `by_room_admin` → 「管理员 X 删除了一条消息」；否则「X 撤回了一条消息」。
+     *
+     * 本客户端与官网一致：命中消息**保留在列表里**，由仓库层标记
+     * `ChatMessage.isDeleted = true` 并清空正文 / 媒体地址（[top.lanxint.zerotalk.data.model.asRecalled]），
+     * 引用它的消息改写成「该消息已被撤回」，再按官网口径补系统提示（幂等，已撤回的不重复补）。
+     *
+     * @param roomId 服务端下发的房间 id（官网聊天页是房间作用域、不依赖该字段；
+     *        本客户端多房间共享同一 WS，缺失时按消息归属房间兜底）
+     * @param messageId 被撤回 / 删除的消息服务端 id（`message_id`，兼容 `id`）
+     * @param username 操作者昵称（用于生成系统提示；缺失则只移除消息）
+     * @param byModerator 审核员删除（`by_moderator`）
+     * @param byRoomAdmin 房管删除（`by_room_admin`）
+     */
+    data class MessageRecalled(
+        val roomId: String?,
+        val messageId: Long,
+        val username: String? = null,
+        val byModerator: Boolean = false,
+        val byRoomAdmin: Boolean = false
     ) : WsServerEvent()
 
     /**
@@ -427,7 +472,11 @@ data class PeerUserDto(
     @SerializedName("gender") val gender: String? = null,
     @SerializedName(value = "clean_stream_mode", alternate = ["clean_stream", "cleanStreamMode", "cleanStream", "clean_stream_enabled"]) val cleanStreamMode: Boolean? = null,
     /** 对方是否开启在线状态展示（为 0/false 时即隐身模式） */
-    @SerializedName(value = "show_online_status", alternate = ["showOnlineStatus", "online_status_visible"]) val showOnlineStatus: Boolean? = null
+    @SerializedName(value = "show_online_status", alternate = ["showOnlineStatus", "online_status_visible"]) val showOnlineStatus: Boolean? = null,
+    /** 对端称号（官方 peer 对象 `title`） */
+    @SerializedName("title") val title: String? = null,
+    /** 对端称号颜色 key（官方 `title_color`） */
+    @SerializedName("title_color") val titleColor: String? = null
 )
 
 /**
@@ -481,7 +530,11 @@ data class ChatMessageDto(
     @SerializedName("is_deleted") val isDeleted: Boolean = false,
     @SerializedName("created_at") val createdAt: String = "",
     @SerializedName("avatar_url") val avatarUrl: String? = null,
-    @SerializedName("media_locked") val mediaLocked: Boolean = false
+    @SerializedName("media_locked") val mediaLocked: Boolean = false,
+    /** 发送者称号（官方 UserTitleBadge 的 `title`）；未下发为 null */
+    @SerializedName("title") val title: String? = null,
+    /** 发送者称号颜色 key（官方 `title_color`，白名单外 UI 回落 blue） */
+    @SerializedName("title_color") val titleColor: String? = null
 )
 
 /**
@@ -869,6 +922,10 @@ data class UserProfileDto(
     @SerializedName(value = "show_online_status", alternate = ["showOnlineStatus", "online_status_visible"]) val showOnlineStatus: Boolean? = null,
     /** 对方是否开启隐私模式（为真时官方隐藏「动态」入口） */
     @SerializedName("privacy_mode") val privacyMode: Boolean? = null,
+    /** 用户称号（官方 UserMomentsView 身份行 `user.title`）；未下发为 null */
+    @SerializedName("title") val title: String? = null,
+    /** 用户称号颜色 key（官方 `user.title_color`） */
+    @SerializedName("title_color") val titleColor: String? = null,
     /** MBTI 原始 JSON（对象 / 字符串，未填写为 null），经 [MbtiInfo.fromJson] 容错解析 */
     @SerializedName("mbti") val mbti: JsonElement? = null
 ) {
@@ -957,7 +1014,11 @@ data class RoomMemberDto(
     @SerializedName("can_delete_message") val canDeleteMessage: Boolean = false,
     @SerializedName(value = "is_self", alternate = ["is_me"]) val isSelf: Boolean = false,
     @SerializedName("is_muted") val isMuted: Boolean = false,
-    @SerializedName("joined_at") val joinedAt: String? = null
+    @SerializedName("joined_at") val joinedAt: String? = null,
+    /** 成员称号（官方成员列表 `member.title`） */
+    @SerializedName("title") val title: String? = null,
+    /** 成员称号颜色 key（官方 `member.title_color`） */
+    @SerializedName("title_color") val titleColor: String? = null
 ) {
     /** 成员操作目标：优先数字 user_id，缺失时回落到 uid */
     val targetId: String get() = if (userId > 0L) userId.toString() else uid
@@ -1010,7 +1071,11 @@ data class BootstrapMemberDto(
     @SerializedName("is_creator") val isCreator: Boolean = false,
     @SerializedName("is_admin") val isAdmin: Boolean = false,
     @SerializedName("can_kick") val canKick: Boolean = false,
-    @SerializedName("can_delete_message") val canDeleteMessage: Boolean = false
+    @SerializedName("can_delete_message") val canDeleteMessage: Boolean = false,
+    /** 成员称号（官方成员列表 `member.title`） */
+    @SerializedName("title") val title: String? = null,
+    /** 成员称号颜色 key（官方 `member.title_color`） */
+    @SerializedName("title_color") val titleColor: String? = null
 )
 
 /**

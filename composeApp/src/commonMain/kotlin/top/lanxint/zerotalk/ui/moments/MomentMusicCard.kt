@@ -2,8 +2,6 @@ package top.lanxint.zerotalk.ui.moments
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +30,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -40,6 +40,7 @@ import top.lanxint.zerotalk.data.model.MomentMusic
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
+import top.lanxint.zerotalk.ui.messages.tapPreservingLongPress
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
 import top.lanxint.zerotalk.ui.utils.rememberMomentAudioPlayer
@@ -122,43 +123,56 @@ internal fun MomentMusicCard(
         Spacer(Modifier.width(8.dp))
 
         // 播放 / 暂停
+        val canTogglePlay = music.isPlayable && !isLoading
+        // 抽成命名 lambda：手势助手与无障碍 onClick 共用同一份回调
+        // （原 `return@clickable` 在此改为 else 分支）
+        val togglePlay: () -> Unit = {
+            if (isPlaying) {
+                player.stop()
+                isPlaying = false
+            } else {
+                isLoading = true
+                coroutineScope.launch {
+                    val res = ZeroTalkClientManager.apiService.getNeteasePlayUrl(music.songId, force = false)
+                    isLoading = false
+                    val url = res.getOrNull()?.url
+                    if (url.isNullOrBlank()) {
+                        notificationState.show(
+                            res.exceptionOrNull()?.message ?: "暂时无法播放该歌曲"
+                        )
+                        return@launch
+                    }
+                    player.play(
+                        url = url,
+                        onComplete = { isPlaying = false },
+                        onError = { err ->
+                            isPlaying = false
+                            notificationState.show(err)
+                        }
+                    )
+                    isPlaying = true
+                }
+            }
+        }
         Box(
             modifier = Modifier
                 .size(32.dp)
                 .clip(CircleShape)
                 .background(Color(0xFFE11D48))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    enabled = music.isPlayable && !isLoading,
-                    onClick = {
-                        if (isPlaying) {
-                            player.stop()
-                            isPlaying = false
-                            return@clickable
-                        }
-                        isLoading = true
-                        coroutineScope.launch {
-                            val res = ZeroTalkClientManager.apiService.getNeteasePlayUrl(music.songId, force = false)
-                            isLoading = false
-                            val url = res.getOrNull()?.url
-                            if (url.isNullOrBlank()) {
-                                notificationState.show(
-                                    res.exceptionOrNull()?.message ?: "暂时无法播放该歌曲"
-                                )
-                                return@launch
-                            }
-                            player.play(
-                                url = url,
-                                onComplete = { isPlaying = false },
-                                onError = { err ->
-                                    isPlaying = false
-                                    notificationState.show(err)
+                .then(
+                    if (canTogglePlay) {
+                        // 用 tapPreservingLongPress 而非 clickable：clickable 会消费 down，
+                        // 长按落在按钮上时父级气泡的消息菜单收不到事件
+                        // （官方 DOM 里按钮的 @click 不消费长按，整块都能长按）。
+                        Modifier
+                            .tapPreservingLongPress(key = music.songId, onTap = togglePlay)
+                            .semantics {
+                                onClick(label = if (isPlaying) "暂停" else "播放") {
+                                    togglePlay()
+                                    true
                                 }
-                            )
-                            isPlaying = true
-                        }
-                    }
+                            }
+                    } else Modifier
                 ),
             contentAlignment = Alignment.Center
         ) {
@@ -190,31 +204,39 @@ internal fun MomentVoiceBubble(
     val notificationState = LocalNotificationState.current
     val shape = RoundedCornerShape(100.dp)
 
+    // 抽成命名 lambda：手势助手与无障碍 onClick 共用同一份回调
+    val togglePlay: () -> Unit = {
+        if (isPlaying) {
+            player.stop()
+            isPlaying = false
+        } else {
+            player.play(
+                url = audioUrl,
+                onComplete = { isPlaying = false },
+                onError = { err ->
+                    isPlaying = false
+                    notificationState.show(err)
+                }
+            )
+            isPlaying = true
+        }
+    }
+
     Row(
         modifier = modifier
             .clip(shape)
             .background(if (isDark) Color(0xFF2A2F3A) else Color(0xFFEDEFF4))
             .border(0.5.dp, higColors.separator.copy(alpha = 0.5f), shape)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = {
-                    if (isPlaying) {
-                        player.stop()
-                        isPlaying = false
-                    } else {
-                        player.play(
-                            url = audioUrl,
-                            onComplete = { isPlaying = false },
-                            onError = { err ->
-                                isPlaying = false
-                                notificationState.show(err)
-                            }
-                        )
-                        isPlaying = true
-                    }
+            // 用 tapPreservingLongPress 而非 clickable：clickable 会消费 down，
+            // 长按落在语音条上时父级气泡的消息菜单收不到事件
+            // （官方 DOM 里控件的 @click 不消费长按，整卡都能长按）。
+            .tapPreservingLongPress(key = audioUrl, onTap = togglePlay)
+            .semantics {
+                onClick(label = if (isPlaying) "暂停语音" else "播放语音") {
+                    togglePlay()
+                    true
                 }
-            )
+            }
             .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)

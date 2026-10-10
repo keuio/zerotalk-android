@@ -66,10 +66,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.lanxint.zerotalk.data.model.MomentItem
+import top.lanxint.zerotalk.data.model.normalizeUserTitle
 import top.lanxint.zerotalk.data.network.MomentsCategory
 import top.lanxint.zerotalk.data.network.MomentsSort
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
@@ -86,6 +88,7 @@ import top.lanxint.zerotalk.ui.components.MomentComposer
 import top.lanxint.zerotalk.ui.components.ZeroTalkBottomTab
 import top.lanxint.zerotalk.ui.components.ZeroTalkBottomTabs
 import top.lanxint.zerotalk.ui.components.UserAvatar
+import top.lanxint.zerotalk.ui.components.UserTitleBadge
 import top.lanxint.zerotalk.ui.messages.UserReportDialog
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
@@ -578,6 +581,8 @@ internal fun MomentCard(
                         }
                     )
             ) {
+                // 作者称号（官方 MomentCard 顺序：username → gender → UserTitleBadge）
+                val authorTitle = normalizeUserTitle(moment.authorTitle)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (showAuthor) {
                         BasicText(
@@ -585,7 +590,12 @@ internal fun MomentCard(
                             style = AppleHigTypography.subhead.copy(
                                 color = higColors.label,
                                 fontWeight = FontWeight.SemiBold
-                            )
+                            ),
+                            // 昵称过长时省略，把空间让给性别 / 称号 / 置顶徽章
+                            // （徽章 flex-shrink:0，不参与压缩）
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                     }
 
@@ -611,6 +621,16 @@ internal fun MomentCard(
                                 )
                             )
                         }
+                    }
+
+                    // 作者称号徽章：服务端未下发时不渲染任何内容（也不占位）
+                    if (showAuthor && authorTitle.isNotEmpty()) {
+                        Spacer(Modifier.width(6.dp))
+                        UserTitleBadge(
+                            title = moment.authorTitle,
+                            color = moment.authorTitleColor,
+                            isDark = isDark
+                        )
                     }
 
                     // 置顶微标签

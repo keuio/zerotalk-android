@@ -1,6 +1,7 @@
 package top.lanxint.zerotalk.ui.sheets
 
 import androidx.compose.foundation.background
+import top.lanxint.zerotalk.ui.components.sheetContentHeight
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -199,6 +200,8 @@ fun SheetSecurityCenterContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // 固定高度：与「捞取历史记录」一致，避免加载 / 切换页签时弹窗高度跳动
+            .sheetContentHeight()
             .verticalScroll(scrollState)
             .padding(bottom = 20.dp)
     ) {
@@ -2254,7 +2257,7 @@ private fun normalizeQrImageUrl(raw: String): String {
 // 6) 问题反馈   SheetFeedbackContent    —— 对齐官网 FeedbackView
 // 7) 捐赠本站   SheetDonateContent      —— 对齐官网 DonateView + 新增「捐献 App」内置收款码
 //
-// 参考依据（tmp/assets/）：
+// 参考依据：
 //   contact-Qek2ePzN.js        GET /api/contact/bootstrap、POST /contact/submit
 //   ContactUsView-B0dCPMDm.js  群二维码 + 邮箱 / QQ / 微信 / other_contact 列表
 //   FeedbackView-CeBvwI2E.js   类型 / 标题 / 内容表单 + 我的反馈记录（含官方回复）

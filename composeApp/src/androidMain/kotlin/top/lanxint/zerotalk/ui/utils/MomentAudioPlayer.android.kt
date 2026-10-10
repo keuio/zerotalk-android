@@ -19,7 +19,12 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
     override val isPlaying: Boolean
         get() = player?.isPlaying == true
 
-    override fun play(url: String, onComplete: (() -> Unit)?, onError: ((String) -> Unit)?) {
+    override fun play(
+        url: String,
+        onComplete: (() -> Unit)?,
+        onError: ((String) -> Unit)?,
+        onDuration: ((Int) -> Unit)?
+    ) {
         stop()
         if (url.isBlank()) {
             onError?.invoke("播放地址为空")
@@ -40,7 +45,11 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
             return
         }
 
-        mediaPlayer.setOnPreparedListener { it.start() }
+        mediaPlayer.setOnPreparedListener {
+            // 就绪即回传真实时长（毫秒 → 秒），供「服务端未下发时长」的语音气泡显示
+            if (it.duration > 0) onDuration?.invoke(it.duration / 1000)
+            it.start()
+        }
         mediaPlayer.setOnCompletionListener {
             it.release()
             if (player === it) player = null

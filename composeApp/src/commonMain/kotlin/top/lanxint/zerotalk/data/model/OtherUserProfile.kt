@@ -41,6 +41,10 @@ data class OtherUserProfile(
     val avatarUrl: String = "",
     val avatarFallback: String = "",
     val bio: String = "",
+    /** 用户称号（官方 UserMomentsView 身份行 `user.title`）；空串表示无称号 */
+    val title: String = "",
+    /** 用户称号颜色 key（官方 `user.title_color`，白名单外 UI 回落 blue） */
+    val titleColor: String = "",
     val followingCount: Int = 0,
     val followerCount: Int = 0,
     val likeCount: Int = 0,
@@ -109,7 +113,9 @@ data class UserProfileTarget(
     val userId: String,
     val uid: String,
     val name: String = "",
-    val avatarUrl: String = ""
+    val avatarUrl: String = "",
+    /** 需要在该用户的资料页里定位并高亮的动态 id（点聊天里的动态卡片进来时携带） */
+    val momentId: Long? = null
 )
 
 /**

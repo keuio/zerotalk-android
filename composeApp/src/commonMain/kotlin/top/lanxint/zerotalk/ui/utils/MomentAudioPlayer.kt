@@ -21,7 +21,13 @@ interface MomentAudioPlayer {
      * @param onComplete 播放自然结束时回调（用于 UI 恢复未播放状态）
      * @param onError 播放失败时回调，携带原因
      */
-    fun play(url: String, onComplete: (() -> Unit)? = null, onError: ((String) -> Unit)? = null)
+    fun play(
+        url: String,
+        onComplete: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null,
+        /** 就绪后回传音频真实时长（秒）。服务端不下发语音时长，气泡据此显示（对齐官网读音频元数据） */
+        onDuration: ((Int) -> Unit)? = null
+    )
 
     /** 暂停 / 停止当前播放 */
     fun stop()

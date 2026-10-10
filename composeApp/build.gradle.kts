@@ -79,7 +79,7 @@ android {
 
     defaultConfig {
         applicationId = "top.lanxint.zerotalk"
-        minSdk = 24
+        minSdk = 23
         targetSdk = 36
         versionCode = 3
         versionName = "1.1.1"

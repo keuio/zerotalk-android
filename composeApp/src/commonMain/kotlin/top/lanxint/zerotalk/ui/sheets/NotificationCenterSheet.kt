@@ -1,6 +1,7 @@
 package top.lanxint.zerotalk.ui.sheets
 
 import androidx.compose.foundation.background
+import top.lanxint.zerotalk.ui.components.sheetContentHeight
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -88,6 +89,9 @@ fun SheetNotificationCenterContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // 固定高度：内容按自身撑开时，加载完成 / 切换分类 Tab 都会改变高度，
+            // 弹窗随之重新展开，观感上像被重新打开；固定后高度恒定
+            .sheetContentHeight()
             .verticalScroll(rememberScrollState())
             .padding(bottom = 20.dp)
     ) {

@@ -20,6 +20,7 @@ object UiPreferencesStore {
     private const val PREF_FILE = "zt_ui_preferences.txt"
     private const val KEY_LIQUID_GLASS_COMPAT = "liquid_glass_compat"
     private const val KEY_BACKGROUND_RECEIVE = "background_receive"
+    private const val KEY_HALL_NOTIFY_AFTER_EXIT = "hall_notify_after_exit"
 
     @Volatile
     private var storageDir: File? = null
@@ -45,6 +46,15 @@ object UiPreferencesStore {
     val backgroundReceiveEnabled: StateFlow<Boolean> = _backgroundReceiveEnabled.asStateFlow()
 
     /**
+     * 退出大厅后继续接收大厅通知
+     *
+     * 开启：退出大厅页面时**不再**发送 leave_room，保持在大厅房间，退出后仍能收到大厅消息与通知；
+     * 关闭：与官方一致，退出页面即离开房间。默认关闭。
+     */
+    private val _hallNotifyAfterExit = MutableStateFlow(false)
+    val hallNotifyAfterExit: StateFlow<Boolean> = _hallNotifyAfterExit.asStateFlow()
+
+    /**
      * 初始化本地持久化存储目录（如 context.filesDir）
      */
     fun init(filesDir: File) {
@@ -59,6 +69,8 @@ object UiPreferencesStore {
         liquidGlassCompatMode = cache[KEY_LIQUID_GLASS_COMPAT] == "1"
         // 缺省视为开启
         _backgroundReceiveEnabled.value = cache[KEY_BACKGROUND_RECEIVE] != "0"
+        // 缺省视为关闭（与官方一致）
+        _hallNotifyAfterExit.value = cache[KEY_HALL_NOTIFY_AFTER_EXIT] == "1"
     }
 
     /**
@@ -69,6 +81,17 @@ object UiPreferencesStore {
         if (_backgroundReceiveEnabled.value == enabled) return
         _backgroundReceiveEnabled.value = enabled
         cache[KEY_BACKGROUND_RECEIVE] = if (enabled) "1" else "0"
+        writeText(PREF_FILE, cache.entries.joinToString("\n") { "${it.key}=${it.value}" })
+    }
+
+    /**
+     * 写入「退出大厅后继续接收大厅通知」开关（值未变化时跳过落盘）
+     */
+    @Synchronized
+    fun setHallNotifyAfterExit(enabled: Boolean) {
+        if (_hallNotifyAfterExit.value == enabled) return
+        _hallNotifyAfterExit.value = enabled
+        cache[KEY_HALL_NOTIFY_AFTER_EXIT] = if (enabled) "1" else "0"
         writeText(PREF_FILE, cache.entries.joinToString("\n") { "${it.key}=${it.value}" })
     }
 

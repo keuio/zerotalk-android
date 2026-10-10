@@ -52,6 +52,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import top.lanxint.zerotalk.ui.components.UserAvatar
+import top.lanxint.zerotalk.ui.components.UserTitleBadge
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,6 +76,10 @@ private data class RoomMemberUi(
     val name: String,
     val avatar: String,
     val gender: String,
+    /** 成员称号（官方成员列表 member.title）；空串表示无称号 */
+    val title: String = "",
+    /** 成员称号颜色 key（官方 member.title_color） */
+    val titleColor: String = "",
     val isAdmin: Boolean,
     val isOwner: Boolean,
     val canKick: Boolean = false,
@@ -126,6 +131,8 @@ fun SecretRoomInfoScreen(
             name = dto.username.ifBlank { "零语用户" },
             avatar = dto.avatarUrl.orEmpty(),
             gender = dto.gender.orEmpty(),
+            title = dto.title.orEmpty(),
+            titleColor = dto.titleColor.orEmpty(),
             isAdmin = dto.isAdmin,
             isOwner = dto.isCreator,
             canKick = dto.canKick,
@@ -142,6 +149,8 @@ fun SecretRoomInfoScreen(
             name = dto.username.ifBlank { "零语用户" },
             avatar = dto.avatarUrl.orEmpty(),
             gender = dto.gender.orEmpty(),
+            title = dto.title.orEmpty(),
+            titleColor = dto.titleColor.orEmpty(),
             isAdmin = dto.isAdmin || role == "admin" || role == "administrator",
             isOwner = dto.isCreator || role == "creator" || role == "owner",
             // 管理员的两项授权由 /room/set-member-admin 下发，用于回填「管理员权限」面板
@@ -688,15 +697,25 @@ private fun MemberGridCell(
         UserAvatar(member.avatar, member.name, size = 36.dp)
 
         Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
-            BasicText(
-                text = member.name,
-                style = AppleHigTypography.footnote.copy(
-                    color = colors.label,
-                    fontWeight = FontWeight.Medium
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            // 昵称 + 成员称号（官方成员列表：username → 角色/性别 → UserTitleBadge）
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BasicText(
+                    text = member.name,
+                    style = AppleHigTypography.footnote.copy(
+                        color = colors.label,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    // 昵称过长时省略，称号徽章不参与压缩（flex-shrink:0）
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                UserTitleBadge(
+                    title = member.title,
+                    color = member.titleColor,
+                    isDark = isDark
+                )
+            }
             if (metaParts.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))
                 BasicText(

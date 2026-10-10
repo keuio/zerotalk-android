@@ -116,12 +116,12 @@ class NotificationState(private val coroutineScope: CoroutineScope) {
         isGroup: Boolean = false
     ) {
         title = roomName
-        subtitle = "新消息"
-        message = if (!isGroup && senderName.isNotBlank()) {
-            "$senderName\n$content"
-        } else {
-            content
-        }
+        // 不再使用「新消息」副标题：三排过高，改为两排（标题 + 内容）
+        subtitle = ""
+        // 群聊 / 大厅带上发送人名字，形如「张三：内容」；
+        // 私聊的 title 已经是对方名字，与 senderName 相同，避免重复
+        val name = senderName.trim()
+        message = if (name.isNotBlank() && name != roomName.trim()) "$name：$content" else content
         icon = Icons.Default.Forum
         isVisible = true
         scheduleDismiss(4500L)
