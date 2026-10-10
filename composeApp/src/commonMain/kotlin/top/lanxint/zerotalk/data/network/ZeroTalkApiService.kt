@@ -1144,6 +1144,112 @@ class ZeroTalkApiService(
     )
 
     /**
+     * 搜索网络表情包：GET /api/sticker/search?keyword=&page=
+     *
+     * 官方 `ChatEmojiPanel` 的搜索框（占位「搜索网络表情包…」）：
+     * 关键词最长 20 字，翻页从 1 开始，`has_more` 为真时滚动到底自动加载下一页。
+     * 搜索结果只有图片直链，发送前需 [prepareStickerUrl] 换 asset_id。
+     */
+    suspend fun searchStickers(keyword: String, page: Int = 1): Result<StickerSearchData> =
+        apiDataRequestRequired(
+            path = "/api/sticker/search",
+            type = object : TypeToken<ApiResponse<StickerSearchData>>() {}.type,
+            params = mapOf(
+                "keyword" to keyword.take(20),
+                "page" to page.coerceAtLeast(1).toString()
+            ),
+            get = true,
+            fallbackMessage = "搜索表情包失败"
+        )
+
+    /**
+     * 把网络表情图片地址兑换成可发送的 asset：POST /api/sticker/prepare-url
+     *
+     * 官方搜到的表情点击发送前必须先走这一步（否则没有 asset_id 无法发帧）。
+     */
+    suspend fun prepareStickerUrl(url: String): Result<StickerPrepareUrlData> =
+        apiDataRequestRequired(
+            path = "/api/sticker/prepare-url",
+            type = object : TypeToken<ApiResponse<StickerPrepareUrlData>>() {}.type,
+            params = mapOf("url" to url),
+            fallbackMessage = "表情包无效"
+        )
+
+    /**
+     * 把网络表情图片加进「我的表情包」：POST /api/sticker/add-url
+     */
+    suspend fun addStickerByUrl(url: String): Result<StickerPrepareUrlData?> = apiDataRequest(
+        path = "/api/sticker/add-url",
+        type = object : TypeToken<ApiResponse<StickerPrepareUrlData>>() {}.type,
+        params = mapOf("url" to url),
+        fallbackMessage = "添加失败"
+    )
+
+    /**
+     * 删除我的表情包：POST /api/sticker/delete（参数为表情包记录 `id`，非 asset_id）
+     */
+    suspend fun deleteSticker(id: Long): Result<Unit> = apiDataRequest<StickerPrepareUrlData>(
+        path = "/api/sticker/delete",
+        type = object : TypeToken<ApiResponse<StickerPrepareUrlData>>() {}.type,
+        params = mapOf("id" to id.toString()),
+        fallbackMessage = "删除失败"
+    ).mapCatching { }
+
+    /**
+     * 把已上传到对象存储的图片提交为表情包：POST /api/sticker/commit
+     *
+     * 官方 `le.upload`：先直传拿 url，再 commit 拿最终表情包地址。
+     */
+    suspend fun commitSticker(url: String): Result<StickerUploadData> = apiDataRequestRequired(
+        path = "/api/sticker/commit",
+        type = object : TypeToken<ApiResponse<StickerUploadData>>() {}.type,
+        params = mapOf("url" to url),
+        fallbackMessage = "上传失败"
+    )
+
+    /**
+     * 旧版整体上传表情包图片：POST /api/sticker/upload（multipart）
+     *
+     * 仅在直传不可用时作为回退：官方 `legacyUpload` 用 `file` 字段一次性提交。
+     */
+    suspend fun uploadStickerLegacy(fileBytes: ByteArray, filename: String): Result<StickerUploadData> =
+        withContext(Dispatchers.IO) {
+            try {
+                val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                    .addFormDataPart(
+                        "file",
+                        filename,
+                        fileBytes.toRequestBody(
+                            when {
+                                filename.endsWith(".png", ignoreCase = true) -> "image/png".toMediaTypeOrNull()
+                                filename.endsWith(".webp", ignoreCase = true) -> "image/webp".toMediaTypeOrNull()
+                                else -> "image/jpeg".toMediaTypeOrNull()
+                            }
+                        )
+                    )
+                    .build()
+                val request = Request.Builder()
+                    .url("${BASE_URL}/api/sticker/upload")
+                    .post(body)
+                    .build()
+                val response = client.newCall(request).execute()
+                val bodyString = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    Result.failure(IOException("HTTP Error: ${response.code}"))
+                } else {
+                    val parsed = gson.fromJson(bodyString, StickerUploadData::class.java)
+                    if (parsed == null || parsed.url.isBlank()) {
+                        Result.failure(IOException("上传失败"))
+                    } else {
+                        Result.success(parsed)
+                    }
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /**
      * 通用上传：三段式直传 + 旧版 multipart 回退，返回可直接访问的文件地址
      *
      * @param legacyPath 直传不可用时回退的旧版 multipart 端点

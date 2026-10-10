@@ -49,6 +49,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Call
@@ -123,6 +125,9 @@ import top.lanxint.zerotalk.ui.components.ChatComposerBar
 import top.lanxint.zerotalk.ui.components.ChatComposerQuote
 import top.lanxint.zerotalk.ui.components.ChatContentCaptureLayer
 import top.lanxint.zerotalk.ui.components.GenderBadge
+import top.lanxint.zerotalk.data.network.StickerItemDto
+import top.lanxint.zerotalk.data.network.StickerSearchItemDto
+import top.lanxint.zerotalk.ui.components.StickerPanel
 import top.lanxint.zerotalk.ui.components.UserTitleBadge
 import top.lanxint.zerotalk.ui.components.IosChatNavBar
 import top.lanxint.zerotalk.ui.components.LiquidButton
@@ -143,6 +148,7 @@ import top.lanxint.zerotalk.ui.utils.rememberPhotoPickerLauncher
 import top.lanxint.zerotalk.ui.utils.rememberAudioFilePickerLauncher
 import top.lanxint.zerotalk.ui.theme.AppleHigColorTokens
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
+import top.lanxint.zerotalk.ui.theme.AppleHigTypography
 import com.kashif_e.backdrop.Backdrop
 import com.kashif_e.backdrop.backdrops.rememberCanvasBackdrop
 import com.kashif_e.backdrop.backdrops.rememberLayerBackdrop
@@ -171,6 +177,8 @@ import top.lanxint.zerotalk.ui.sheets.RoomMusicSheet
 import top.lanxint.zerotalk.ui.sheets.GamePickerSheet
 import top.lanxint.zerotalk.ui.sheets.VoiceCallMemberPickerSheet
 import top.lanxint.zerotalk.ui.sheets.MyGameSessionsSheet
+import top.lanxint.zerotalk.ui.sheets.UnlockRoomMode
+import top.lanxint.zerotalk.ui.sheets.UnlockRoomSheet
 import top.lanxint.zerotalk.ui.game.GameSessionScreen
 
 /**
@@ -246,6 +254,22 @@ fun PrivateChatScreen(
     val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
     val canModerateDeleteMessage = roomBootstrapMap[conversation.id]?.viewerCanDeleteMessage == true
 
+    // ---- 端到端加密：未解锁时引导输入房间暗号（官网 UnlockRoomModal）----
+    val roomEncryptionMap by ZeroTalkClientManager.roomEncryption.collectAsState()
+    val encryptionUnlockRequest by ZeroTalkClientManager.encryptionUnlockRequest.collectAsState()
+    val encryptionUnlocking by ZeroTalkClientManager.encryptionUnlocking.collectAsState()
+    val encryptionUnlockError by ZeroTalkClientManager.encryptionUnlockError.collectAsState()
+    val encryptionResettingPassword by ZeroTalkClientManager.encryptionResettingPassword.collectAsState()
+    val encryptionContactingCreator by ZeroTalkClientManager.encryptionContactingCreator.collectAsState()
+    val roomBootstrap = roomBootstrapMap[conversation.id]
+    var showUnlockRoomSheet by remember(conversation.id) { mutableStateOf(false) }
+    // 管理器请求解锁（进入加密房间 / 服务端拒绝明文发送）时自动弹出
+    LaunchedEffect(encryptionUnlockRequest, conversation.id, roomEncryptionMap[conversation.id]?.enabled) {
+        if (encryptionUnlockRequest == conversation.id) {
+            showUnlockRoomSheet = true
+        }
+    }
+
     // ---- 首聊「对方信息卡片」（对齐官网 PeerProfileCard，私聊 / 匹配房间展示）----
     val roomPeers by ZeroTalkClientManager.roomPeers.collectAsState()
     val peerProfileState by ZeroTalkClientManager.otherUserProfile.collectAsState()
@@ -311,6 +335,24 @@ fun PrivateChatScreen(
         },
         onPermissionDenied = {
             notificationState.show("需要相册读取权限以发送图片，请在系统设置中允许")
+        }
+    )
+
+    // 表情包：选本地图片上传到「我的表情包」（官方「+」格，upload_source=sticker）
+    val stickerUploadPicker = rememberPhotoPickerLauncher(
+        maxItems = 1,
+        onImagesSelected = { picked ->
+            val photo = picked.firstOrNull() ?: return@rememberPhotoPickerLauncher
+            ZeroTalkClientManager.uploadSticker(
+                imageBytes = photo.byteArray,
+                filename = "sticker_${System.currentTimeMillis()}.png",
+                onResult = { ok ->
+                    notificationState.show(if (ok) "上传成功" else "上传失败")
+                }
+            )
+        },
+        onPermissionDenied = {
+            notificationState.show("需要相册读取权限以上传表情包，请在系统设置中允许")
         }
     )
 
@@ -387,6 +429,12 @@ fun PrivateChatScreen(
     // 弹窗与详情页状态（按会话隔离：资料页内点「私信」会切换到另一个会话，
     // 若沿用同一个 remember，新会话上会残留上一个房间的资料页 / 群面板）
     var showActionSheet by remember { mutableStateOf(false) }
+    var showStickerPanel by remember { mutableStateOf(false) }
+    // 表情包：长按「我的表情包」请求删除 / 长按网络搜索结果请求添加
+    var stickerPendingDelete by remember { mutableStateOf<StickerItemDto?>(null) }
+    var stickerPendingAdd by remember { mutableStateOf<StickerSearchItemDto?>(null) }
+    var stickerDeleting by remember { mutableStateOf(false) }
+    var stickerAdding by remember { mutableStateOf(false) }
     var showMusicShareSheet by remember { mutableStateOf(false) }
     var showRoomMusicSheet by remember { mutableStateOf(false) }
     var showGamePickerSheet by remember { mutableStateOf(false) }
@@ -1162,7 +1210,7 @@ fun PrivateChatScreen(
                     when {
                         isGroupRoom -> showVoiceCallPicker = true
                         !hasBothSidesText ->
-                            notificationState.show("私聊需双方互发文字后才能发起语音通话")
+                            notificationState.show("私聊需双方互发文字后才能发送图片、语音、表情包、音乐或发起语音通话")
 
                         else -> ZeroTalkClientManager.voiceCall.startCall(
                             roomId = conversation.id,
@@ -1179,6 +1227,76 @@ fun PrivateChatScreen(
             controlContentColor = controlContentColor,
             surfaceColor = buttonSurfaceColor,
             surfaceAlpha = buttonSurfaceAlpha,
+            stickerPanelExpanded = showStickerPanel,
+            onToggleStickerPanel = {
+                showStickerPanel = !showStickerPanel
+                if (showStickerPanel) showActionSheet = false
+            },
+            onStickerPick = { assetId, _ ->
+                ZeroTalkClientManager.sendSticker(conversation.id, assetId)
+            },
+            stickerPanelContent = {
+                val stickerList = ZeroTalkClientManager.stickerList.collectAsState().value
+                val stickerLoading = ZeroTalkClientManager.stickerListLoading.collectAsState().value
+                val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsState().value
+                val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsState().value
+                val stickerSearchKeyword = ZeroTalkClientManager.stickerSearchKeyword.collectAsState().value
+                val stickerSearching = ZeroTalkClientManager.stickerSearching.collectAsState().value
+                val stickerLoadingMore = ZeroTalkClientManager.stickerSearchLoadingMore.collectAsState().value
+                val stickerHasMore = ZeroTalkClientManager.stickerSearchHasMore.collectAsState().value
+
+                LaunchedEffect(Unit) {
+                    ZeroTalkClientManager.refreshStickerList()
+                }
+
+                StickerPanel(
+                    state = stickerList,
+                    loading = stickerLoading,
+                    isDark = isDark,
+                    uploading = stickerUploading,
+                    searchResults = stickerSearchResults,
+                    searchKeyword = stickerSearchKeyword,
+                    searching = stickerSearching,
+                    searchLoadingMore = stickerLoadingMore,
+                    searchHasMore = stickerHasMore,
+                    onRetry = { ZeroTalkClientManager.refreshStickerListAsync() },
+                    onUploadLocal = { stickerUploadPicker.launch() },
+                    onSearch = { keyword ->
+                        if (keyword.isBlank()) {
+                            ZeroTalkClientManager.clearStickerSearch()
+                        } else {
+                            ZeroTalkClientManager.searchStickers(keyword, page = 1)
+                        }
+                    },
+                    onLoadMore = {
+                        val nextPage = ZeroTalkClientManager.stickerSearchNextPage()
+                        ZeroTalkClientManager.searchStickers(
+                            keyword = stickerSearchKeyword,
+                            page = nextPage,
+                            append = true
+                        )
+                    },
+                    onDeleteSticker = { stickerPendingDelete = it },
+                    onAddSearchSticker = { stickerPendingAdd = it },
+                    onSendSearchSticker = { searchItem ->
+                        // 搜索结果只有图片直链：先 prepare-url 换 asset_id，再按普通表情包发送
+                        ZeroTalkClientManager.prepareStickerSend(
+                            url = searchItem.url,
+                            onReady = { assetId, _ ->
+                                ZeroTalkClientManager.sendSticker(conversation.id, assetId)
+                                showStickerPanel = false
+                            },
+                            onError = { notificationState.show("表情包已失效") }
+                        )
+                    },
+                    onPick = { assetId, _ ->
+                        if (assetId > 0L) {
+                            ZeroTalkClientManager.sendSticker(conversation.id, assetId)
+                            showStickerPanel = false
+                        }
+                    }
+                )
+            },
             isVoiceMode = isVoiceMode,
             onToggleVoiceMode = { isVoiceMode = !isVoiceMode },
             inputFocusRequester = inputFocusRequester,
@@ -1580,6 +1698,114 @@ fun PrivateChatScreen(
                     onDismiss = { showMyGameSessionsSheet = false }
                 )
             }
+        }
+
+        // ---- 11.5 端到端加密房间解锁面板（未解锁时输入房间暗号）----
+        UnlockRoomSheet(
+            visible = showUnlockRoomSheet,
+            loading = encryptionUnlocking,
+            titleMode = UnlockRoomMode.UNLOCK,
+            isRoomCreator = roomBootstrap?.room?.isCreator == true,
+            roomCreatorName = roomBootstrap?.roomCreator?.username,
+            roomCreatorAvatar = roomBootstrap?.roomCreator?.avatarUrl,
+            errorMessage = encryptionUnlockError,
+            onSubmit = { password ->
+                ZeroTalkClientManager.unlockRoomEncryption(conversation.id, password) { success, _ ->
+                    if (success) showUnlockRoomSheet = false
+                }
+            },
+            onClose = {
+                showUnlockRoomSheet = false
+                ZeroTalkClientManager.closeRoomEncryptionUnlock()
+            },
+            onContactCreator = {
+                ZeroTalkClientManager.contactRoomEncryptionCreator(conversation.id)
+            },
+            onResetPassword = { newPassword ->
+                ZeroTalkClientManager.resetRoomEncryptionPassword(conversation.id, newPassword)
+            },
+            resettingPassword = encryptionResettingPassword,
+            isDark = isDark,
+            contactingCreator = encryptionContactingCreator
+        )
+
+        // ---- 11.5 表情包长按二次确认（对齐官方「删除表情包」/「添加到表情包」弹窗）----
+        stickerPendingDelete?.let { item ->
+            AlertDialog(
+                onDismissRequest = { if (!stickerDeleting) stickerPendingDelete = null },
+                title = { BasicText("删除表情包", style = AppleHigTypography.headline.copy(color = higColors.label)) },
+                text = {
+                    BasicText(
+                        text = "确定删除这个表情包吗？",
+                        style = AppleHigTypography.body.copy(color = higColors.secondaryLabel)
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = !stickerDeleting,
+                        onClick = {
+                            stickerDeleting = true
+                            ZeroTalkClientManager.deleteSticker(item.id) { ok ->
+                                stickerDeleting = false
+                                stickerPendingDelete = null
+                                notificationState.show(if (ok) "已删除" else "删除失败")
+                            }
+                        }
+                    ) {
+                        BasicText(
+                            text = if (stickerDeleting) "删除中..." else "确认删除",
+                            style = AppleHigTypography.body.copy(color = Color(0xFFFF3B30))
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        enabled = !stickerDeleting,
+                        onClick = { stickerPendingDelete = null }
+                    ) {
+                        BasicText("再想想", style = AppleHigTypography.body.copy(color = higColors.secondaryLabel))
+                    }
+                }
+            )
+        }
+
+        stickerPendingAdd?.let { item ->
+            AlertDialog(
+                onDismissRequest = { if (!stickerAdding) stickerPendingAdd = null },
+                title = { BasicText("添加到表情包", style = AppleHigTypography.headline.copy(color = higColors.label)) },
+                text = {
+                    BasicText(
+                        text = "确定把这个表情添加到自己的表情包吗？",
+                        style = AppleHigTypography.body.copy(color = higColors.secondaryLabel)
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = !stickerAdding,
+                        onClick = {
+                            stickerAdding = true
+                            ZeroTalkClientManager.addStickerByUrl(item.url) { ok ->
+                                stickerAdding = false
+                                stickerPendingAdd = null
+                                notificationState.show(if (ok) "已添加到表情包" else "添加失败")
+                            }
+                        }
+                    ) {
+                        BasicText(
+                            text = if (stickerAdding) "添加中..." else "确认添加",
+                            style = AppleHigTypography.body.copy(color = Color(0xFF007AFF))
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        enabled = !stickerAdding,
+                        onClick = { stickerPendingAdd = null }
+                    ) {
+                        BasicText("再想想", style = AppleHigTypography.body.copy(color = higColors.secondaryLabel))
+                    }
+                }
+            )
         }
 
         // ---- 12. 沉浸式独立游戏对局页 ----

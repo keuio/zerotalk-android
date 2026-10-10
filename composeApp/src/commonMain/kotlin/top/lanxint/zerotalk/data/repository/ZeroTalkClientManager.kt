@@ -58,6 +58,10 @@ import top.lanxint.zerotalk.data.network.RoomMembersData
 import top.lanxint.zerotalk.data.network.SecurityDeviceDto
 import top.lanxint.zerotalk.data.network.SecurityLoginLogDto
 import top.lanxint.zerotalk.data.network.SessionStore
+import top.lanxint.zerotalk.data.network.StickerListData
+import top.lanxint.zerotalk.data.network.StickerSearchItemDto
+import top.lanxint.zerotalk.data.network.normalizedQuota
+import top.lanxint.zerotalk.data.network.normalizedUsed
 import top.lanxint.zerotalk.data.network.UpdateProfileData
 import top.lanxint.zerotalk.data.network.UserLookupData
 import top.lanxint.zerotalk.data.network.UserProfileAggregateData
@@ -2039,6 +2043,90 @@ object ZeroTalkClientManager {
                 previewText = preview
             )
             appendLocalOutgoing(roomId, myMsg, preview)
+        }
+    }
+
+    /**
+     * 发送表情包（私聊 / 暗号房 / 大厅通用）
+     *
+     * 官方帧：`{"event":"message","type":"sticker","content":"<assetId>","asset_id":<assetId>}`。
+     * 本地回显通过 [buildChatMessage] 走 `type=sticker` 分流，`stickerUrl` 从
+     * [resolveStickerUrl] 解析，因此必须先把 assetId 写进 content。
+     *
+     * @param assetId 表情包资源 id，必须 > 0
+     * @return 是否已交给 WebSocket 发送
+     */
+    fun sendSticker(roomId: String, assetId: Long): Boolean {
+        if (assetId <= 0L) return false
+        if (wsClient.currentRoomId != roomId) {
+            wsClient.joinRoom(roomId)
+        }
+        val success = wsClient.sendStickerMessage(assetId)
+        if (!success) return false
+
+        val nowMs = System.currentTimeMillis()
+        val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
+        val preview = "[表情包]"
+        val myMsg = buildChatMessage(
+            RawChatMessage(
+                id = "room_${roomId}_$nowMs",
+                senderId = "me",
+                content = assetId.toString(),
+                type = MESSAGE_TYPE_STICKER,
+                timestamp = nowTimeStr,
+                timestampMs = nowMs,
+                serverId = 0L,
+                isMine = true,
+                senderName = _userProfile.value.name,
+                senderAvatar = _userProfile.value.avatarUrl
+            )
+        )
+        appendLocalOutgoing(roomId, myMsg, preview)
+        return true
+    }
+
+    /**
+     * 发送大厅表情包
+     *
+     * 与 [sendHallMessage] 一致：断线先重连、必要时先 join_room 再发送，
+     * 避免大厅表现为「点了没反应」。
+     */
+    fun sendHallSticker(assetId: Long, onResult: ((Boolean) -> Unit)? = null) {
+        if (assetId <= 0L) {
+            onResult?.invoke(false)
+            return
+        }
+        scope.launch {
+            val currentHall = _hallRoomId.value
+            val state = wsClient.connectionState.value
+            if (state == WsConnectionState.DISCONNECTED || state == WsConnectionState.FAILED) {
+                reconnectWebSocket()
+            }
+            if (wsClient.currentRoomId != currentHall) {
+                wsClient.joinRoom(currentHall)
+                delay(150)
+            }
+            val success = wsClient.sendStickerMessage(assetId)
+            if (success) {
+                val nowMs = System.currentTimeMillis()
+                val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
+                val myMsg = buildChatMessage(
+                    RawChatMessage(
+                        id = "hall_my_$nowMs",
+                        senderId = "me",
+                        content = assetId.toString(),
+                        type = MESSAGE_TYPE_STICKER,
+                        timestamp = nowTimeStr,
+                        timestampMs = nowMs,
+                        serverId = 0L,
+                        isMine = true,
+                        senderName = _userProfile.value.name,
+                        senderAvatar = _userProfile.value.avatarUrl
+                    )
+                )
+                _hallMessages.value = _hallMessages.value + myMsg
+            }
+            onResult?.invoke(success)
         }
     }
 
@@ -4975,7 +5063,8 @@ object ZeroTalkClientManager {
             musicPlaylist = musicPlaylist,
             isSticker = isSticker,
             stickerUrl = sticker?.url.orEmpty(),
-            stickerAssetId = sticker?.assetId ?: 0L
+            stickerAssetId = sticker?.assetId ?: 0L,
+            clientMessageId = raw.clientMessageId.orEmpty()
         )
         // 已撤回：对齐官网清空正文 / 媒体地址 / 引用摘要，并标记 is_deleted（保留在列表里）
         return if (message.isDeleted) message.asRecalled() else message
@@ -5024,6 +5113,55 @@ object ZeroTalkClientManager {
     @Volatile
     private var stickerListLoaded = false
 
+    private val _stickerList = MutableStateFlow<StickerListData?>(null)
+
+    /** 表情包列表（供表情面板渲染网格与 `used/quota`；未加载为 null） */
+    val stickerList: StateFlow<StickerListData?> = _stickerList.asStateFlow()
+
+    private val _stickerListLoading = MutableStateFlow(false)
+
+    /** 表情包列表是否正在加载（面板据此显示骨架屏） */
+    val stickerListLoading: StateFlow<Boolean> = _stickerListLoading.asStateFlow()
+
+    private val _stickerUploading = MutableStateFlow(false)
+
+    /** 是否正在上传本地图片到表情包（官方 `uploading`，期间「+」不可点、meta 显示「上传中…」） */
+    val stickerUploading: StateFlow<Boolean> = _stickerUploading.asStateFlow()
+
+    private val _stickerSearchResults = MutableStateFlow<List<StickerSearchItemDto>>(emptyList())
+
+    /** 网络表情搜索的累计结果（官方按 url 去重后追加） */
+    val stickerSearchResults: StateFlow<List<StickerSearchItemDto>> = _stickerSearchResults.asStateFlow()
+
+    private val _stickerSearching = MutableStateFlow(false)
+
+    /** 是否正在搜索（官方 `searching`：首页搜索显示骨架、翻页显示「加载更多…」） */
+    val stickerSearching: StateFlow<Boolean> = _stickerSearching.asStateFlow()
+
+    private val _stickerSearchLoadingMore = MutableStateFlow(false)
+
+    /** 是否正在加载搜索结果的下一页（官方 `loadingMore`） */
+    val stickerSearchLoadingMore: StateFlow<Boolean> = _stickerSearchLoadingMore.asStateFlow()
+
+    private val _stickerSearchHasMore = MutableStateFlow(false)
+
+    /** 搜索结果是否还有下一页（官方 `has_more`） */
+    val stickerSearchHasMore: StateFlow<Boolean> = _stickerSearchHasMore.asStateFlow()
+
+    private val _stickerSearchKeyword = MutableStateFlow("")
+
+    /** 当前生效的搜索关键词（官方 `searchKeyword`；空串表示回到「我的表情包」页） */
+    val stickerSearchKeyword: StateFlow<String> = _stickerSearchKeyword.asStateFlow()
+
+    /** 搜索翻页游标（官方 `searchPage`） */
+    private var stickerSearchPage = 0
+
+    /** 下一页页码（官方 `searchPage + 1`；未搜索过时为 1） */
+    fun stickerSearchNextPage(): Int = (stickerSearchPage + 1).coerceAtLeast(1)
+
+    /** 搜索竞态令牌（官方 `searchToken`：只接受最后一次请求的结果） */
+    private var stickerSearchToken = 0
+
     /** 从本地表情包缓存按 asset_id 查图片地址（未加载 / 未命中返回空串） */
     fun resolveStickerUrl(assetId: Long): String =
         if (assetId <= 0L) "" else synchronized(stickerUrlCache) { stickerUrlCache[assetId].orEmpty() }
@@ -5036,14 +5174,208 @@ object ZeroTalkClientManager {
      */
     suspend fun ensureStickerListLoaded() {
         if (stickerListLoaded) return
-        val data = apiService.getStickerList().getOrNull() ?: return
-        synchronized(stickerUrlCache) {
-            data.entries.forEach { item ->
-                val id = item.assetId.takeIf { it > 0L } ?: item.id
-                if (id > 0L && item.url.isNotBlank()) stickerUrlCache[id] = item.url
+        loadStickerList()
+    }
+
+    /**
+     * 拉取 / 刷新表情包列表（表情面板打开时调用，失败可重试）
+     *
+     * 与 [ensureStickerListLoaded] 的区别：本方法忽略「已加载」标记，用于面板的显式重试。
+     * @param force 官方 `fetchList(true)`（上传 / 添加后强制刷新，绕过进行中的请求复用）
+     */
+    suspend fun refreshStickerList(force: Boolean = false) = loadStickerList(force)
+
+    /** 非挂起版的强制刷新（供 Compose 回调 / 按钮点击直接调用） */
+    fun refreshStickerListAsync(force: Boolean = true) {
+        scope.launch { loadStickerList(force) }
+    }
+
+    private suspend fun loadStickerList(force: Boolean = false) {
+        if (_stickerListLoading.value && !force) return
+        _stickerListLoading.value = true
+        try {
+            val data = apiService.getStickerList().getOrNull() ?: return
+            synchronized(stickerUrlCache) {
+                data.entries.forEach { item ->
+                    val id = item.assetId.takeIf { it > 0L } ?: item.id
+                    if (id > 0L && item.url.isNotBlank()) stickerUrlCache[id] = item.url
+                }
+            }
+            _stickerList.value = data
+            stickerListLoaded = true
+        } finally {
+            _stickerListLoading.value = false
+        }
+    }
+
+    /**
+     * 上传本地图片到「我的表情包」（官方 `sticker.upload`）
+     *
+     * 与官方一致的三段式直传（`upload_source=sticker`）→ `POST /api/sticker/commit`，
+     * 直传不可用时回退 `POST /api/sticker/upload`（multipart）；成功后强制刷新列表。
+     *
+     * @param onResult 结果回调：成功 true，失败 false（调用方据此弹 toast）
+     */
+    fun uploadSticker(
+        imageBytes: ByteArray,
+        filename: String = "sticker.png",
+        onResult: ((Boolean) -> Unit)? = null
+    ) {
+        if (imageBytes.isEmpty()) {
+            onResult?.invoke(false)
+            return
+        }
+        if (_stickerUploading.value) return
+        scope.launch {
+            _stickerUploading.value = true
+            try {
+                val direct = apiService.uploadFile(
+                    fileBytes = imageBytes,
+                    filename = filename,
+                    contentType = when {
+                        filename.endsWith(".png", ignoreCase = true) -> "image/png"
+                        filename.endsWith(".webp", ignoreCase = true) -> "image/webp"
+                        else -> "image/jpeg"
+                    },
+                    uploadSource = "sticker",
+                    legacyType = null
+                )
+                val uploadedUrl = direct.getOrNull().orEmpty()
+                val ok = if (uploadedUrl.isNotBlank()) {
+                    apiService.commitSticker(uploadedUrl).isSuccess
+                } else {
+                    // 直传失败 → 官方 legacyUpload 的等价物：整体 multipart 提交
+                    apiService.uploadStickerLegacy(imageBytes, filename).isSuccess
+                }
+                if (ok) refreshStickerList(force = true)
+                onResult?.invoke(ok)
+            } finally {
+                _stickerUploading.value = false
             }
         }
-        stickerListLoaded = true
+    }
+
+    /**
+     * 搜索网络表情包（官方 `searchStickers(keyword, page, append)`）
+     *
+     * @param keyword 关键词（内部截断 20 字，与官方输入框 `maxlength=20` 一致）
+     * @param page 页码，从 1 开始
+     * @param append true 表示翻页追加（去重），false 表示新搜索（覆盖）
+     */
+    fun searchStickers(keyword: String, page: Int = 1, append: Boolean = false) {
+        val trimmed = keyword.trim().take(20)
+        if (trimmed.isEmpty()) {
+            clearStickerSearch()
+            return
+        }
+        val token = ++stickerSearchToken
+        if (append) _stickerSearchLoadingMore.value = true else _stickerSearching.value = true
+        scope.launch {
+            val result = apiService.searchStickers(trimmed, page)
+            // 已被更新的搜索 / 取消搜索取代：丢弃结果，并清掉自己拉起的加载标记
+            // （否则 stale 的翻页请求会把「加载更多…」永久留在屏幕上）
+            if (token != stickerSearchToken) {
+                if (!append) _stickerSearching.value = false else _stickerSearchLoadingMore.value = false
+                return@launch
+            }
+            result.onSuccess { data ->
+                if (append) {
+                    val seen = _stickerSearchResults.value.mapTo(mutableSetOf()) { it.url }
+                    val merged = _stickerSearchResults.value.toMutableList()
+                    data.entries.forEach { item ->
+                        if (seen.add(item.url)) merged += item
+                    }
+                    _stickerSearchResults.value = merged
+                } else {
+                    _stickerSearchResults.value = data.entries
+                }
+                stickerSearchPage = if (data.page > 0) data.page else page
+                _stickerSearchHasMore.value = data.hasMore
+                _stickerSearchKeyword.value = trimmed
+            }.onFailure {
+                if (!append) {
+                    _stickerSearchResults.value = emptyList()
+                    _stickerSearchKeyword.value = trimmed
+                    _stickerSearchHasMore.value = false
+                }
+            }
+            if (append) _stickerSearchLoadingMore.value = false else _stickerSearching.value = false
+        }
+    }
+
+    /** 清空搜索并回到「我的表情包」页（官方 `resetSearch`） */
+    fun clearStickerSearch() {
+        stickerSearchToken++
+        _stickerSearchResults.value = emptyList()
+        stickerSearchPage = 0
+        _stickerSearchHasMore.value = false
+        _stickerSearchKeyword.value = ""
+        _stickerSearching.value = false
+        _stickerSearchLoadingMore.value = false
+    }
+
+    /**
+     * 发送网络搜索到的表情：先 `prepare-url` 换 asset_id，再走 [sendRoomSticker] / 由调用方发帧。
+     *
+     * @param onReady 兑换成功回调（assetId, url）
+     */
+    fun prepareStickerSend(url: String, onReady: (Long, String) -> Unit, onError: (() -> Unit)? = null) {
+        if (url.isBlank()) {
+            onError?.invoke()
+            return
+        }
+        scope.launch {
+            val data = apiService.prepareStickerUrl(url).getOrNull()
+            val assetId = data?.assetId ?: 0L
+            if (assetId <= 0L) {
+                onError?.invoke()
+            } else {
+                val finalUrl = data?.url?.takeIf { it.isNotBlank() } ?: url
+                synchronized(stickerUrlCache) { stickerUrlCache[assetId] = finalUrl }
+                onReady(assetId, finalUrl)
+            }
+        }
+    }
+
+    /**
+     * 把网络搜索到的表情加进「我的表情包」（官方 `addSearchSticker` → `POST /api/sticker/add-url`）
+     */
+    fun addStickerByUrl(url: String, onResult: ((Boolean) -> Unit)? = null) {
+        if (url.isBlank()) {
+            onResult?.invoke(false)
+            return
+        }
+        scope.launch {
+            val ok = apiService.addStickerByUrl(url).isSuccess
+            if (ok) refreshStickerList(force = true)
+            onResult?.invoke(ok)
+        }
+    }
+
+    /**
+     * 删除「我的表情包」里的一条（官方 `remove` → `POST /api/sticker/delete`）
+     *
+     * 本地先移除、used 减一，避免等整轮刷新才有反馈（与官方 store 一致）。
+     */
+    fun deleteSticker(id: Long, onResult: ((Boolean) -> Unit)? = null) {
+        if (id <= 0L) {
+            onResult?.invoke(false)
+            return
+        }
+        scope.launch {
+            val ok = apiService.deleteSticker(id).isSuccess
+            if (ok) {
+                val current = _stickerList.value
+                if (current != null) {
+                    val remaining = current.entries.filterNot { it.id == id }
+                    _stickerList.value = current.copy(
+                        items = remaining,
+                        used = (current.normalizedUsed() - 1).coerceAtLeast(0)
+                    )
+                }
+            }
+            onResult?.invoke(ok)
+        }
     }
 
     /**

@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
@@ -153,7 +154,11 @@ fun ChatComposerBar(
     actionsPerRow: Int = 4,
     drawerContent: (@Composable ColumnScope.() -> Unit)? = null,
     tailModifier: Modifier = Modifier,
-    onBottomBarTopChanged: (Float) -> Unit = {}
+    onBottomBarTopChanged: (Float) -> Unit = {},
+    stickerPanelExpanded: Boolean = false,
+    onToggleStickerPanel: () -> Unit = {},
+    onStickerPick: ((Long, String) -> Unit)? = null,
+    stickerPanelContent: (@Composable ColumnScope.() -> Unit)? = null
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -318,7 +323,15 @@ fun ChatComposerBar(
                         }
 
                         // 右侧动态图标：麦克风图标 <-> 蓝色发送箭头（带弹性缩放与淡入淡出转换动画）
+                        // 表情包按钮固定在最右，有文字时让位给发送按钮（与官方 composer 一致）
                         val hasText = inputText.trim().isNotEmpty()
+                        if (!hasText && onStickerPick != null) {
+                            StickerToggleButton(
+                                expanded = stickerPanelExpanded,
+                                tint = controlContentColor,
+                                onClick = onToggleStickerPanel
+                            )
+                        }
                         Box(
                             modifier = Modifier.size(28.dp),
                             contentAlignment = Alignment.Center
@@ -410,7 +423,29 @@ fun ChatComposerBar(
                 }
             }
 
-            // ---- 4. 底部 [+] 扩展抽屉面板（展开时自然将上方输入栏平滑顶起）----
+            // 表情包面板（独立槽位，与 [+] 抽屉互斥，由调用方通过 stickerPanelContent 注入）
+            AnimatedVisibility(
+                visible = stickerPanelExpanded && stickerPanelContent != null,
+                enter = expandVertically(
+                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
+                    expandFrom = Alignment.Top
+                ) + fadeIn(animationSpec = tween(150)),
+                exit = shrinkVertically(
+                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
+                    shrinkTowards = Alignment.Top
+                ) + fadeOut(animationSpec = tween(120))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    stickerPanelContent?.invoke(this)
+                }
+            }
+
+                        // ---- 4. 底部 [+] 扩展抽屉面板（展开时自然将上方输入栏平滑顶起）----
             AnimatedVisibility(
                 visible = drawerExpanded,
                 enter = expandVertically(
@@ -734,3 +769,30 @@ fun ChatComposerActionItem(
         )
     }
 }
+
+/** 输入栏右侧的表情包开关（与官方 composer 的表情包按钮同语义） */
+@Composable
+private fun StickerToggleButton(
+    expanded: Boolean,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(
+                if (expanded) Color(0xFF007AFF).copy(alpha = 0.16f) else Color.Transparent
+            )
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.EmojiEmotions,
+            contentDescription = if (expanded) "收起表情包" else "打开表情包",
+            tint = tint,
+            modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
