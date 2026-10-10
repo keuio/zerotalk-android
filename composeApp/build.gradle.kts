@@ -82,7 +82,7 @@ android {
         minSdk = 23
         targetSdk = 36
         versionCode = 5
-        versionName = "1.3.0"
+        versionName = "1.3.0-rc.0"
     }
 
     compileOptions {
