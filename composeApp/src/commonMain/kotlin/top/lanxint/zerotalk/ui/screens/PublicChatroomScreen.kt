@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -95,6 +98,7 @@ import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.data.settings.UiPreferencesStore
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import com.kashif_e.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.Dispatchers
@@ -116,6 +120,8 @@ import top.lanxint.zerotalk.ui.components.ChatComposerAction
 import top.lanxint.zerotalk.ui.components.ChatComposerBar
 import top.lanxint.zerotalk.ui.components.ChatComposerQuote
 import top.lanxint.zerotalk.ui.components.ChatContentCaptureLayer
+import top.lanxint.zerotalk.ui.components.dismissOnTapOrScroll
+import top.lanxint.zerotalk.ui.components.KeyboardHeightTracker
 import top.lanxint.zerotalk.data.network.StickerItemDto
 import top.lanxint.zerotalk.data.network.StickerSearchItemDto
 import top.lanxint.zerotalk.ui.components.StickerPanel
@@ -147,7 +153,7 @@ import top.lanxint.zerotalk.ui.utils.rememberPhotoPickerLauncher
  * - 图片 / 骰子 / 歌单 / 表情包 / 游戏 / 音乐 / 动态分享 → 裸媒体块（.msg-media-wrap，无气泡底色）；
  * - 其余 → 普通圆角气泡。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun PublicChatroomScreen(
     onBack: () -> Unit,
@@ -219,6 +225,7 @@ fun PublicChatroomScreen(
     val notificationState = LocalNotificationState.current
     val inputFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     var inputText by remember { mutableStateOf("") }
     var mentionTargets by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     // 底部 [+] 扩展抽屉开合（hoisted：返回键、列表底部避让都要读它）
@@ -243,7 +250,14 @@ fun PublicChatroomScreen(
     // 悬浮顶栏实测高度（px）：消息列表 / 空态据此从顶栏下方穿过
     var navBarHeightPx by remember { mutableStateOf<Float?>(null) }
     // 键盘是否弹出：抽屉 / 键盘 / 引用条出现时把最后一条消息顶到输入栏之上
-    val isImeOpen = WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp
+    val isImeOpen = WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp || WindowInsets.isImeVisible
+    val isInputOrPanelActive = showComposerDrawer || showStickerPanel || isImeOpen
+    val dismissKeyboardAndPanels: () -> Unit = {
+        showComposerDrawer = false
+        showStickerPanel = false
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }
 
     // 相册选图 → chat_image 上传 → WS type=image（与私聊同链路；
     // 大厅房间由管理器 appendLocalOutgoing 落到 _hallMessages，不会污染会话列表）
@@ -313,9 +327,10 @@ fun PublicChatroomScreen(
         dismissContextMenu()
     }
 
-    // [+] 扩展抽屉 / 分享歌曲 / 游戏面板浮层拦截（优先于「退出大厅」）
-    BackHandler(enabled = !hasProfileLayers && showComposerDrawer) {
+    // [+] 扩展抽屉 / 表情包面板 / 分享歌曲 / 游戏面板浮层拦截（优先于「退出大厅」）
+    BackHandler(enabled = !hasProfileLayers && (showComposerDrawer || showStickerPanel)) {
         showComposerDrawer = false
+        showStickerPanel = false
     }
     BackHandler(enabled = !hasProfileLayers && showMusicShareSheet) {
         showMusicShareSheet = false
@@ -332,7 +347,7 @@ fun PublicChatroomScreen(
     // 大厅主界面返回拦截：退出大厅回到首页（被资料页层级 / 浮层覆盖时让出返回）
     BackHandler(
         enabled = !hasProfileLayers && !showHallInfo && menuAnchor == null &&
-            !showComposerDrawer && !showMusicShareSheet && !showGamePickerSheet
+            !showComposerDrawer && !showStickerPanel && !showMusicShareSheet && !showGamePickerSheet
     ) {
         onBack()
     }
@@ -359,14 +374,27 @@ fun PublicChatroomScreen(
         }
     }
 
-    // 抽屉展开 / 键盘弹出 / 引用条出现时，把最后一条消息顶到悬浮输入栏之上
-    // （与私聊同一套处理：首帧后等动画就绪再做一次精准校准）
-    LaunchedEffect(showComposerDrawer, isImeOpen, quotingMessage) {
-        if ((showComposerDrawer || isImeOpen || quotingMessage != null) && visibleMessages.isNotEmpty()) {
+    // 抽屉 / 表情包面板 / 键盘 / 引用条出现时，使用滚动动画将最后一条消息平滑滑到输入栏上方
+    LaunchedEffect(showComposerDrawer, showStickerPanel, isImeOpen, quotingMessage) {
+        if ((showComposerDrawer || showStickerPanel || isImeOpen || quotingMessage != null) && visibleMessages.isNotEmpty()) {
             delay(30)
             listState.animateScrollToItem(visibleMessages.size - 1)
-            delay(320)
+            delay(260)
             listState.animateScrollToItem(visibleMessages.size - 1)
+        }
+    }
+
+    // 用户手动拖拽聊天列表时自动收起扩展抽屉面板、表情包面板与软键盘
+    LaunchedEffect(listState.interactionSource) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) {
+                if (showComposerDrawer) showComposerDrawer = false
+                if (showStickerPanel) showStickerPanel = false
+                if (isImeOpen) {
+                    keyboardController?.hide()
+                    focusManager.clearFocus()
+                }
+            }
         }
     }
 
@@ -403,21 +431,33 @@ fun PublicChatroomScreen(
         val screenHeight = maxHeight
         val density = LocalDensity.current
         val rootHeightPx = with(density) { maxHeight.toPx() }
+        val lastKeyboardHeightDp = KeyboardHeightTracker.lastKeyboardHeightDp
 
-        // 悬浮输入栏（含抽屉 / 软键盘）占据的物理高度 -> 消息列表动态底部避让
-        val bottomOccupiedDp = remember(bottomBarTopYPx, rootHeightPx, showComposerDrawer) {
+        // 悬浮输入栏（含抽屉、表情包面板、软键盘）占据的物理高度 -> 消息列表动态底部避让
+        val bottomOccupiedDp = remember(
+            bottomBarTopYPx,
+            rootHeightPx,
+            showComposerDrawer,
+            showStickerPanel,
+            isImeOpen,
+            quotingMessage,
+            lastKeyboardHeightDp
+        ) {
             val topY = bottomBarTopYPx
-            if (topY != null && rootHeightPx > 0f) {
+            val measuredDp = if (topY != null && rootHeightPx > 0f) {
                 with(density) { (rootHeightPx - topY).coerceAtLeast(0f).toDp() }
             } else {
-                if (showComposerDrawer) 400.dp else 80.dp
+                80.dp
             }
+            val quoteExtraDp = if (quotingMessage != null) 44.dp else 0.dp
+            val expectedOpenDp = if (showComposerDrawer || showStickerPanel || isImeOpen) {
+                lastKeyboardHeightDp + 48.dp + quoteExtraDp
+            } else {
+                0.dp
+            }
+            maxOf(measuredDp, expectedOpenDp)
         }
-        val dynamicBottomPadding by animateDpAsState(
-            targetValue = maxOf(96.dp, bottomOccupiedDp + 16.dp),
-            animationSpec = spring(stiffness = 450f, dampingRatio = 0.82f),
-            label = "HallDynamicBottomPadding"
-        )
+        val dynamicBottomPadding = maxOf(96.dp, bottomOccupiedDp + 16.dp)
 
         // 顶部避让悬浮顶栏：实测顶栏高度（含状态栏安全区）+ 12dp 呼吸间距；
         // 测量到之前用 100.dp 兜底，避免首帧跳动（顶栏自身高度约 103dp，兜底取近似值）。
@@ -494,7 +534,12 @@ fun PublicChatroomScreen(
 
             // 消息列表或空占位（列表视口顶边与根顶边对齐，顶部避让交给 contentPadding / padding）
             Box(
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .dismissOnTapOrScroll(
+                        enabled = isInputOrPanelActive,
+                        onDismiss = dismissKeyboardAndPanels
+                    )
             ) {
                 if (visibleMessages.isEmpty()) {
                     Column(
@@ -744,7 +789,11 @@ fun PublicChatroomScreen(
         // 且长按菜单 / 资料页等浮层要声明在它之后（z 序）。
         ChatComposerBar(
             drawerExpanded = showComposerDrawer,
-            onDrawerExpandedChange = { showComposerDrawer = it },
+            onDrawerExpandedChange = { opened ->
+                showComposerDrawer = opened
+                // 加号面板与表情包面板互斥：打开加号面板时收起表情包面板
+                if (opened) showStickerPanel = false
+            },
             inputText = inputText,
             onInputTextChange = { inputText = it },
             onSend = {
@@ -837,12 +886,16 @@ fun PublicChatroomScreen(
             contentPadding = PaddingValues(
                 start = 16.dp,
                 end = 16.dp,
-                bottom = if (showComposerDrawer) 4.dp else 12.dp
+                bottom = 12.dp
             ),
             stickerPanelExpanded = showStickerPanel,
             onToggleStickerPanel = {
                 showStickerPanel = !showStickerPanel
                 if (showStickerPanel) showComposerDrawer = false
+            },
+            onStickerPanelExpandedChange = { expanded ->
+                showStickerPanel = expanded
+                if (expanded) showComposerDrawer = false
             },
             onStickerPick = { assetId, _ ->
                 ZeroTalkClientManager.sendHallSticker(assetId)
@@ -850,6 +903,7 @@ fun PublicChatroomScreen(
             stickerPanelContent = {
                 val stickerList = ZeroTalkClientManager.stickerList.collectAsState().value
                 val stickerLoading = ZeroTalkClientManager.stickerListLoading.collectAsState().value
+                val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsState().value
                 val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsState().value
                 val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsState().value
                 val stickerSearchKeyword = ZeroTalkClientManager.stickerSearchKeyword.collectAsState().value
@@ -864,6 +918,7 @@ fun PublicChatroomScreen(
                 StickerPanel(
                     state = stickerList,
                     loading = stickerLoading,
+                    loadFailed = stickerLoadFailed,
                     isDark = isDark,
                     uploading = stickerUploading,
                     searchResults = stickerSearchResults,

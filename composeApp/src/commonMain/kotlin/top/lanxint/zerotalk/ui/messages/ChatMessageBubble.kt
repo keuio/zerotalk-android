@@ -62,6 +62,7 @@ import top.lanxint.zerotalk.data.model.ChatMessage
 import top.lanxint.zerotalk.data.model.MomentShareCardData
 import top.lanxint.zerotalk.data.model.MusicPlaylist
 import top.lanxint.zerotalk.data.model.RECALLED_MESSAGE_TEXT
+import top.lanxint.zerotalk.data.network.NetworkImageUrl
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.ChatDice
@@ -790,7 +791,9 @@ fun StickerBubble(
             ),
         contentScale = ContentScale.Fit,
         shape = RoundedCornerShape(12.dp),
-        backgroundColor = Color.Transparent
+        backgroundColor = Color.Transparent,
+        // 官方 `ko()` 对 `type:"sticker"` 的消息图统一套 style/zerotalk_emoji
+        ossStyle = NetworkImageUrl.OssStyle.Emoji
     )
 }
 

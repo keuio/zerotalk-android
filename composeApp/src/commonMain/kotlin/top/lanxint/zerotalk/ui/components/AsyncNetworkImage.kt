@@ -104,24 +104,29 @@ object NetworkImageLoader {
     suspend fun loadImage(
         url: String,
         preferOriginal: Boolean = false,
-        maxDimension: Int = if (preferOriginal) DIMENSION_ORIGINAL else DIMENSION_THUMB
+        maxDimension: Int = if (preferOriginal) DIMENSION_ORIGINAL else DIMENSION_THUMB,
+        ossStyle: NetworkImageUrl.OssStyle = NetworkImageUrl.OssStyle.Thumb
     ): ImageBitmap? = withContext(Dispatchers.IO) {
         val trimmed = url.trim()
         if (trimmed.isBlank()) return@withContext null
 
-        val cacheKey = if (preferOriginal) "$trimmed#orig" else "$trimmed#dim=$maxDimension"
+        val cacheKey = if (preferOriginal) {
+            "$trimmed#orig"
+        } else {
+            "$trimmed#dim=$maxDimension#${ossStyle.value}"
+        }
         synchronized(memoryCache) {
             memoryCache[cacheKey]?.let { return@withContext it }
         }
 
-        val plainUrl = NetworkImageUrl.resolve(trimmed)
-        // 与官方 web 端一致：OSS 图片默认优先取 style/zerotalk_thumb 缩略图；大图查看器优先取原图
-        val thumbUrl = NetworkImageUrl.applyOssStyle(plainUrl, NetworkImageUrl.OssStyle.Thumb)
-        val candidates = if (preferOriginal) {
-            if (thumbUrl != plainUrl) listOf(plainUrl, thumbUrl) else listOf(plainUrl)
-        } else {
-            if (thumbUrl != plainUrl) listOf(thumbUrl, plainUrl) else listOf(plainUrl)
-        }
+        // 与官方 web 端一致：OSS 图片优先取对应样式（默认 style/zerotalk_thumb 缩略图，
+        // 表情包走 style/zerotalk_emoji）；大图查看器优先取原图。
+        // 候选顺序由 NetworkImageUrl.buildCandidates 决定（样式缺失时逐级回退）。
+        val candidates = NetworkImageUrl.buildCandidates(
+            raw = trimmed,
+            style = ossStyle,
+            preferOriginal = preferOriginal
+        )
 
         for (candidate in candidates) {
             val bitmap = fetchBitmap(candidate, maxDimension)
@@ -171,6 +176,7 @@ object NetworkImageLoader {
  *
  * @param showPlaceholder 图片加载中/失败时是否展示自带的转圈与占位图标。
  *        为 false 时不遮挡父容器自带的占位（例如 [UserAvatar] 的渐变圆环与首字母）。
+ * @param ossStyle OSS 样式（表情包网格传 [NetworkImageUrl.OssStyle.Emoji] 对齐官方）
  */
 @Composable
 fun AsyncNetworkImage(
@@ -181,17 +187,23 @@ fun AsyncNetworkImage(
     shape: Shape = RoundedCornerShape(12.dp),
     backgroundColor: Color = Color.Gray.copy(alpha = 0.12f),
     showPlaceholder: Boolean = true,
-    maxDimension: Int = NetworkImageLoader.DIMENSION_THUMB
+    maxDimension: Int = NetworkImageLoader.DIMENSION_THUMB,
+    ossStyle: NetworkImageUrl.OssStyle = NetworkImageUrl.OssStyle.Thumb
 ) {
-    var bitmap by remember(url, maxDimension) { mutableStateOf<ImageBitmap?>(null) }
-    var isLoading by remember(url, maxDimension) { mutableStateOf(true) }
+    var bitmap by remember(url, maxDimension, ossStyle) { mutableStateOf<ImageBitmap?>(null) }
+    var isLoading by remember(url, maxDimension, ossStyle) { mutableStateOf(true) }
 
-    LaunchedEffect(url, maxDimension) {
+    LaunchedEffect(url, maxDimension, ossStyle) {
         if (url.isBlank()) {
             isLoading = false
             return@LaunchedEffect
         }
-        val loaded = NetworkImageLoader.loadImage(url, preferOriginal = false, maxDimension = maxDimension)
+        val loaded = NetworkImageLoader.loadImage(
+            url = url,
+            preferOriginal = false,
+            maxDimension = maxDimension,
+            ossStyle = ossStyle
+        )
         bitmap = loaded
         isLoading = false
     }

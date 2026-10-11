@@ -5123,6 +5123,16 @@ object ZeroTalkClientManager {
     /** 表情包列表是否正在加载（面板据此显示骨架屏） */
     val stickerListLoading: StateFlow<Boolean> = _stickerListLoading.asStateFlow()
 
+    private val _stickerListFailed = MutableStateFlow(false)
+
+    /**
+     * 表情包列表最近一次加载是否失败
+     *
+     * 失败时 `stickerList` 会保持 null，与「收藏为空」在数据上无法区分；
+     * 面板据此显示失败态 + 重试，而不是误报成「没有找到相关表情」。
+     */
+    val stickerListFailed: StateFlow<Boolean> = _stickerListFailed.asStateFlow()
+
     private val _stickerUploading = MutableStateFlow(false)
 
     /** 是否正在上传本地图片到表情包（官方 `uploading`，期间「+」不可点、meta 显示「上传中…」） */
@@ -5194,7 +5204,12 @@ object ZeroTalkClientManager {
         if (_stickerListLoading.value && !force) return
         _stickerListLoading.value = true
         try {
-            val data = apiService.getStickerList().getOrNull() ?: return
+            val data = apiService.getStickerList().getOrNull()
+            if (data == null) {
+                // 失败：保留上一次的成功结果（若有），并标记失败供面板显示重试
+                _stickerListFailed.value = true
+                return
+            }
             synchronized(stickerUrlCache) {
                 data.entries.forEach { item ->
                     val id = item.assetId.takeIf { it > 0L } ?: item.id
@@ -5203,6 +5218,7 @@ object ZeroTalkClientManager {
             }
             _stickerList.value = data
             stickerListLoaded = true
+            _stickerListFailed.value = false
         } finally {
             _stickerListLoading.value = false
         }

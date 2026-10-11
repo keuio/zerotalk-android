@@ -20,7 +20,15 @@ object NetworkImageUrl {
         Thumb("style/zerotalk_thumb"),
 
         /** 聊天图片（style/zerotalk_chat） */
-        Chat("style/zerotalk_chat")
+        Chat("style/zerotalk_chat"),
+
+        /**
+         * 表情包 / Emoji（style/zerotalk_emoji）
+         *
+         * 官方 `ChatEmojiPanel` 的表情与表情包统一走这个样式，
+         * 用 `Thumb` 代替会拉到大尺寸缩略图，网格里清晰度与体积都不对。
+         */
+        Emoji("style/zerotalk_emoji")
     }
 
     private const val OSS_PROCESS_PARAM = "x-oss-process"
@@ -75,6 +83,40 @@ object NetworkImageUrl {
             host.contains(".oss-") || host.startsWith("oss-") || host.contains("oss-accelerate")
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /**
+     * 计算缩略图下载的候选地址顺序（按优先级），供加载器逐个尝试。
+     *
+     * 官方样式不一定在所有 OSS bucket 上都配置好，样式缺失时 OSS 会返回失败；
+     * 而原图又常被防盗链 403。因此非原图加载按
+     * `目标样式 → style/zerotalk_thumb → 原图` 逐级回退，避免出现整格空白。
+     *
+     * 非 OSS 地址不加样式，只返回归一化后的地址本身。
+     *
+     * @param raw 原始地址（可为相对路径）
+     * @param style 期望的样式
+     * @param preferOriginal true 表示大图查看场景，优先原图、样式作兜底
+     */
+    fun buildCandidates(
+        raw: String,
+        style: OssStyle = OssStyle.Thumb,
+        preferOriginal: Boolean = false
+    ): List<String> {
+        val plainUrl = resolve(raw)
+        if (plainUrl.isEmpty()) return emptyList()
+        val styledUrl = applyOssStyle(plainUrl, style)
+        if (styledUrl == plainUrl) return listOf(plainUrl)
+
+        return if (preferOriginal) {
+            listOf(plainUrl, styledUrl).distinct()
+        } else {
+            buildList {
+                add(styledUrl)
+                if (style != OssStyle.Thumb) add(applyOssStyle(plainUrl, OssStyle.Thumb))
+                add(plainUrl)
+            }.distinct()
         }
     }
 }

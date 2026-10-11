@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -64,6 +65,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Wallpaper
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.ui.geometry.CornerRadius
@@ -125,10 +127,12 @@ import top.lanxint.zerotalk.ui.components.ChatComposerBar
 import top.lanxint.zerotalk.ui.components.ChatComposerQuote
 import top.lanxint.zerotalk.ui.components.ChatContentCaptureLayer
 import top.lanxint.zerotalk.ui.components.GenderBadge
+import top.lanxint.zerotalk.ui.components.KeyboardHeightTracker
 import top.lanxint.zerotalk.data.network.StickerItemDto
 import top.lanxint.zerotalk.data.network.StickerSearchItemDto
 import top.lanxint.zerotalk.ui.components.StickerPanel
 import top.lanxint.zerotalk.ui.components.UserTitleBadge
+import top.lanxint.zerotalk.ui.components.dismissOnTapOrScroll
 import top.lanxint.zerotalk.ui.components.IosChatNavBar
 import top.lanxint.zerotalk.ui.components.LiquidButton
 import top.lanxint.zerotalk.ui.components.LocalImageViewer
@@ -212,7 +216,7 @@ private data class BubbleAnchorInfo(
     val isLastMineMessage: Boolean
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun PrivateChatScreen(
     conversation: ConversationItem,
@@ -468,9 +472,10 @@ fun PrivateChatScreen(
     // 系统返回手势 / 物理返回键拦截（依次回退：底部动作菜单 -> 搜索栏 -> 举报弹窗 -> 群聊面板 -> 退出单聊）
     val hasChatSubScreen = showConversationInfo || showMemberProfile
 
-    // 1) 动作菜单浮层拦截（被资料页层级覆盖时让出返回）
-    BackHandler(enabled = !hasProfileLayers && showActionSheet) {
+    // 1) 动作菜单与表情包浮层拦截（被资料页层级覆盖时让出返回）
+    BackHandler(enabled = !hasProfileLayers && (showActionSheet || showStickerPanel)) {
         showActionSheet = false
+        showStickerPanel = false
     }
 
     // 1.1) 音乐与游戏面板浮层拦截
@@ -509,7 +514,7 @@ fun PrivateChatScreen(
     // 5) 聊天页面自身拦截（无子页面/弹窗、且上方没有资料页层级时回退到会话列表）
     BackHandler(
         enabled = !hasChatSubScreen && !hasProfileLayers && !showSecretRoomInfo &&
-            !showActionSheet && !showMessageSearch && !showPeerReport
+            !showActionSheet && !showStickerPanel && !showMessageSearch && !showPeerReport
     ) {
         onBack()
     }
@@ -605,37 +610,36 @@ fun PrivateChatScreen(
     val listTopPadding = statusBarTop + 127.dp
 
     val imeBottomPadding = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
-    val isImeOpen = imeBottomPadding > 0.dp
+    val isImeOpen = imeBottomPadding > 0.dp || WindowInsets.isImeVisible
+    val isInputOrPanelActive = showActionSheet || showStickerPanel || isImeOpen
+    val dismissKeyboardAndPanels: () -> Unit = {
+        showActionSheet = false
+        showStickerPanel = false
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }
 
     // 记录底部输入控制栏顶部在 Root 中的物理坐标 (像素)
     var bottomBarTopYPx by remember { mutableStateOf<Float?>(null) }
 
-    // 加号按钮 45° 旋转为关闭 × 动画
-    val plusRotation by animateFloatAsState(
-        targetValue = if (showActionSheet) 45f else 0f,
-        animationSpec = spring(stiffness = 500f, dampingRatio = 0.72f),
-        label = "PlusRotation"
-    )
-
-    // 监听键盘弹出、抽屉展开、或引用消息变化，平滑且 100% 将最后一条消息顶起
-    LaunchedEffect(showActionSheet, isImeOpen, quotingMessage) {
-        if ((showActionSheet || isImeOpen || quotingMessage != null) && messageList.isNotEmpty()) {
-            // 同上：首项历史加载指示器恒存在，头部项数 = 1 + (peer 卡片 ? 1 : 0)
+    // 监听键盘弹出、抽屉展开、表情包面板展开、或引用消息变化，使用滚动动画将最后一条消息平滑滑到输入栏上方
+    LaunchedEffect(showActionSheet, showStickerPanel, isImeOpen, quotingMessage) {
+        if ((showActionSheet || showStickerPanel || isImeOpen || quotingMessage != null) && messageList.isNotEmpty()) {
             val headerCount = 1 + (if (showPeerCard) 1 else 0)
             val targetIndex = (headerCount + messageList.size - 1).coerceAtLeast(0)
             delay(30)
             listState.animateScrollToItem(targetIndex)
-            // 等待键盘/抽屉弹起动画完全就绪后，做二次精准微调校准
-            delay(320)
+            delay(260)
             listState.animateScrollToItem(targetIndex)
         }
     }
 
-    // 用户手动拖拽聊天列表时自动收起扩展抽屉面板与软键盘
+    // 用户手动拖拽聊天列表时自动收起扩展抽屉面板、表情包面板与软键盘
     LaunchedEffect(listState.interactionSource) {
         listState.interactionSource.interactions.collect { interaction ->
             if (interaction is DragInteraction.Start) {
                 if (showActionSheet) showActionSheet = false
+                if (showStickerPanel) showStickerPanel = false
                 if (isImeOpen) {
                     keyboardController?.hide()
                     focusManager.clearFocus()
@@ -663,26 +667,36 @@ fun PrivateChatScreen(
             .background(pageBg)
     ) {
         val rootHeightPx = with(density) { maxHeight.toPx() }
+        val lastKeyboardHeightDp = KeyboardHeightTracker.lastKeyboardHeightDp
 
-        // 动态计算底部输入控制栏（包括键盘、抽屉、引用条）占据的物理高度
-        val bottomOccupiedDp = remember(bottomBarTopYPx, rootHeightPx, showActionSheet) {
+        // 动态计算底部输入控制栏（包括键盘、抽屉、表情包面板、引用条）占据的物理高度
+        val bottomOccupiedDp = remember(
+            bottomBarTopYPx,
+            rootHeightPx,
+            showActionSheet,
+            showStickerPanel,
+            isImeOpen,
+            quotingMessage,
+            lastKeyboardHeightDp
+        ) {
             val topY = bottomBarTopYPx
-            if (topY != null && rootHeightPx > 0f) {
+            val measuredDp = if (topY != null && rootHeightPx > 0f) {
                 val occupiedPx = (rootHeightPx - topY).coerceAtLeast(0f)
                 with(density) { occupiedPx.toDp() }
             } else {
-                if (showActionSheet) 400.dp else 80.dp
+                80.dp
             }
+            val quoteExtraDp = if (quotingMessage != null) 44.dp else 0.dp
+            val expectedOpenDp = if (showActionSheet || showStickerPanel || isImeOpen) {
+                lastKeyboardHeightDp + 48.dp + quoteExtraDp
+            } else {
+                0.dp
+            }
+            maxOf(measuredDp, expectedOpenDp)
         }
 
         // 始终保留 16dp 黄金呼吸间隙，且不低于默认悬浮透空内边距 96dp
-        val targetBottomPadding = maxOf(96.dp, bottomOccupiedDp + 16.dp)
-
-        val dynamicBottomPadding by animateDpAsState(
-            targetValue = targetBottomPadding,
-            animationSpec = spring(stiffness = 450f, dampingRatio = 0.82f),
-            label = "DynamicBottomPadding"
-        )
+        val dynamicBottomPadding = maxOf(96.dp, bottomOccupiedDp + 16.dp)
 
         // ---- 1. 统一内容捕获层：背景壁纸 + 消息流 LazyColumn，统一录入 chatBackdrop 供 5 个 LiquidButton 光学折射穿透 ----
         // 复用 ui/components/ChatContentCaptureLayer（与公共大厅同一份实现）。
@@ -738,6 +752,10 @@ fun PrivateChatScreen(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
+                    .dismissOnTapOrScroll(
+                        enabled = isInputOrPanelActive,
+                        onDismiss = dismissKeyboardAndPanels
+                    )
                     .graphicsLayer {
                         compositingStrategy = CompositingStrategy.Offscreen
                     }
@@ -1108,7 +1126,11 @@ fun PrivateChatScreen(
         // ---- 3. 底部输入控制栏（公共组件 ChatComposerBar：[+] + 输入框 + 引用条 + 扩展抽屉）----
         ChatComposerBar(
             drawerExpanded = showActionSheet,
-            onDrawerExpandedChange = { showActionSheet = it },
+            onDrawerExpandedChange = { opened ->
+                showActionSheet = opened
+                // 加号面板与表情包面板互斥：打开加号面板时收起表情包面板
+                if (opened) showStickerPanel = false
+            },
             inputText = inputText,
             onInputTextChange = { inputText = it },
             onSend = {
@@ -1232,12 +1254,17 @@ fun PrivateChatScreen(
                 showStickerPanel = !showStickerPanel
                 if (showStickerPanel) showActionSheet = false
             },
+            onStickerPanelExpandedChange = { expanded ->
+                showStickerPanel = expanded
+                if (expanded) showActionSheet = false
+            },
             onStickerPick = { assetId, _ ->
                 ZeroTalkClientManager.sendSticker(conversation.id, assetId)
             },
             stickerPanelContent = {
                 val stickerList = ZeroTalkClientManager.stickerList.collectAsState().value
                 val stickerLoading = ZeroTalkClientManager.stickerListLoading.collectAsState().value
+                val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsState().value
                 val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsState().value
                 val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsState().value
                 val stickerSearchKeyword = ZeroTalkClientManager.stickerSearchKeyword.collectAsState().value
@@ -1252,6 +1279,7 @@ fun PrivateChatScreen(
                 StickerPanel(
                     state = stickerList,
                     loading = stickerLoading,
+                    loadFailed = stickerLoadFailed,
                     isDark = isDark,
                     uploading = stickerUploading,
                     searchResults = stickerSearchResults,
@@ -1303,7 +1331,7 @@ fun PrivateChatScreen(
             contentPadding = PaddingValues(
                 start = 16.dp,
                 end = 16.dp,
-                bottom = if (showActionSheet) 4.dp else 12.dp
+                bottom = 12.dp
             ),
             onBottomBarTopChanged = { bottomBarTopYPx = it },
             // 列表滚动时持续重绘外壳，保证 Backdrop 每帧重新录制

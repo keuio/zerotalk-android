@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,11 +29,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -41,15 +46,21 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import top.lanxint.zerotalk.data.network.NetworkImageUrl
 import top.lanxint.zerotalk.data.network.STICKER_DEFAULT_QUOTA
 import top.lanxint.zerotalk.data.network.StickerItemDto
 import top.lanxint.zerotalk.data.network.StickerListData
@@ -71,16 +82,21 @@ private const val STICKER_SEARCH_MAX_LENGTH = 20
  * - 未搜索时 meta 行右侧是 `used/quota`（如 `3/15`），正在上传时追加「上传中…」；
  * - 搜索中 meta 行变为「搜索「关键词」 · 搜索中…」+「取消搜索」；
  * - 网格首格是「+」（点击选本地图片上传到表情包，达上限时禁用）；
- * - 底部提示：未搜索「点击发送 · 长按删除」，搜索中「点击发送 · 长按添加到自己的表情包内」；
- * - 空态：「没有找到相关表情」；图片失败：「已失效」；加载中：骨架 /「表情包加载中…」。
+ * - 底部提示：未搜索「点击发送 · 长按删除」，搜索中「点击发送 · 长按添加」；
+ * - 空态：「没有找到相关表情」（仅搜索态）；图片失败：「已失效」；加载中：骨架 /「表情包加载中…」。
+ * - 我的表情包空收藏时也会显示网格，首格「+」上传格永远可见（官方同款），不隐藏。
  *
  * 交互：
  * - 我的表情包：单击发送、长按弹「删除表情包」确认；
  * - 搜索结果：单击 `prepare-url` 换到 asset_id 后发送、长按弹「添加到表情包」确认，
  *   滚动到底自动加载下一页。
  *
+ * 背景：面板本体不自带底板，由宿主槽位（`ChatComposerBar` 的表情包槽位）统一套一层
+ * 与 [+] 抽屉同参数的液态玻璃卡片；直接浮在聊天壁纸上的话表情会看不清。
+ *
  * @param state 我的表情包列表（null 表示尚未加载完成）
  * @param loading 是否正在加载（骨架屏）
+ * @param loadFailed 「我的表情包」最近一次加载是否失败（区分「加载失败」与「收藏为空」）
  * @param uploading 是否正在上传本地图片（「+」禁用 + meta 显示「上传中…」）
  * @param searchResults 网络搜索累计结果
  * @param searchKeyword 当前搜索关键词（空串 = 未搜索）
@@ -103,7 +119,10 @@ fun StickerPanel(
     isDark: Boolean,
     onPick: (Long, String) -> Unit,
     modifier: Modifier = Modifier,
+    height: Dp = KeyboardHeightTracker.lastKeyboardHeightDp,
+    onSearchFocusChanged: ((Boolean) -> Unit)? = null,
     onRetry: (() -> Unit)? = null,
+    loadFailed: Boolean = false,
     uploading: Boolean = false,
     searchResults: List<StickerSearchItemDto> = emptyList(),
     searchKeyword: String = "",
@@ -129,9 +148,28 @@ fun StickerPanel(
     val brokenColor = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
     val fieldBg = if (isDark) Color(0x14FFFFFF) else Color(0x0A000000)
 
+    val isSearchFocusedState = LocalStickerSearchFocused.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    DisposableEffect(Unit) {
+        onDispose {
+            isSearchFocusedState.value = false
+        }
+    }
+
+    val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val isSearchingKeyboardOpen = isSearchFocusedState.value && imeBottom > 0.dp
+    val effectiveHeight = if (isSearchingKeyboardOpen) {
+        imeBottom + 48.dp
+    } else {
+        height
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .height(effectiveHeight)
             .padding(horizontal = 16.dp)
     ) {
         // 输入框内容由面板持有：点上「取消搜索」时能立即清空（官方 `resetSearch` 会清 input）
@@ -147,7 +185,14 @@ fun StickerPanel(
             labelColor = labelColor,
             fieldBg = fieldBg,
             searching = searching,
+            onFocusChanged = { focused ->
+                isSearchFocusedState.value = focused
+                onSearchFocusChanged?.invoke(focused)
+            },
             onSearch = { keyword ->
+                keyboardController?.hide()
+                focusManager.clearFocus()
+                isSearchFocusedState.value = false
                 if (keyword.isBlank()) searchInput = ""
                 onSearch(keyword)
             }
@@ -176,7 +221,12 @@ fun StickerPanel(
                 BasicText(
                     text = "取消搜索",
                     style = TextStyle(color = Color(0xFF007AFF), fontSize = 12.sp),
-                    modifier = Modifier.clickable { onSearch("") }
+                    modifier = Modifier.clickable {
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        isSearchFocusedState.value = false
+                        onSearch("")
+                    }
                 )
             }
         } else {
@@ -201,59 +251,112 @@ fun StickerPanel(
             }
         }
 
-        when {
-            // 官方：搜索中且无结果 → 骨架；非搜索中且无结果 →「没有找到相关表情」
-            searching && searchResults.isEmpty() -> StickerSearchSkeleton()
-            searchResults.isEmpty() -> StickerStatus(
-                text = searchError ?: "没有找到相关表情",
-                color = labelColor
-            )
-            searched -> StickerSearchGrid(
-                results = searchResults,
-                isDark = isDark,
-                loadingMore = searchLoadingMore,
-                hasMore = searchHasMore,
-                onSend = onSendSearchSticker,
-                onLoadMore = onLoadMore,
-                onAdd = onAddSearchSticker
-            )
-            loading && items.isEmpty() -> StickerStatus(text = "表情包加载中…", color = labelColor)
-            items.isEmpty() -> EmptyStickerState(labelColor = labelColor, onRetry = onRetry)
-            else -> LazyVerticalGrid(
-                columns = GridCells.Fixed(4),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 280.dp),
-                contentPadding = PaddingValues(bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+        // 阶段判定抽到 [resolveStickerPanelStage]（纯函数，可单测）。
+        // 注意：非搜索态下 searchResults 恒为空，绝不能据此判定「没有找到相关表情」，
+        // 否则「我的表情包」网格永远渲染不出来。
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            when (
+                resolveStickerPanelStage(
+                    searching = searching,
+                    searched = searched,
+                    searchResultCount = searchResults.size,
+                    loading = loading,
+                    mineCount = items.size,
+                    mineFailed = loadFailed
+                )
             ) {
-                // 首格「+」：点击选本地图片上传到表情包（官方 `sticker-ui__cell--add`）
-                item(key = "sticker-add") {
-                    StickerAddCell(
-                        isDark = isDark,
-                        enabled = onUploadLocal != null && !uploading && !isFull,
-                        onClick = { onUploadLocal?.invoke() }
-                    )
-                }
-                items(items, key = { it.id.takeIf { id -> id > 0L } ?: it.assetId }) { item ->
-                    StickerCell(
-                        item = item,
-                        isDark = isDark,
-                        brokenColor = brokenColor,
-                        onPick = onPick,
-                        onLongPress = onDeleteSticker
-                    )
-                }
+                StickerPanelStage.SEARCH_SKELETON -> StickerSearchSkeleton()
+                StickerPanelStage.SEARCH_EMPTY -> StickerStatus(
+                    text = searchError ?: "没有找到相关表情",
+                    color = labelColor
+                )
+                StickerPanelStage.SEARCH_RESULTS -> StickerSearchGrid(
+                    results = searchResults,
+                    isDark = isDark,
+                    loadingMore = searchLoadingMore,
+                    hasMore = searchHasMore,
+                    onSend = onSendSearchSticker,
+                    onLoadMore = onLoadMore,
+                    onAdd = onAddSearchSticker
+                )
+                StickerPanelStage.LOADING -> StickerStatus(text = "表情包加载中…", color = labelColor)
+                StickerPanelStage.ERROR -> EmptyStickerState(
+                    labelColor = labelColor,
+                    onRetry = onRetry,
+                    emptyText = "表情包加载失败"
+                )
+                // 空收藏也渲染「我的表情包」网格：首格恒为「+」上传格（官方同款），
+                // 否则用户永远无法添加第一个表情；加载失败才走 ERROR 分支。
+                StickerPanelStage.EMPTY,
+                StickerPanelStage.MINE -> StickerMineGrid(
+                    items = items,
+                    isDark = isDark,
+                    brokenColor = brokenColor,
+                    isFull = isFull,
+                    uploading = uploading,
+                    onUploadLocal = onUploadLocal,
+                    onPick = onPick,
+                    onDeleteSticker = onDeleteSticker
+                )
             }
         }
 
-        // 底部提示（对齐官方 `sticker-ui__hint`）
+        // 底部提示（对齐官方 `sticker-ui__hint`；固定在固定高度面板底部并居中）
         BasicText(
-            text = if (searched) "点击发送 · 长按添加到自己的表情包内" else "点击发送 · 长按删除",
-            style = TextStyle(color = labelColor, fontSize = 12.sp),
-            modifier = Modifier.padding(top = 6.dp, bottom = 10.dp)
+            text = if (searched) "点击发送 · 长按添加" else "点击发送 · 长按删除",
+            style = TextStyle(
+                color = labelColor,
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(top = 6.dp, bottom = 6.dp)
         )
+    }
+}
+
+/** 「我的表情包」网格（官方 `sticker-ui__grid`：首格恒为「+」上传格） */
+@Composable
+private fun StickerMineGrid(
+    items: List<StickerItemDto>,
+    isDark: Boolean,
+    brokenColor: Color,
+    isFull: Boolean,
+    uploading: Boolean,
+    onUploadLocal: (() -> Unit)?,
+    onPick: (Long, String) -> Unit,
+    onDeleteSticker: ((StickerItemDto) -> Unit)?
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(4),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // 首格「+」：点击选本地图片上传到表情包（官方 `sticker-ui__cell--add`）
+        item(key = "sticker-add") {
+            StickerAddCell(
+                isDark = isDark,
+                enabled = onUploadLocal != null && !uploading && !isFull,
+                onClick = { onUploadLocal?.invoke() }
+            )
+        }
+        items(items, key = { it.id.takeIf { id -> id > 0L } ?: it.assetId }) { item ->
+            StickerCell(
+                item = item,
+                isDark = isDark,
+                brokenColor = brokenColor,
+                onPick = onPick,
+                onLongPress = onDeleteSticker
+            )
+        }
     }
 }
 
@@ -266,7 +369,8 @@ private fun StickerSearchRow(
     labelColor: Color,
     fieldBg: Color,
     searching: Boolean,
-    onSearch: (String) -> Unit
+    onSearch: (String) -> Unit,
+    onFocusChanged: ((Boolean) -> Unit)? = null
 ) {
     val textColor = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A)
 
@@ -298,8 +402,12 @@ private fun StickerSearchRow(
                 singleLine = true,
                 textStyle = TextStyle(color = textColor, fontSize = 13.sp),
                 cursorBrush = SolidColor(Color(0xFF007AFF)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focusState ->
+                        onFocusChanged?.invoke(focusState.isFocused)
+                    },
                 // 回车即搜索（对齐官方 `@keydown.enter.prevent`）
-                modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearch(text) })
             )
@@ -391,7 +499,9 @@ private fun StickerCell(
                 modifier = Modifier.size(52.dp),
                 contentScale = ContentScale.Fit,
                 shape = RoundedCornerShape(10.dp),
-                backgroundColor = Color.Transparent
+                backgroundColor = Color.Transparent,
+                // 官方表情包走 style/zerotalk_emoji，用错样式会被 OSS 拒绝而整格空白
+                ossStyle = NetworkImageUrl.OssStyle.Emoji
             )
         } else {
             BasicText(
@@ -433,13 +543,13 @@ private fun StickerSearchGrid(
             .collect { if (it) onLoadMore() }
     }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Fixed(4),
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 260.dp),
+                .weight(1f),
             contentPadding = PaddingValues(bottom = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -498,23 +608,26 @@ private fun SearchStickerCell(
             modifier = Modifier.size(52.dp),
             contentScale = ContentScale.Fit,
             shape = RoundedCornerShape(10.dp),
-            backgroundColor = Color.Transparent
+            backgroundColor = Color.Transparent,
+            ossStyle = NetworkImageUrl.OssStyle.Emoji
         )
     }
 }
 
-/** 空态（对齐官方「没有找到相关表情」，附重试） */
+/** 空态 / 失败态（默认「没有找到相关表情」，附重试） */
 @Composable
-private fun EmptyStickerState(labelColor: Color, onRetry: (() -> Unit)?) {
+private fun EmptyStickerState(
+    labelColor: Color,
+    onRetry: (() -> Unit)?,
+    emptyText: String = "没有找到相关表情"
+) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(140.dp),
+        modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         BasicText(
-            text = "没有找到相关表情",
+            text = emptyText,
             style = TextStyle(color = labelColor, fontSize = 14.sp)
         )
         if (onRetry != null) {
@@ -532,9 +645,7 @@ private fun EmptyStickerState(labelColor: Color, onRetry: (() -> Unit)?) {
 @Composable
 private fun StickerStatus(text: String, color: Color) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(140.dp),
+        modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -548,7 +659,10 @@ private fun StickerStatus(text: String, color: Color) {
 /** 搜索骨架（官方渲染 8 个格子骨架） */
 @Composable
 private fun StickerSearchSkeleton() {
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center
+    ) {
         repeat(2) {
             Row(
                 modifier = Modifier

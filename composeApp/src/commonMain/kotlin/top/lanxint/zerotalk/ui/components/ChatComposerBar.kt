@@ -2,34 +2,43 @@ package top.lanxint.zerotalk.ui.components
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -47,8 +56,15 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,10 +72,15 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -78,7 +99,72 @@ import com.kashif_e.backdrop.effects.colorControls
 import com.kashif_e.backdrop.effects.lens
 import com.kashif_e.backdrop.highlight.Highlight
 import com.kashif_e.backdrop.shadow.Shadow
+import kotlinx.coroutines.delay
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
+
+/**
+ * 全局软键盘高度追踪器（进程级单例内存记忆）。
+ * 兜底 280dp。实时捕获系统软键盘真实完整高度的最高峰值。
+ * 表情面板与 [+] 抽屉面板高度对齐此记忆高度，保证键盘 ↔ 面板无缝等高切换，输入栏零高度弹跳。
+ */
+object KeyboardHeightTracker {
+    var lastKeyboardHeightDp by mutableStateOf(260.dp)
+        private set
+
+    /** 是否已经成功记录过系统真实软键盘的有效峰值 */
+    var hasRecordedPeak: Boolean = false
+        private set
+
+    /**
+     * 更新键盘最高峰值。
+     * - 低于 200dp 的异常/导航栏高度不予记录。
+     * - 单调递增最高峰值锁定（Monotonic Peak Holding）：
+     *   1. 若尚未记录真实峰值：记录首次有效高度并标记 hasRecordedPeak = true；
+     *   2. 若已记录真实峰值：严格只增不减，仅当检测到更高高度（heightDp > lastKeyboardHeightDp）时更新，
+     *      防止在键盘收起、过渡帧过程中被较小数值冲刷覆盖。
+     */
+    fun updatePeak(heightDp: Dp) {
+        if (heightDp < 200.dp) return
+        if (!hasRecordedPeak) {
+            lastKeyboardHeightDp = heightDp
+            hasRecordedPeak = true
+        } else if (heightDp > lastKeyboardHeightDp) {
+            lastKeyboardHeightDp = heightDp
+        }
+    }
+
+    /**
+     * 键盘动画结束且处于完全静止展开态时的确切高度记录。
+     * 无论初始默认值是多少，静止态实测数据拥有最高优先级，直接校准为屏幕真实键盘高度，
+     * 消除「初始默认高度或过渡动画过度膨胀导致面板比真实键盘高出一截」的冲突。
+     */
+    fun recordRestingHeight(heightDp: Dp) {
+        if (heightDp < 200.dp) return
+        lastKeyboardHeightDp = heightDp
+        hasRecordedPeak = true
+    }
+
+    fun updateIfValid(heightDp: Dp) = updatePeak(heightDp)
+
+    fun resetForTest(heightDp: Dp = 280.dp) {
+        lastKeyboardHeightDp = heightDp
+        hasRecordedPeak = false
+    }
+}
+
+/**
+ * 表情面板搜索框聚焦状态共享（用于在搜索时将输入栏和表情搜索框整体置于软键盘之上）。
+ */
+val LocalStickerSearchFocused = compositionLocalOf<MutableState<Boolean>> { mutableStateOf(false) }
+
+/**
+ * 表情包面板玻璃表面的不透明度（比 [+] 抽屉的 0.76 / 0.75 更实）。
+ *
+ * 抽屉里是「图标 + 文案」，透一点没关系；表情面板里是细线条的小图案，
+ * 底板太透会让表情和壁纸糊在一起，因此这里单独提高到接近不透明。
+ */
+private const val STICKER_PANEL_ALPHA_DARK = 0.92f
+private const val STICKER_PANEL_ALPHA_LIGHT = 0.94f
 
 /**
  * 聊天底部输入栏的公共外壳（Composer）。
@@ -123,6 +209,7 @@ import top.lanxint.zerotalk.ui.theme.AppleHigColors
  * @param tailModifier 追加在外壳最内层的修饰符（调用方可注入随列表滚动重绘的 drawWithContent）
  * @param onBottomBarTopChanged 外壳顶部在 Root 中的像素坐标变化回调
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChatComposerBar(
     drawerExpanded: Boolean,
@@ -147,21 +234,123 @@ fun ChatComposerBar(
     contentPadding: PaddingValues = PaddingValues(
         start = 16.dp,
         end = 16.dp,
-        bottom = if (drawerExpanded) 4.dp else 12.dp
+        bottom = 12.dp
     ),
-    scrimEnabled: Boolean = true,
-    drawerHeight: Dp = 280.dp,
+    scrimEnabled: Boolean = false,
+    drawerHeight: Dp = KeyboardHeightTracker.lastKeyboardHeightDp,
     actionsPerRow: Int = 4,
     drawerContent: (@Composable ColumnScope.() -> Unit)? = null,
     tailModifier: Modifier = Modifier,
     onBottomBarTopChanged: (Float) -> Unit = {},
     stickerPanelExpanded: Boolean = false,
     onToggleStickerPanel: () -> Unit = {},
+    onStickerPanelExpandedChange: (Boolean) -> Unit = { expanded ->
+        if (expanded != stickerPanelExpanded) onToggleStickerPanel()
+    },
     onStickerPick: ((Long, String) -> Unit)? = null,
     stickerPanelContent: (@Composable ColumnScope.() -> Unit)? = null
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+
+    val panelVisible = (stickerPanelExpanded && stickerPanelContent != null) || drawerExpanded
+
+    // 系统软键盘动态监听：
+    // - imeAnimationTarget: 捕获本次动画的最终目标高度（动画启动瞬间即为真实完整高度，不受中间帧干扰）
+    // - ime: 当前实时物理位置
+    // - isImeVisible: 键盘是否处于可见/弹出态
+    val imeTargetBottomDp = WindowInsets.imeAnimationTarget.asPaddingValues().calculateBottomPadding()
+    val imeBottomDp = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val isImeVisible = WindowInsets.isImeVisible
+    val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    LaunchedEffect(imeTargetBottomDp, imeBottomDp, isImeVisible) {
+        if (isImeVisible) {
+            // 当动画完成且处于完全静止展开态时（ime == imeAnimationTarget 且处于展开态），确切锁定实测真实静止高度
+            if (imeBottomDp >= 200.dp && imeBottomDp == imeTargetBottomDp) {
+                KeyboardHeightTracker.recordRestingHeight(imeBottomDp)
+            } else if (!KeyboardHeightTracker.hasRecordedPeak && imeBottomDp >= 200.dp) {
+                KeyboardHeightTracker.updatePeak(imeBottomDp)
+            }
+        }
+    }
+
+    // 记录最近激活的面板类型，以便收起动画或切键盘接管期间保持正确的面板内容
+    var lastActivePanelWasDrawer by remember { mutableStateOf(false) }
+    if (drawerExpanded) {
+        lastActivePanelWasDrawer = true
+    } else if (stickerPanelExpanded) {
+        lastActivePanelWasDrawer = false
+    }
+
+    // 从面板切键盘的平滑垫底接管期：保持底层面板高度直到软键盘完全升起覆盖，杜绝输入栏回落抖动
+    var isHandingOffToKeyboard by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isHandingOffToKeyboard, imeBottomDp, imeTargetBottomDp, isImeVisible, drawerHeight) {
+        if (isHandingOffToKeyboard) {
+            val reachedFullHeight = imeBottomDp >= drawerHeight
+            val reachedAnimationEnd = isImeVisible && imeBottomDp >= 200.dp && imeBottomDp == imeTargetBottomDp
+            if (reachedFullHeight || reachedAnimationEnd) {
+                isHandingOffToKeyboard = false
+            }
+        }
+    }
+
+    LaunchedEffect(isHandingOffToKeyboard) {
+        if (isHandingOffToKeyboard) {
+            delay(600)
+            isHandingOffToKeyboard = false
+        }
+    }
+
+    // 面板高度过渡控制：
+    // - 仅在「键盘 ↔ 面板」切换时瞬间就位（不跑展开/收起动画，保证输入栏零抖动）
+    // - 从无键盘态（Idle）打开或收起面板时，平滑向上升起 / 向下滑落
+    val targetPanelHeight = if (panelVisible || isHandingOffToKeyboard) drawerHeight else 0.dp
+    val panelHeightAnim = remember { Animatable(targetPanelHeight, Dp.VectorConverter) }
+    var isInstantPanelSwitch by remember { mutableStateOf(false) }
+    var prevTargetPanelHeight by remember { mutableStateOf(targetPanelHeight) }
+
+    if (targetPanelHeight != prevTargetPanelHeight) {
+        isInstantPanelSwitch = isHandingOffToKeyboard || imeBottomDp > 0.dp || isImeVisible
+        prevTargetPanelHeight = targetPanelHeight
+    }
+
+    LaunchedEffect(targetPanelHeight, isInstantPanelSwitch) {
+        if (isInstantPanelSwitch) {
+            panelHeightAnim.snapTo(targetPanelHeight)
+        } else {
+            panelHeightAnim.animateTo(
+                targetValue = targetPanelHeight,
+                animationSpec = tween(durationMillis = 230, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+
+    val currentPanelHeight = if (isInstantPanelSwitch) {
+        targetPanelHeight
+    } else {
+        panelHeightAnim.value
+    }
+
+    // 表情搜索框聚焦状态（搜索场景例外）
+    val stickerSearchFocusedState = remember { mutableStateOf(false) }
+    val isSearchingKeyboardOpen = stickerSearchFocusedState.value && imeBottomDp > 0.dp
+    val searchExtra = if (isSearchingKeyboardOpen) 48.dp else 0.dp
+
+    val panelOccupiedHeight = if (isSearchingKeyboardOpen && (panelVisible || isHandingOffToKeyboard)) {
+        imeBottomDp + searchExtra
+    } else {
+        currentPanelHeight
+    }
+
+    // 输入栏底部的真实间隙：max(面板高度, 键盘高度, 导航栏高度)
+    // 搜索唤起键盘时为 imeBottomDp + 搜索栏高度
+    val effectiveBottomGap = if (isSearchingKeyboardOpen) {
+        imeBottomDp + searchExtra
+    } else {
+        maxOf(panelOccupiedHeight, imeBottomDp, navBottomDp)
+    }
 
     // 加号按钮 45 度旋转为关闭 × 动画
     val plusRotation by animateFloatAsState(
@@ -171,26 +360,151 @@ fun ChatComposerBar(
     )
 
     Box(modifier = modifier.fillMaxSize()) {
-        // ---- 抽屉展开时的全屏透明拦截层（点击聊天背景区域平滑收起抽屉，同时不阻挡视觉）----
-        if (scrimEnabled && drawerExpanded) {
+        // ---- 抽屉/表情展开时的全屏透明拦截层（点击聊天背景区域平滑收起面板与键盘）----
+        if (scrimEnabled && (drawerExpanded || stickerPanelExpanded)) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = { onDrawerExpandedChange(false) }
+                        onClick = {
+                            isHandingOffToKeyboard = false
+                            if (drawerExpanded) onDrawerExpandedChange(false)
+                            if (stickerPanelExpanded) onStickerPanelExpandedChange(false)
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        }
                     )
             )
         }
 
-        // ---- 底部输入控制栏（2 个 LiquidButton：[+] 与 输入框，完全悬浮透空）----
+        // ---- 面板层（贴屏幕底部，键盘 z 轴之下）----
+        // ---- 面板层（贴屏幕底部，键盘 z 轴之下）----
+        // 本层不参与 imePadding，键盘弹出时位置不变，由系统软键盘从上方自然盖住；
+        // 外壳使用统一常驻的毛玻璃容器（固定 0.92/0.94 质感与固定投影，不随面板切换而销毁重建），
+        // 面板↔面板切换时外壳 100% 保持不动，仅内部内容淡入淡出，彻底消除阴影重新刷新导致的闪烁。
+        val showPanelLayer = panelVisible || isHandingOffToKeyboard || currentPanelHeight > 0.dp
+        if (showPanelLayer) {
+            val showingDrawer = when {
+                drawerExpanded -> true
+                stickerPanelExpanded && stickerPanelContent != null -> false
+                else -> lastActivePanelWasDrawer
+            }
+
+            val panelShape = RoundedCornerShape(
+                topStart = 32.dp,
+                topEnd = 32.dp,
+                bottomStart = 0.dp,
+                bottomEnd = 0.dp
+            )
+            val panelModifier = if (backdrop != null) {
+                Modifier.drawBackdrop(
+                    backdrop = backdrop,
+                    shape = { panelShape },
+                    effects = {
+                        colorControls(
+                            brightness = if (isDark) 0.06f else 0.10f,
+                            saturation = 1.45f
+                        )
+                        blur(if (isDark) 16.dp.toPx() else 20.dp.toPx())
+                        lens(
+                            refractionHeight = 22.dp.toPx(),
+                            refractionAmount = 40.dp.toPx(),
+                            depthEffect = true
+                        )
+                    },
+                    highlight = { null },
+                    shadow = {
+                        Shadow(
+                            radius = 24.dp,
+                            color = Color.Black.copy(alpha = if (isDark) 0.40f else 0.22f)
+                        )
+                    },
+                    onDrawSurface = {
+                        drawRect(
+                            if (isDark) Color(0xFF161820).copy(alpha = STICKER_PANEL_ALPHA_DARK)
+                            else Color(0xFFF6F6F8).copy(alpha = STICKER_PANEL_ALPHA_LIGHT)
+                        )
+                    }
+                )
+            } else {
+                Modifier
+                    .shadow(
+                        elevation = 20.dp,
+                        shape = panelShape,
+                        ambientColor = Color.Black.copy(alpha = if (isDark) 0.40f else 0.22f),
+                        spotColor = Color.Black.copy(alpha = if (isDark) 0.40f else 0.22f)
+                    )
+                    .background(if (isDark) Color(0xFF1C1F28) else Color(0xFFF6F6F8), panelShape)
+            }
+
+            val containerHeight = if (isSearchingKeyboardOpen) {
+                imeBottomDp + searchExtra
+            } else {
+                drawerHeight
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(containerHeight)
+                    .graphicsLayer {
+                        translationY = (drawerHeight - currentPanelHeight).toPx().coerceAtLeast(0f)
+                    }
+                    .clip(panelShape)
+                    .then(panelModifier)
+            ) {
+                AnimatedContent(
+                    targetState = showingDrawer,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(180))
+                    },
+                    label = "PanelContentCrossfade"
+                ) { isDrawer ->
+                    if (!isDrawer && stickerPanelContent != null) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            CompositionLocalProvider(LocalStickerSearchFocused provides stickerSearchFocusedState) {
+                                stickerPanelContent.invoke(this)
+                            }
+                        }
+                    } else {
+                        ChatComposerDrawerContent(
+                            actions = actions,
+                            isDark = isDark,
+                            drawerHeight = drawerHeight,
+                            actionsPerRow = actionsPerRow,
+                            onDismiss = {
+                                isHandingOffToKeyboard = false
+                                onDrawerExpandedChange(false)
+                            },
+                            content = drawerContent
+                        )
+                    }
+                }
+            }
+        }
+
+        val handleInputBoxClick: () -> Unit = {
+            if (drawerExpanded || stickerPanelExpanded) {
+                isHandingOffToKeyboard = true
+            }
+            if (drawerExpanded) onDrawerExpandedChange(false)
+            if (stickerPanelExpanded) onStickerPanelExpandedChange(false)
+            if (!isVoiceMode) {
+                inputFocusRequester.requestFocus()
+                keyboardController?.show()
+            }
+        }
+
+        // ---- 输入栏层（始终在面板与软键盘 z 轴之上）----
+        // 底部留白 = effectiveBottomGap = max(面板高度, 键盘高度, 导航栏高度)
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .imePadding()
-                .navigationBarsPadding()
+                .padding(bottom = effectiveBottomGap)
                 .padding(contentPadding)
                 .onGloballyPositioned { coordinates ->
                     onBottomBarTopChanged(coordinates.boundsInRoot().top)
@@ -224,8 +538,10 @@ fun ChatComposerBar(
                         if (drawerExpanded) {
                             onDrawerExpandedChange(false)
                         } else {
+                            isHandingOffToKeyboard = false
                             keyboardController?.hide()
                             focusManager.clearFocus()
+                            if (stickerPanelExpanded) onStickerPanelExpandedChange(false)
                             onDrawerExpandedChange(true)
                         }
                     },
@@ -248,13 +564,7 @@ fun ChatComposerBar(
 
                 // 中央消息输入框 (基于 LiquidButton 架构，高度 36dp)
                 LiquidButton(
-                    onClick = {
-                        if (drawerExpanded) onDrawerExpandedChange(false)
-                        if (!isVoiceMode) {
-                            inputFocusRequester.requestFocus()
-                            keyboardController?.show()
-                        }
-                    },
+                    onClick = handleInputBoxClick,
                     modifier = Modifier
                         .weight(1f)
                         .height(36.dp),
@@ -280,12 +590,9 @@ fun ChatComposerBar(
                                     .fillMaxHeight()
                                     .clickable(
                                         interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) {
-                                        if (drawerExpanded) onDrawerExpandedChange(false)
-                                        inputFocusRequester.requestFocus()
-                                        keyboardController?.show()
-                                    },
+                                        indication = null,
+                                        onClick = handleInputBoxClick
+                                    ),
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 BasicTextField(
@@ -302,8 +609,12 @@ fun ChatComposerBar(
                                         .fillMaxWidth()
                                         .focusRequester(inputFocusRequester)
                                         .onFocusChanged { focusState ->
-                                            if (focusState.isFocused && drawerExpanded) {
-                                                onDrawerExpandedChange(false)
+                                            if (focusState.isFocused) {
+                                                if (drawerExpanded || stickerPanelExpanded) {
+                                                    isHandingOffToKeyboard = true
+                                                }
+                                                if (drawerExpanded) onDrawerExpandedChange(false)
+                                                if (stickerPanelExpanded) onStickerPanelExpandedChange(false)
                                             }
                                         },
                                     decorationBox = { innerTextField ->
@@ -329,7 +640,17 @@ fun ChatComposerBar(
                             StickerToggleButton(
                                 expanded = stickerPanelExpanded,
                                 tint = controlContentColor,
-                                onClick = onToggleStickerPanel
+                                onClick = {
+                                    if (stickerPanelExpanded) {
+                                        onStickerPanelExpandedChange(false)
+                                    } else {
+                                        isHandingOffToKeyboard = false
+                                        keyboardController?.hide()
+                                        focusManager.clearFocus()
+                                        if (drawerExpanded) onDrawerExpandedChange(false)
+                                        onStickerPanelExpandedChange(true)
+                                    }
+                                }
                             )
                         }
                         Box(
@@ -383,7 +704,14 @@ fun ChatComposerBar(
                                         modifier = Modifier
                                             .size(24.dp)
                                             .clip(CircleShape)
-                                            .clickable { onToggleVoiceMode() },
+                                            .clickable {
+                                                isHandingOffToKeyboard = false
+                                                if (drawerExpanded) onDrawerExpandedChange(false)
+                                                if (stickerPanelExpanded) onStickerPanelExpandedChange(false)
+                                                keyboardController?.hide()
+                                                focusManager.clearFocus()
+                                                onToggleVoiceMode()
+                                            },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         AnimatedContent(
@@ -421,51 +749,6 @@ fun ChatComposerBar(
                         }
                     }
                 }
-            }
-
-            // 表情包面板（独立槽位，与 [+] 抽屉互斥，由调用方通过 stickerPanelContent 注入）
-            AnimatedVisibility(
-                visible = stickerPanelExpanded && stickerPanelContent != null,
-                enter = expandVertically(
-                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
-                    expandFrom = Alignment.Top
-                ) + fadeIn(animationSpec = tween(150)),
-                exit = shrinkVertically(
-                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
-                    shrinkTowards = Alignment.Top
-                ) + fadeOut(animationSpec = tween(120))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    stickerPanelContent?.invoke(this)
-                }
-            }
-
-                        // ---- 4. 底部 [+] 扩展抽屉面板（展开时自然将上方输入栏平滑顶起）----
-            AnimatedVisibility(
-                visible = drawerExpanded,
-                enter = expandVertically(
-                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
-                    expandFrom = Alignment.Top
-                ) + fadeIn(animationSpec = tween(150)),
-                exit = shrinkVertically(
-                    animationSpec = spring(stiffness = 450f, dampingRatio = 0.78f),
-                    shrinkTowards = Alignment.Top
-                ) + fadeOut(animationSpec = tween(120))
-            ) {
-                ChatComposerDrawer(
-                    actions = actions,
-                    isDark = isDark,
-                    backdrop = backdrop,
-                    drawerHeight = drawerHeight,
-                    actionsPerRow = actionsPerRow,
-                    onDismiss = { onDrawerExpandedChange(false) },
-                    content = drawerContent
-                )
             }
         }
     }
@@ -588,77 +871,31 @@ data class ChatComposerQuote(
 )
 
 /**
- * 扩展抽屉面板：毛玻璃表面 + 顶部拖拽把手 + 宫格动作项（或自定义内容）。
+ * 扩展抽屉面板内容：顶部拖拽把手 + 宫格动作项（或自定义内容）。
+ * 外层底板与投影已由宿主统一常驻毛玻璃卡片承载。
  */
 @Composable
-private fun ChatComposerDrawer(
+private fun ChatComposerDrawerContent(
     actions: List<ChatComposerAction>,
     isDark: Boolean,
-    backdrop: Backdrop?,
     drawerHeight: Dp,
     actionsPerRow: Int,
     onDismiss: () -> Unit,
     content: (@Composable ColumnScope.() -> Unit)?
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.height(10.dp)) // 输入框与扩展面板之间的 10dp 呼吸悬浮空隙
-
-        val drawerSurfaceShape = RoundedCornerShape(32.dp)
-        val drawerModifier = if (backdrop != null) {
-            Modifier.drawBackdrop(
-                backdrop = backdrop,
-                shape = { drawerSurfaceShape },
-                effects = {
-                    colorControls(
-                        brightness = if (isDark) 0.06f else 0.14f,
-                        saturation = 1.45f
-                    )
-                    blur(if (isDark) 16.dp.toPx() else 20.dp.toPx())
-                    lens(
-                        refractionHeight = 22.dp.toPx(),
-                        refractionAmount = 40.dp.toPx(),
-                        depthEffect = true
-                    )
-                },
-                highlight = { Highlight.Plain },
-                shadow = { Shadow(radius = 18.dp, color = Color.Black.copy(alpha = if (isDark) 0.35f else 0.16f)) },
-                onDrawSurface = {
-                    drawRect(
-                        if (isDark) Color(0xFF161820).copy(alpha = 0.76f)
-                        else Color(0xFFFFFFFF).copy(alpha = 0.75f)
-                    )
-                }
-            )
-        } else {
-            Modifier
-                .shadow(
-                    elevation = 18.dp,
-                    shape = drawerSurfaceShape,
-                    ambientColor = Color.Black.copy(alpha = if (isDark) 0.35f else 0.16f),
-                    spotColor = Color.Black.copy(alpha = if (isDark) 0.35f else 0.16f)
-                )
-                .background(if (isDark) Color(0xFF1C1F28) else Color(0xFFFFFFFF), drawerSurfaceShape)
-                .border(
-                    width = 0.5.dp,
-                    color = if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.06f),
-                    shape = drawerSurfaceShape
-                )
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(drawerHeight)
-                .then(drawerModifier)
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures { _, dragAmount ->
-                        if (dragAmount > 20f) {
-                            onDismiss()
-                        }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(drawerHeight)
+            .pointerInput(Unit) {
+                detectVerticalDragGestures { _, dragAmount ->
+                    if (dragAmount > 20f) {
+                        onDismiss()
                     }
-                },
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+                }
+            },
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
             // 顶部拖拽把手指示条 (36dp x 5dp)
             Box(
                 modifier = Modifier
@@ -685,6 +922,7 @@ private fun ChatComposerDrawer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                        .navigationBarsPadding()
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.SpaceEvenly
                 ) {
@@ -718,7 +956,6 @@ private fun ChatComposerDrawer(
             Spacer(Modifier.height(16.dp))
         }
     }
-}
 
 /**
  * 扩展 Sheet 宫格图标项（图标 + 文案）
@@ -794,5 +1031,45 @@ private fun StickerToggleButton(
             modifier = Modifier.size(18.dp)
         )
     }
+}
+
+/**
+ * 微信同款交互手势修饰符：
+ * 当软键盘或底部面板处于展开态时：
+ * 1. 点击聊天区域（含空白处及消息气泡）：立即收起键盘与面板，且在消费该点击后不误触发气泡内的点击动作；
+ * 2. 手指滑动列表：立即收起键盘与面板，同时不阻碍滑动，保持列表自然顺畅滚动。
+ */
+@Composable
+fun Modifier.dismissOnTapOrScroll(
+    enabled: Boolean,
+    onDismiss: () -> Unit
+): Modifier {
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    val nestedScrollConnection = remember(enabled) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (enabled && source == NestedScrollSource.UserInput && (available.x != 0f || available.y != 0f)) {
+                    currentOnDismiss()
+                }
+                return Offset.Zero
+            }
+        }
+    }
+
+    return this
+        .nestedScroll(nestedScrollConnection)
+        .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            awaitPointerEventScope {
+                while (true) {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val up = waitForUpOrCancellation(pass = PointerEventPass.Initial)
+                    if (up != null) {
+                        up.consume()
+                        currentOnDismiss()
+                    }
+                }
+            }
+        }
 }
 

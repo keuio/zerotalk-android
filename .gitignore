@@ -13,3 +13,4 @@ keystore.properties
 *.jks
 *.keystore
 _private/
+.local/
