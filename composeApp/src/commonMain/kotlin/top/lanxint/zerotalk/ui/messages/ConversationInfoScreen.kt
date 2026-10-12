@@ -94,6 +94,7 @@ import top.lanxint.zerotalk.data.model.MomentItem
 import top.lanxint.zerotalk.data.model.normalizeUserTitle
 import top.lanxint.zerotalk.data.model.OtherUserFollowListState
 import top.lanxint.zerotalk.data.model.OtherUserProfile
+import top.lanxint.zerotalk.data.model.anonymized
 import top.lanxint.zerotalk.data.model.OtherUserProfileState
 import top.lanxint.zerotalk.data.model.UserProfileLayerHost
 import top.lanxint.zerotalk.data.model.UserProfileTarget
@@ -289,9 +290,15 @@ fun ConversationInfoScreen(
     }
 
     val profile = profileState?.profile
-    val displayName = profile?.name?.takeIf { it.isNotBlank() } ?: conversation.targetName
-    val displayAvatar = profile?.avatarUrl?.takeIf { it.isNotBlank() } ?: conversation.targetAvatar
-    val isLoading = profileState?.isLoading == true && profile == null
+    val isAnonymousPeer = conversation.targetName == "匿名用户" ||
+        roomBootstrapMap[conversation.id]?.peerUser?.privacyMode == true ||
+        profile?.privacyMode == true
+    val effectiveProfile = remember(profile, isAnonymousPeer) {
+        if (isAnonymousPeer) profile?.anonymized() else profile
+    }
+    val displayName = if (isAnonymousPeer) "匿名用户" else (effectiveProfile?.name?.takeIf { it.isNotBlank() } ?: conversation.targetName)
+    val displayAvatar = if (isAnonymousPeer) null else (effectiveProfile?.avatarUrl?.takeIf { it.isNotBlank() } ?: conversation.targetAvatar)
+    val isLoading = profileState?.isLoading == true && effectiveProfile == null
 
     val opaqueBg = if (isDark) Color(0xFF12141A) else Color(0xFFF2F2F7)
 
@@ -368,7 +375,7 @@ fun ConversationInfoScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             // 昵称 (Title 2 级别加粗) + 用户称号（官方 UserMomentsView：昵称右侧紧邻 UserTitleBadge）
-            val profileTitle = normalizeUserTitle(profile?.title)
+            val profileTitle = if (isAnonymousPeer) "" else normalizeUserTitle(effectiveProfile?.title)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BasicText(
                     text = displayName,
@@ -386,8 +393,8 @@ fun ConversationInfoScreen(
                 if (profileTitle.isNotEmpty()) {
                     Spacer(Modifier.width(6.dp))
                     UserTitleBadge(
-                        title = profile?.title,
-                        color = profile?.titleColor,
+                        title = effectiveProfile?.title,
+                        color = effectiveProfile?.titleColor,
                         isDark = isDark
                     )
                 }
@@ -396,8 +403,8 @@ fun ConversationInfoScreen(
             // 性别 · 年龄段 · 地区 统一只在下方「个性签名」卡片内展示，此处不再重复
 
             // 关系徽标：互相关注 / 对方关注了你 / 已拉黑
-            val relationBadges = buildList {
-                profile?.let { user ->
+            val relationBadges = if (isAnonymousPeer) emptyList() else buildList {
+                effectiveProfile?.let { user ->
                     if (user.isMutual) add("互相关注" to higColors.systemGreen)
                     else if (user.followedBy) add("对方关注了你" to higColors.tint)
                     if (user.iBlocked) add("已拉黑" to higColors.destructive)
@@ -432,17 +439,17 @@ fun ConversationInfoScreen(
                 horizontalArrangement = Arrangement.spacedBy(32.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val isSelf = profile?.isSelf == true
-                val isBlocked = profile?.iBlocked == true
-                val isBlockedByPeer = profile?.blocked == true
-                val isFollowing = profile?.isFollowing == true
-                val actionsEnabled = !isLoading && profile != null && !isSelf
+                val isSelf = effectiveProfile?.isSelf == true
+                val isBlocked = effectiveProfile?.iBlocked == true
+                val isBlockedByPeer = effectiveProfile?.blocked == true
+                val isFollowing = effectiveProfile?.isFollowing == true
+                val actionsEnabled = !isLoading && effectiveProfile != null && !isSelf
                 // 官方判定（UserMomentsView）：can_dm !== false && can_receive_dm !== false && !dm_banned
                 // 且非拉黑关系；任一不满足则私信入口置灰并显示「无法私信」
-                val dmUnavailable = profile != null &&
-                    (!profile.dmAllowed || isBlocked || isBlockedByPeer)
+                val dmUnavailable = effectiveProfile != null &&
+                    (!effectiveProfile.dmAllowed || isBlocked || isBlockedByPeer)
 
-                if (!isSelf) {
+                if (!isSelf && !isAnonymousPeer) {
                     // 关注 / 取消关注（同一按钮 toggle，官方文案：关注 / 已关注）
                     CircularActionButton(
                         icon = if (isFollowing) Icons.Default.PersonRemove else Icons.Default.PersonAdd,
@@ -465,24 +472,26 @@ fun ConversationInfoScreen(
                     )
                 }
 
-                // 私信（POST /room/dm/create-from-user：返回或复用私聊房间）
-                CircularActionButton(
-                    icon = Icons.AutoMirrored.Filled.Chat,
-                    label = if (dmUnavailable) "无法私信" else "私信",
-                    tint = if (dmUnavailable) higColors.tertiaryLabel else higColors.label,
-                    containerColor = higColors.systemFill,
-                    enabled = !isLoading && profile != null &&
-                        !isBlocked && !isBlockedByPeer && profile.dmAllowed,
-                    onClick = {
-                        ZeroTalkClientManager.startDmWithOtherUser(
-                            onSuccess = { target ->
-                                notificationState.show("已进入与 ${target.targetName} 的私聊")
-                                if (target.id == conversation.id) onBack() else onOpenConversation?.invoke(target)
-                            },
-                            onError = { message -> notificationState.show(message) }
-                        )
-                    }
-                )
+                if (!isAnonymousPeer) {
+                    // 私信（POST /room/dm/create-from-user：返回或复用私聊房间）
+                    CircularActionButton(
+                        icon = Icons.AutoMirrored.Filled.Chat,
+                        label = if (dmUnavailable) "无法私信" else "私信",
+                        tint = if (dmUnavailable) higColors.tertiaryLabel else higColors.label,
+                        containerColor = higColors.systemFill,
+                        enabled = !isLoading && effectiveProfile != null &&
+                            !isBlocked && !isBlockedByPeer && effectiveProfile.dmAllowed,
+                        onClick = {
+                            ZeroTalkClientManager.startDmWithOtherUser(
+                                onSuccess = { target ->
+                                    notificationState.show("已进入与 ${target.targetName} 的私聊")
+                                    if (target.id == conversation.id) onBack() else onOpenConversation?.invoke(target)
+                                },
+                                onError = { message -> notificationState.show(message) }
+                            )
+                        }
+                    )
+                }
 
                 if (!isSelf) {
                     // 拉黑 / 解除拉黑（拉黑前二次确认，拉黑自动取消关注）
@@ -491,7 +500,7 @@ fun ConversationInfoScreen(
                         label = if (isBlocked) "解除拉黑" else "拉黑",
                         tint = if (isBlocked) higColors.tint else higColors.destructive,
                         containerColor = higColors.systemFill,
-                        enabled = !isLoading && profile != null,
+                        enabled = !isLoading && effectiveProfile != null,
                         onClick = {
                             if (isBlocked) {
                                 ZeroTalkClientManager.toggleOtherUserBlock(block = false) { success, err ->
@@ -531,7 +540,7 @@ fun ConversationInfoScreen(
             }
 
             // 备注接口需要的对端数字 user_id：会话字段常常为空，按「资料 → 会话 → 房间 bootstrap」依次兜底
-    val remarkPeerUid = profileState?.profile?.uid?.takeIf { it.isNotBlank() }
+    val remarkPeerUid = effectiveProfile?.uid?.takeIf { it.isNotBlank() }
         ?: conversation.targetUid.takeIf { it.isNotBlank() }
         ?: roomBootstrapMap[conversation.id]?.peerUser?.uid?.takeIf { it.isNotBlank() }
 
@@ -547,12 +556,20 @@ fun ConversationInfoScreen(
                 label = "TabContentTransition"
             ) { currentTab ->
                 if (currentTab == 0) {
+                    val effectiveProfileState = remember(profileState, isAnonymousPeer) {
+                        if (isAnonymousPeer && profileState?.profile != null) {
+                            profileState.copy(profile = profileState.profile.anonymized())
+                        } else {
+                            profileState
+                        }
+                    }
                     ProfileTabContent(
-                        state = profileState,
+                        state = effectiveProfileState,
                         isDark = isDark,
                         scrollState = scrollState,
                         targetMomentId = targetMomentId,
                         currentMomentSort = momentsSort,
+                        isAnonymous = isAnonymousPeer,
                         onRetry = {
                             // 重试同样只加载数据，不触发全局资料页导航
                             ZeroTalkClientManager.loadOtherUserProfileSilently(requestUserId, requestUid)
@@ -696,7 +713,14 @@ fun ConversationInfoScreen(
             isDark = isDark,
             backdrop = actualBackdrop,
             onDismissComment = { commentMomentTarget = null },
-            onDismissShare = { shareMomentTarget = null }
+            onDismissShare = { shareMomentTarget = null },
+            onOpenUserProfile = { target ->
+                ZeroTalkClientManager.pushUserProfileLayer(
+                    target = target,
+                    host = UserProfileLayerHost.PAGE,
+                    owner = pageLayerOwner
+                )
+            }
         )
 
         // ---- 6.1 举报动态弹窗（官方六项理由 + 选填说明）----
@@ -779,6 +803,7 @@ private fun ProfileTabContent(
     /** 点聊天里的动态卡片进来时携带：定位并高亮该动态 */
     targetMomentId: Long? = null,
     currentMomentSort: MomentsSort,
+    isAnonymous: Boolean = false,
     onRetry: () -> Unit,
     onOpenFollowList: (FollowListKind) -> Unit,
     onMomentSortChange: (MomentsSort) -> Unit,
@@ -807,35 +832,37 @@ private fun ProfileTabContent(
 
             else -> {
                 ProfileSignatureCard(profile = profile, isDark = isDark)
-                // MBTI 卡片：未设置 MBTI 时为 null，不渲染
-                profile.mbti?.let { mbti ->
-                    MbtiCard(
-                        mbti = mbti,
+                if (!isAnonymous && !profile.privacyMode) {
+                    // MBTI 卡片：未设置 MBTI 时为 null，不渲染
+                    profile.mbti?.let { mbti ->
+                        MbtiCard(
+                            mbti = mbti,
+                            isDark = isDark,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        )
+                    }
+                    ProfileStatsCard(
+                        profile = profile,
                         isDark = isDark,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
+                        onOpenFollowList = onOpenFollowList
+                    )
+                    ProfileMomentsCard(
+                        profile = profile,
+                        isLoadingMore = state.isLoadingMore,
+                        isDark = isDark,
+                        scrollState = scrollState,
+                        targetMomentId = targetMomentId,
+                        currentSort = currentMomentSort,
+                        onSortChange = onMomentSortChange,
+                        onToggleLike = onToggleMomentLike,
+                        onComment = onOpenMomentComments,
+                        onShare = onShareMoment,
+                        onReport = onReportMoment,
+                        onLoadMore = onLoadMoreMoments
                     )
                 }
-                ProfileStatsCard(
-                    profile = profile,
-                    isDark = isDark,
-                    onOpenFollowList = onOpenFollowList
-                )
-                ProfileMomentsCard(
-                    profile = profile,
-                    isLoadingMore = state.isLoadingMore,
-                    isDark = isDark,
-                    scrollState = scrollState,
-                    targetMomentId = targetMomentId,
-                    currentSort = currentMomentSort,
-                    onSortChange = onMomentSortChange,
-                    onToggleLike = onToggleMomentLike,
-                    onComment = onOpenMomentComments,
-                    onShare = onShareMoment,
-                    onReport = onReportMoment,
-                    onLoadMore = onLoadMoreMoments
-                )
             }
         }
     }

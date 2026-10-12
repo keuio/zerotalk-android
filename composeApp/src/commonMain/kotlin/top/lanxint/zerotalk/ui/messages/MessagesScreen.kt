@@ -703,6 +703,30 @@ private fun MessageItemRow(
                             )
                         }
                     }
+
+                    if (item.isEncrypted) {
+                        Spacer(Modifier.width(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(higColors.systemOrange.copy(alpha = 0.15f))
+                                .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                        ) {
+                            BasicText(
+                                text = "加密",
+                                style = TextStyle(
+                                    fontFamily = AppleHigTypography.defaultFontFamily,
+                                    color = higColors.systemOrange,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    platformStyle = AppleHigTypography.defaultPlatformStyle,
+                                    lineHeightStyle = AppleHigTypography.defaultLineHeightStyle
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
 
                 Row(

@@ -162,7 +162,7 @@ fun ProfileScreen(
                             )
                         )
 
-                        // 胶囊信息标签：性别 + 年龄 ("18-23" 或 "23以上") + ID + QQ
+                        // 胶囊信息标签：性别 + 年龄 ("18-23" 或 "23+") + ID + QQ
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically

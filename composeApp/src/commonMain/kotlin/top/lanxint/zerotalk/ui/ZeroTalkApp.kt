@@ -43,6 +43,7 @@ import top.lanxint.zerotalk.ui.voice.VoiceCallOverlay
 import top.lanxint.zerotalk.data.repository.ClientStatus
 import top.lanxint.zerotalk.data.repository.NotificationCenterStore
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
+import top.lanxint.zerotalk.data.network.WsServerEvent
 import top.lanxint.zerotalk.data.settings.UiPreferencesStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -89,7 +90,8 @@ import top.lanxint.zerotalk.ui.sheets.SheetFeedbackContent
 import top.lanxint.zerotalk.ui.sheets.SheetJoinRoomContent
 import top.lanxint.zerotalk.ui.sheets.SheetLoginContent
 import top.lanxint.zerotalk.ui.sheets.SheetLogoutConfirmContent
-import top.lanxint.zerotalk.ui.sheets.SheetMatchingInProgressContent
+import top.lanxint.zerotalk.data.repository.MatchStatus
+import top.lanxint.zerotalk.ui.components.MatchingDynamicIsland
 import top.lanxint.zerotalk.ui.sheets.SheetMatchingSettingsContent
 import top.lanxint.zerotalk.ui.sheets.SheetMbtiTestContent
 import top.lanxint.zerotalk.ui.sheets.SheetMyReportsContent
@@ -248,13 +250,7 @@ fun ZeroTalkApp() {
         }
     }
     val voiceBannedTick by ZeroTalkClientManager.voiceBannedTick.collectAsState()
-
-    // 语音匹配自动接通时收起匹配进度面板：ModalBottomSheet 是独立窗口，会盖住通话覆盖层
-    LaunchedEffect(voiceSession?.callId) {
-        if (voiceSession != null && activeSheet is HomeSheetType.MatchingInProgress) {
-            activeSheet = null
-        }
-    }
+    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsState()
 
     // 资料页层级栈的两个渲染点：APP（动态作者 / 捞取记录）与 HALL（大厅点发送者）
     // 层级栈是全站唯一事实来源，这里只认领属于自己宿主的栈顶那一层
@@ -281,12 +277,22 @@ fun ZeroTalkApp() {
     LaunchedEffect(roomPeers, conversations) {
         activeChatConversation?.let { active ->
             val updated = conversations.find { it.id == active.id }
-            if (updated != null && (updated.targetName != active.targetName || updated.targetAvatar != active.targetAvatar || updated.tag != active.tag || updated.isOnline != active.isOnline)) {
+            if (updated != null && (
+                    updated.targetName != active.targetName ||
+                        updated.targetAvatar != active.targetAvatar ||
+                        updated.tag != active.tag ||
+                        updated.isOnline != active.isOnline ||
+                        updated.isRoomCreator != active.isRoomCreator ||
+                        updated.isEncrypted != active.isEncrypted
+                    )
+            ) {
                 activeChatConversation = active.copy(
                     targetName = updated.targetName,
                     targetAvatar = updated.targetAvatar,
                     isOnline = updated.isOnline,
-                    tag = updated.tag
+                    tag = updated.tag,
+                    isRoomCreator = updated.isRoomCreator,
+                    isEncrypted = updated.isEncrypted
                 )
             } else {
                 val peer = roomPeers[active.id]
@@ -307,8 +313,21 @@ fun ZeroTalkApp() {
     }
 
     // 匹配偏好设置状态（支持保存与脏检查）
-    var savedMatchingPreferences by remember { mutableStateOf(MatchingPreferences()) }
+    var savedMatchingPreferences by remember { mutableStateOf(UiPreferencesStore.getMatchPreferences()) }
     var currentMatchingPreferences by remember { mutableStateOf(savedMatchingPreferences) }
+
+    // 初始化时同步给 ClientManager
+    LaunchedEffect(Unit) {
+        val prefs = UiPreferencesStore.getMatchPreferences()
+        ZeroTalkClientManager.syncMyMatchPreferences(
+            ageRange = if (prefs.ageIndex == 0) "18-23" else "23+",
+            oppositeGenderOnly = prefs.genderIndex == 1,
+            sameGenderOnly = prefs.genderIndex == 2,
+            cleanStreamMode = prefs.cleanStreamMode,
+            matchPrivacyMode = prefs.anonymousMode,
+            showLocation = prefs.showLocation
+        )
+    }
 
     LaunchedEffect(activeSheet) {
         if (activeSheet is HomeSheetType.MatchingSettings) {
@@ -411,7 +430,6 @@ fun ZeroTalkApp() {
                                 oppositeGenderOnly = opposite,
                                 sameGenderOnly = same
                             )
-                            activeSheet = HomeSheetType.MatchingInProgress(isVoice)
                         },
                         onOpenMatchingSettings = {
                             activeSheet = HomeSheetType.MatchingSettings
@@ -591,7 +609,6 @@ fun ZeroTalkApp() {
                 is HomeSheetType.MatchingSettings -> "匹配偏好设置"
                 is HomeSheetType.CatchMoments -> "捞动态"
                 is HomeSheetType.CatchHistory -> "捞取历史记录"
-                is HomeSheetType.MatchingInProgress -> null
                 is HomeSheetType.CreateRoom -> "创建房间"
                 is HomeSheetType.JoinRoom -> "加入房间"
             }
@@ -605,7 +622,6 @@ fun ZeroTalkApp() {
                 }
                 is HomeSheetType.CatchMoments,
                 is HomeSheetType.CatchHistory,
-                is HomeSheetType.MatchingInProgress,
                 is HomeSheetType.CreateRoom,
                 is HomeSheetType.JoinRoom -> SheetAction.Close {
                     activeSheet = null
@@ -617,24 +633,36 @@ fun ZeroTalkApp() {
                     enabled = hasSettingsChanges,
                     onClick = {
                         savedMatchingPreferences = currentMatchingPreferences
+                        UiPreferencesStore.setMatchPreferences(currentMatchingPreferences)
                         activeSheet = null
-                        val ageRangeStr = if (currentMatchingPreferences.ageIndex == 0) "18-23" else "23以上"
+                        val ageRangeStr = if (currentMatchingPreferences.ageIndex == 0) "18-23" else "23+"
                         val opposite = currentMatchingPreferences.genderIndex == 1
                         val same = currentMatchingPreferences.genderIndex == 2
+                        val matchPrivacyMode = if (currentMatchingPreferences.anonymousMode) 1 else 0
+                        val showLocation = if (currentMatchingPreferences.showLocation) 1 else 0
                         // 回填本地快照：首聊卡片的「清流模式」开关需要携带其余字段一起提交
                         ZeroTalkClientManager.syncMyMatchPreferences(
                             ageRange = ageRangeStr,
                             oppositeGenderOnly = opposite,
                             sameGenderOnly = same,
-                            cleanStreamMode = currentMatchingPreferences.cleanStreamMode
+                            cleanStreamMode = currentMatchingPreferences.cleanStreamMode,
+                            matchPrivacyMode = currentMatchingPreferences.anonymousMode,
+                            showLocation = currentMatchingPreferences.showLocation
                         )
                         coroutineScope.launch {
-                            ZeroTalkClientManager.apiService.updateMatchSettings(
+                            val res = ZeroTalkClientManager.apiService.updateMatchSettings(
                                 ageRange = ageRangeStr,
                                 matchOppositeGenderOnly = if (opposite) 1 else 0,
                                 matchSameGenderOnly = if (same) 1 else 0,
-                                cleanStreamMode = if (currentMatchingPreferences.cleanStreamMode) 1 else 0
+                                cleanStreamMode = if (currentMatchingPreferences.cleanStreamMode) 1 else 0,
+                                matchPrivacyMode = matchPrivacyMode,
+                                showLocation = showLocation
                             )
+                            if (res.isSuccess) {
+                                notificationState.show("匹配偏好已保存")
+                            } else {
+                                notificationState.show(res.exceptionOrNull()?.message ?: "匹配偏好保存失败")
+                            }
                         }
                     }
                 )
@@ -661,34 +689,6 @@ fun ZeroTalkApp() {
                             preferences = currentMatchingPreferences,
                             onPreferencesChange = { currentMatchingPreferences = it },
                             isDark = isDark
-                        )
-                    }
-                    is HomeSheetType.MatchingInProgress -> {
-                        SheetMatchingInProgressContent(
-                            isVoice = currentSheet.isVoice,
-                            isDark = isDark,
-                            onCancel = {
-                                ZeroTalkClientManager.cancelMatching()
-                                activeSheet = null
-                            },
-                            onMatchSuccess = { roomId, partner ->
-                                activeSheet = null
-                                val effectivePartner = partner ?: ZeroTalkClientManager.roomPeers.value[roomId]
-                                val partnerName = effectivePartner?.username?.ifBlank { null } ?: "神秘零友"
-                                val nowTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
-                                val matchedConv = ConversationItem(
-                                    id = roomId,
-                                    targetName = partnerName,
-                                    targetAvatar = effectivePartner?.avatarUrl,
-                                    lastMessage = "匹配成功，开始聊天吧！",
-                                    timestamp = nowTime,
-                                    category = MessageCategory.MATCH,
-                                    isOnline = true,
-                                    tag = resolveConversationStatusTag(MessageCategory.MATCH)
-                                )
-                                ZeroTalkClientManager.upsertConversation(matchedConv)
-                                activeChatConversation = matchedConv
-                            }
                         )
                     }
                     is HomeSheetType.CatchMoments -> {
@@ -718,7 +718,9 @@ fun ZeroTalkApp() {
                                     lastMessage = "暗号房间已创建",
                                     timestamp = nowTime,
                                     category = MessageCategory.CODE,
-                                    tag = "暗号"
+                                    tag = "暗号",
+                                    isRoomCreator = true,
+                                    isEncrypted = roomData.encryptionEnabled == true
                                 )
                                 activeChatConversation = createdConv
                             }
@@ -775,11 +777,12 @@ fun ZeroTalkApp() {
         if (currentProfileSheet != null) {
             // 安全中心与通知中心的内容都是固定屏高 75%（见 SheetContentHeight.kt），
             // 与「捞取历史记录」保持一致：刚打开先落在半屏（PartialExpanded），用户上滑后再完整展开；
-            // 其余资料页面板以表单/短内容为主，仍直接完整展开，避免只露出一半内容
+            // 已完成 MBTI 人格测试时同样以半屏启动；其余资料页面板以表单/短内容为主，直接完整展开
             val profileStartsHalfExpanded = when (currentProfileSheet) {
                 is ProfileSheetType.SettingDetail ->
                     currentProfileSheet.item == ProfileSettingItem.SECURITY_CENTER
                 is ProfileNotificationCenter -> true
+                is MbtiTest -> (managerUserProfile.mbti ?: userProfile.mbti) != null
                 else -> false
             }
             val profileSheetState = rememberModalBottomSheetState(
@@ -1107,6 +1110,77 @@ fun ZeroTalkApp() {
                 }
             }
         }
+
+        // 全局顶部灵动岛匹配交互（非阻塞胶囊 / 展开匹配卡片）
+        MatchingDynamicIsland(
+            matchStatus = matchStatus,
+            isDark = isDark,
+            onEnterRoom = { roomId, partner ->
+                val bootstrapPeer = ZeroTalkClientManager.roomBootstrapMap.value[roomId]?.peerUser
+                val effectivePartner = partner ?: ZeroTalkClientManager.roomPeers.value[roomId] ?: bootstrapPeer?.let { peer ->
+                    WsServerEvent.UserJoined(
+                        uid = peer.uid,
+                        username = peer.username,
+                        gender = peer.gender ?: "unknown",
+                        avatarUrl = peer.avatarUrl,
+                        mbti = null,
+                        roomId = roomId
+                    )
+                }
+                val isAnonymous = effectivePartner?.username == "匿名用户" ||
+                    bootstrapPeer?.privacyMode == true
+                val partnerName = if (isAnonymous) "匿名用户" else (effectivePartner?.username?.ifBlank { null } ?: "神秘零友")
+                val avatar = if (isAnonymous) null else effectivePartner?.avatarUrl
+                val nowTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                val matchedConv = ConversationItem(
+                    id = roomId,
+                    targetName = partnerName,
+                    targetAvatar = avatar,
+                    lastMessage = "匹配成功，开始聊天吧！",
+                    timestamp = nowTime,
+                    category = MessageCategory.MATCH,
+                    isOnline = true,
+                    tag = resolveConversationStatusTag(MessageCategory.MATCH)
+                )
+                ZeroTalkClientManager.upsertConversation(matchedConv)
+                activeChatConversation = matchedConv
+                ZeroTalkClientManager.resetMatchStatus()
+            },
+            onAutoDismissMatched = { roomId, partner ->
+                val bootstrapPeer = ZeroTalkClientManager.roomBootstrapMap.value[roomId]?.peerUser
+                val effectivePartner = partner ?: ZeroTalkClientManager.roomPeers.value[roomId] ?: bootstrapPeer?.let { peer ->
+                    WsServerEvent.UserJoined(
+                        uid = peer.uid,
+                        username = peer.username,
+                        gender = peer.gender ?: "unknown",
+                        avatarUrl = peer.avatarUrl,
+                        mbti = null,
+                        roomId = roomId
+                    )
+                }
+                val isAnonymous = effectivePartner?.username == "匿名用户" ||
+                    bootstrapPeer?.privacyMode == true
+                val partnerName = if (isAnonymous) "匿名用户" else (effectivePartner?.username?.ifBlank { null } ?: "神秘零友")
+                val avatar = if (isAnonymous) null else effectivePartner?.avatarUrl
+                val nowTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                val matchedConv = ConversationItem(
+                    id = roomId,
+                    targetName = partnerName,
+                    targetAvatar = avatar,
+                    lastMessage = "匹配成功，开始聊天吧！",
+                    timestamp = nowTime,
+                    category = MessageCategory.MATCH,
+                    isOnline = true,
+                    tag = resolveConversationStatusTag(MessageCategory.MATCH)
+                )
+                // 仅静默将房间加入会话列表，不跳转页面
+                ZeroTalkClientManager.upsertConversation(matchedConv)
+                ZeroTalkClientManager.resetMatchStatus()
+            },
+            onCancel = {
+                ZeroTalkClientManager.cancelMatching()
+            }
+        )
 
         // 顶部居中展开式全局动态通知胶囊 (Apple Dynamic Island / Pill 风格)
         ZeroTalkNotificationHost(

@@ -63,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -71,11 +72,14 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -127,6 +131,11 @@ import top.lanxint.zerotalk.data.network.StickerSearchItemDto
 import top.lanxint.zerotalk.ui.components.StickerPanel
 import top.lanxint.zerotalk.ui.components.SheetAction
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import top.lanxint.zerotalk.ui.messages.BubbleContentBox
 import top.lanxint.zerotalk.ui.messages.ConversationInfoScreen
 import top.lanxint.zerotalk.ui.messages.LocalWallpaperImage
@@ -171,6 +180,10 @@ fun PublicChatroomScreen(
 
     val hallMessages by ZeroTalkClientManager.hallMessages.collectAsState()
     val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsState()
+    val hasMoreHistoryMap by ZeroTalkClientManager.roomHasMoreHistory.collectAsState()
+    val historyLoadingMap by ZeroTalkClientManager.roomHistoryLoading.collectAsState()
+    val hasMoreHistory = hasMoreHistoryMap[hallRoomId] == true
+    val isLoadingHistory = historyLoadingMap[hallRoomId] == true
     // 房管权限（viewer_can_delete_message）：可删除大厅他人消息
     // 注：大厅历史目前未写入 roomBootstrapMap（见汇报），接线后即可生效
     val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
@@ -223,6 +236,7 @@ fun PublicChatroomScreen(
     val hallBackdrop = rememberLayerBackdrop()
     val coroutineScope = rememberCoroutineScope()
     val notificationState = LocalNotificationState.current
+    val clipboardManager = LocalClipboardManager.current
     val inputFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -364,23 +378,68 @@ fun PublicChatroomScreen(
         }
     }
 
-    // 新消息滚动到底部
-    // 守卫：引用跳转期间（isJumping）跳过自动滚底，否则新消息到达会把跳转结果顶走；
-    // 闪烁结束后 isJumping 复位，后续新消息恢复正常滚底
-    LaunchedEffect(visibleMessages.size) {
-        if (isJumping) return@LaunchedEffect
-        if (visibleMessages.isNotEmpty()) {
-            listState.animateScrollToItem(visibleMessages.size - 1)
+    // 仅在「首次载入大厅」或「末尾新增消息且用户贴近底部」时定位到底部；
+    // 顶部前插更早历史时不滚底，避免与上拉分页互相打架。
+    var anchoredTailId by remember(hallRoomId) { mutableStateOf<String?>(null) }
+    val hallHeaderCount = 1
+    LaunchedEffect(visibleMessages, isJumping) {
+        if (isJumping || visibleMessages.isEmpty()) return@LaunchedEffect
+        val tailId = visibleMessages.last().id
+        val isInitial = anchoredTailId == null
+        val targetIndex = (hallHeaderCount + visibleMessages.size - 1).coerceAtLeast(0)
+        if (isInitial || anchoredTailId != tailId) {
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val totalItems = hallHeaderCount + visibleMessages.size
+            val nearBottom = lastVisibleIndex >= totalItems - 4
+            if (isInitial) {
+                listState.scrollToItem(targetIndex)
+            } else if (nearBottom) {
+                listState.animateScrollToItem(targetIndex)
+            }
+            anchoredTailId = tailId
         }
+    }
+
+    // 上拉到顶后继续上拉 -> 请求更早的大厅历史消息，并在插入后补偿滚动位置避免跳动
+    val currentHasMore by rememberUpdatedState(hasMoreHistory)
+    val currentLoadingHistory by rememberUpdatedState(isLoadingHistory)
+    val currentVisibleMessages by rememberUpdatedState(visibleMessages)
+    val currentAnchoredTailId by rememberUpdatedState(anchoredTailId)
+    LaunchedEffect(hallRoomId) {
+        snapshotFlow {
+            val nearTop = listState.firstVisibleItemIndex <= hallHeaderCount + 2
+            val ready = currentAnchoredTailId != null &&
+                currentHasMore &&
+                !currentLoadingHistory &&
+                currentVisibleMessages.isNotEmpty()
+            if (nearTop && ready) currentVisibleMessages.first().id else null
+        }
+            .distinctUntilChanged()
+            .collect { topMsgId ->
+                if (topMsgId != null) {
+                    val before = currentVisibleMessages.size
+                    ZeroTalkClientManager.loadOlderMessages(hallRoomId)
+                    val newSize = withTimeoutOrNull(6000L) {
+                        snapshotFlow { currentVisibleMessages.size }.first { it > before }
+                    }
+                    if (newSize != null && newSize > before) {
+                        val added = newSize - before
+                        if (listState.firstVisibleItemIndex < hallHeaderCount) {
+                            listState.scrollToItem(hallHeaderCount + added, 0)
+                        }
+                    }
+                }
+            }
     }
 
     // 抽屉 / 表情包面板 / 键盘 / 引用条出现时，使用滚动动画将最后一条消息平滑滑到输入栏上方
     LaunchedEffect(showComposerDrawer, showStickerPanel, isImeOpen, quotingMessage) {
         if ((showComposerDrawer || showStickerPanel || isImeOpen || quotingMessage != null) && visibleMessages.isNotEmpty()) {
+            val targetIndex = hallHeaderCount + visibleMessages.size - 1
             delay(30)
-            listState.animateScrollToItem(visibleMessages.size - 1)
+            listState.animateScrollToItem(targetIndex)
             delay(260)
-            listState.animateScrollToItem(visibleMessages.size - 1)
+            listState.animateScrollToItem(targetIndex)
         }
     }
 
@@ -399,7 +458,7 @@ fun PublicChatroomScreen(
     }
 
     // 点击引用条跳转到被引用消息（对齐官方 scrollToQuotedMessage）：
-    // - 找到：animateScrollToItem 到该条（大厅 LazyColumn 无 header item，index 可直接用）+ 高亮闪烁 1.2s
+    // - 找到：animateScrollToItem 到该条（加上顶部分页指示器项偏移）+ 高亮闪烁 1.2s
     // - 找不到：只提示「原消息不在当前列表中」，不补拉历史（官方口径）
     fun jumpToQuotedMessage(replyToId: Long) {
         if (replyToId <= 0L || isJumping) return
@@ -411,7 +470,7 @@ fun PublicChatroomScreen(
         coroutineScope.launch {
             isJumping = true
             try {
-                listState.animateScrollToItem(targetIndex)
+                listState.animateScrollToItem(hallHeaderCount + targetIndex)
                 flashingMessageId = replyToId
                 delay(1200)
             } finally {
@@ -630,6 +689,30 @@ fun PublicChatroomScreen(
                             bottom = dynamicBottomPadding
                         )
                     ) {
+                        // 顶部历史分页加载指示器
+                        item(key = "hall_history_loading_indicator") {
+                            if (isLoadingHistory) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(14.dp),
+                                        strokeWidth = 1.5.dp,
+                                        color = Color(0xFF8E8E93)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    BasicText(
+                                        text = "正在加载更早的消息...",
+                                        style = TextStyle(color = Color(0xFF8E8E93), fontSize = 12.sp)
+                                    )
+                                }
+                            }
+                        }
+
                         itemsIndexed(visibleMessages, key = { _, it -> it.id }) { index, msg ->
                             val isFirstInGroup = MessageTimeHelper.isFirstOfSenderGroup(visibleMessages, index)
                             // 已撤回消息整条替换为居中占位，不再展示头像 / 昵称列
@@ -1133,6 +1216,12 @@ fun PublicChatroomScreen(
                         dismissContextMenu()
                     },
                     onCopy = {
+                        val textToCopy = if (target.isImage) {
+                            target.imageUrl.ifBlank { target.content }
+                        } else {
+                            target.content
+                        }
+                        clipboardManager.setText(AnnotatedString(textToCopy))
                         notificationState.show(if (target.isImage) "已拷贝图片" else "已拷贝文本")
                         dismissContextMenu()
                     },
@@ -1222,7 +1311,8 @@ fun PublicChatroomScreen(
             isDark = isDark,
             backdrop = null,
             onDismissComment = { momentCardComment = null },
-            onDismissShare = {}
+            onDismissShare = {},
+            onOpenUserProfile = onOpenUserProfile
         )
     }
 }
@@ -1299,6 +1389,9 @@ private fun HallMessageBubble(
     val isMine = msg.isMine
     val higColors = AppleHigColors.colors(isDark)
     val imageViewer = LocalImageViewer.current
+    val uriHandler = LocalUriHandler.current
+    var textTapHandler by remember(msg.id) { mutableStateOf<((Offset) -> Boolean)?>(null) }
+    val currentTextTapHandler by rememberUpdatedState(textTapHandler)
     // 气泡在 root 坐标系中的边界：长按菜单定位 + 1.1 倍放大预览用
     var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
     // pointerInput 的 block 只在 key 变化时重启，回调与 msg 必须经 rememberUpdatedState 取最新值：
@@ -1414,6 +1507,12 @@ private fun HallMessageBubble(
                 quotedTextOverride = quotedTextOverride,
                 onMomentCardClick = onMomentCardClick,
                 onMomentCardCommentClick = onMomentCardCommentClick,
+                onUrlClick = { url ->
+                    runCatching { uriHandler.openUri(url) }
+                },
+                onRegisterTextTapHandler = { handler ->
+                    textTapHandler = handler
+                },
                 // 大厅原有的「气泡内右下角时间戳」：通过行尾槽位保留
                 trailingContent = {
                     BasicText(
@@ -1435,21 +1534,24 @@ private fun HallMessageBubble(
                     // - 长按：弹上下文菜单（撤回 / 引用 / 拷贝…）
                     // - 双击：拍一拍（仅对方非图片消息，由 onPat 是否为 null 决定）
                     .pointerInput(msg.id, hasDoubleTap) {
-                        val handleTap = {
-                            val current = currentMessage
-                            if (current.isImage && current.imageUrl.isNotBlank()) {
-                                imageViewer.open(current.imageUrl)
+                        val handleTap: (Offset) -> Unit = { offset ->
+                            val handled = currentTextTapHandler?.invoke(offset) == true
+                            if (!handled) {
+                                val current = currentMessage
+                                if (current.isImage && current.imageUrl.isNotBlank()) {
+                                    imageViewer.open(current.imageUrl)
+                                }
                             }
                         }
                         if (hasDoubleTap) {
                             detectTapGestures(
-                                onTap = { handleTap() },
+                                onTap = { offset -> handleTap(offset) },
                                 onDoubleTap = { currentOnPat?.invoke() },
                                 onLongPress = { currentOnLongPress(bubbleBounds) }
                             )
                         } else {
                             detectTapGestures(
-                                onTap = { handleTap() },
+                                onTap = { offset -> handleTap(offset) },
                                 onLongPress = { currentOnLongPress(bubbleBounds) }
                             )
                         }

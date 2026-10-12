@@ -315,7 +315,31 @@ class ZeroTalkWebSocketClient(
                     } else {
                         null
                     }
-                    WsServerEvent.MatchSuccess(roomId, matchMode, voice)
+                    // 解析可能随 match_success 携带的对端成员信息
+                    val peerEl = root.get("peer") ?: root.get("peer_user") ?: root.get("target_user") ?: root.get("user")
+                        ?: dataObj?.get("peer") ?: dataObj?.get("peer_user") ?: dataObj?.get("target_user") ?: dataObj?.get("user")
+                    val peerJoined = if (peerEl != null && peerEl.isJsonObject) {
+                        parseUserJoined(peerEl.asJsonObject)
+                    } else {
+                        // 尝试从根节点或 dataObj 提取 username / uid
+                        val inlineUser = (root.get("username") ?: dataObj?.get("username"))?.takeIf { !it.isJsonNull }?.asString
+                        if (!inlineUser.isNullOrBlank()) {
+                            parseUserJoined(dataObj ?: root)
+                        } else if (voice?.peerUsername != null) {
+                            WsServerEvent.UserJoined(
+                                uid = voice.peerUid ?: "",
+                                username = voice.peerUsername ?: "神秘零友",
+                                gender = "unknown",
+                                avatarUrl = voice.peerAvatarUrl,
+                                mbti = null,
+                                cleanStreamMode = 0,
+                                roomId = roomId
+                            )
+                        } else {
+                            null
+                        }
+                    }
+                    WsServerEvent.MatchSuccess(roomId, matchMode, voice, peerJoined)
                 }
                 "user_joined" -> {
                     parseUserJoined(root)
@@ -408,7 +432,7 @@ class ZeroTalkWebSocketClient(
         }
 
         val uid = json.get("uid")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: ""
-        val username = json.get("username")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: "神秘人"
+        val username = json.get("username")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: "神秘零友"
         val gender = json.get("gender")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: "unknown"
         val avatarUrl = json.get("avatar_url")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
         val roomId = json.get("room_id")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString

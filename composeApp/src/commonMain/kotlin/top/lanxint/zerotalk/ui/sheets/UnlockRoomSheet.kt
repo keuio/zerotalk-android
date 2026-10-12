@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,7 +28,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -55,7 +55,7 @@ import top.lanxint.zerotalk.ui.components.AppleHigFillCard
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.components.LiquidButton
 import top.lanxint.zerotalk.ui.components.UserAvatar
-import top.lanxint.zerotalk.ui.components.sheetContentHeight
+import top.lanxint.zerotalk.ui.components.rememberSheetContentHeight
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
 
@@ -144,14 +144,12 @@ fun UnlockRoomSheet(
         title = if (titleMode == UnlockRoomMode.ENABLE) "启用端到端消息加密" else "解锁消息",
         isDark = isDark
     ) {
-        // 固定高度后内部滚动，避免展开「忘记暗号」时弹窗高度突变
+        // 自适应内容高度并限制最大高度，避免底部出现大片留白
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .sheetContentHeight(0.82f)
+                .heightIn(max = rememberSheetContentHeight(0.82f))
                 .verticalScroll(rememberScrollState())
-                .padding(bottom = 20.dp)
         ) {
             Spacer(Modifier.height(2.dp))
 
@@ -264,15 +262,8 @@ fun UnlockRoomSheet(
                             color = Color.White,
                             strokeWidth = 1.5.dp
                         )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        Spacer(Modifier.width(4.dp))
                     }
-                    Spacer(Modifier.width(4.dp))
                     BasicText(
                         text = when {
                             loading && titleMode == UnlockRoomMode.ENABLE -> "启用中…"

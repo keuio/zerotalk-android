@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.lanxint.zerotalk.data.model.MomentItem
+import top.lanxint.zerotalk.data.model.UserProfileTarget
 import top.lanxint.zerotalk.data.network.MomentCommentDto
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AppleHigDivider
@@ -88,11 +89,32 @@ fun MomentCommentSheet(
     isDark: Boolean,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
-    isSubPage: Boolean = false
+    isSubPage: Boolean = false,
+    onOpenUserProfile: ((UserProfileTarget) -> Unit)? = null
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
     val momentIdLong = moment.id.toLongOrNull() ?: 0L
+
+    val handleOpenUserProfile: (UserProfileTarget) -> Unit = { target ->
+        val numericId = target.userId.trim().takeIf { it.isNotEmpty() && it != "0" }.orEmpty()
+        val hexUid = target.uid.trim().takeIf { it.isNotEmpty() && it != "0" }.orEmpty()
+        val isSelf = ZeroTalkClientManager.isSelfMember(hexUid, numericId.toLongOrNull() ?: 0L)
+        if (!isSelf && (hexUid.isNotEmpty() || numericId.isNotEmpty())) {
+            val normalizedTarget = target.copy(userId = numericId, uid = hexUid)
+            onClose()
+            if (onOpenUserProfile != null) {
+                onOpenUserProfile(normalizedTarget)
+            } else {
+                ZeroTalkClientManager.openOtherUserProfile(
+                    userId = normalizedTarget.userId,
+                    uid = normalizedTarget.uid,
+                    name = normalizedTarget.name,
+                    avatarUrl = normalizedTarget.avatarUrl
+                )
+            }
+        }
+    }
 
     var commentsList by remember { mutableStateOf<List<MomentCommentDto>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -213,11 +235,13 @@ fun MomentCommentSheet(
                     items(commentsList, key = { it.id }) { rootComment ->
                         CommentItemView(
                             comment = rootComment,
+                            moment = moment,
                             isDark = isDark,
+                            onUserClick = handleOpenUserProfile,
                             onReplyClick = { target ->
                                 replyTarget = ReplyTargetInfo(
                                     parentId = rootComment.id,
-                                    replyToUserId = target.uid,
+                                    replyToUserId = target.uid.ifBlank { target.userId.takeIf { it > 0L }?.toString().orEmpty() },
                                     replyToUsername = target.username
                                 )
                             },
@@ -401,18 +425,54 @@ fun MomentCommentSheet(
 @Composable
 private fun CommentItemView(
     comment: MomentCommentDto,
+    moment: MomentItem,
     isDark: Boolean,
+    onUserClick: (UserProfileTarget) -> Unit,
     onReplyClick: (MomentCommentDto) -> Unit,
     onLikeClick: (MomentCommentDto) -> Unit
 ) {
-    val higColors = AppleHigColors.colors(isDark)
+    val threadParticipants = remember(comment, moment) {
+        buildList {
+            add(comment)
+            addAll(comment.replies)
+        }
+    }
+
+    fun resolveReplyTarget(item: MomentCommentDto): UserProfileTarget? {
+        val replyName = item.replyToUsername?.trim().orEmpty()
+        if (replyName.isEmpty()) return null
+        val explicitNumericId = item.replyToUserId?.takeIf { it > 0L }?.toString().orEmpty()
+        val explicitUid = item.replyToUid?.trim().orEmpty()
+        val matchedCommenter = threadParticipants.firstOrNull {
+            (explicitUid.isNotEmpty() && it.uid == explicitUid) ||
+                (explicitNumericId.isNotEmpty() && it.userId.toString() == explicitNumericId) ||
+                it.username == replyName
+        }
+        val uid = explicitUid.ifEmpty { matchedCommenter?.uid.orEmpty() }
+            .ifEmpty { if (moment.authorName == replyName) moment.authorUid else "" }
+        val userId = explicitNumericId
+            .ifEmpty { matchedCommenter?.userId?.takeIf { it > 0L }?.toString().orEmpty() }
+            .ifEmpty { if (moment.authorName == replyName) moment.authorId else "" }
+        val avatarUrl = matchedCommenter?.avatarUrl?.takeIf { it.isNotBlank() }
+            ?: if (moment.authorName == replyName) moment.authorAvatar else ""
+        return if (uid.isNotBlank() || (userId.isNotBlank() && userId != "0")) {
+            UserProfileTarget(
+                userId = userId,
+                uid = uid,
+                name = replyName,
+                avatarUrl = avatarUrl
+            )
+        } else null
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         // 主评论行
         CommentRow(
             comment = comment,
+            replyToTarget = resolveReplyTarget(comment),
             isDark = isDark,
             isSubReply = false,
+            onUserClick = onUserClick,
             onReplyClick = { onReplyClick(comment) },
             onLikeClick = { onLikeClick(comment) }
         )
@@ -434,8 +494,10 @@ private fun CommentItemView(
                 comment.replies.forEach { subReply ->
                     CommentRow(
                         comment = subReply,
+                        replyToTarget = resolveReplyTarget(subReply),
                         isDark = isDark,
                         isSubReply = true,
+                        onUserClick = onUserClick,
                         onReplyClick = { onReplyClick(subReply) },
                         onLikeClick = { onLikeClick(subReply) }
                     )
@@ -451,34 +513,59 @@ private fun CommentItemView(
 @Composable
 private fun CommentRow(
     comment: MomentCommentDto,
+    replyToTarget: UserProfileTarget?,
     isDark: Boolean,
     isSubReply: Boolean,
+    onUserClick: (UserProfileTarget) -> Unit,
     onReplyClick: () -> Unit,
     onLikeClick: () -> Unit
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val avatarSize = if (isSubReply) 22.dp else 28.dp
+    val authorNumericId = comment.userId.takeIf { it > 0L }?.toString().orEmpty()
+    val authorUid = comment.uid.trim()
+    val isAuthorSelf = ZeroTalkClientManager.isSelfMember(authorUid, comment.userId)
+    val canOpenAuthor = !isAuthorSelf && (authorUid.isNotBlank() || authorNumericId.isNotBlank())
+    val openAuthorProfile: () -> Unit = {
+        onUserClick(
+            UserProfileTarget(
+                userId = authorNumericId,
+                uid = authorUid,
+                name = comment.username,
+                avatarUrl = comment.avatarUrl.orEmpty()
+            )
+        )
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Top
     ) {
         // 头像：真实头像优先，失败回落渐变 + 首字母（avatar_fallback 为展示字符，不是图片地址）
-        UserAvatar(
-            url = comment.avatarUrl,
-            name = comment.avatarFallback?.takeIf { it.isNotBlank() } ?: comment.username.ifBlank { "匿" },
-            size = avatarSize,
-            gradient = if (comment.gender == "female") {
-                listOf(Color(0xFFF472B6), Color(0xFFFB7185))
-            } else {
-                listOf(Color(0xFF60A5FA), Color(0xFF818CF8))
-            },
-            fallbackTextStyle = AppleHigTypography.caption2.copy(
-                fontWeight = FontWeight.Bold,
-                fontSize = if (isSubReply) 10.sp else 12.sp
-            ),
-            fallbackIconSize = if (isSubReply) 12.dp else 15.dp
-        )
+        Box(
+            modifier = Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = canOpenAuthor,
+                onClick = openAuthorProfile
+            )
+        ) {
+            UserAvatar(
+                url = comment.avatarUrl,
+                name = comment.avatarFallback?.takeIf { it.isNotBlank() } ?: comment.username.ifBlank { "匿" },
+                size = avatarSize,
+                gradient = if (comment.gender == "female") {
+                    listOf(Color(0xFFF472B6), Color(0xFFFB7185))
+                } else {
+                    listOf(Color(0xFF60A5FA), Color(0xFF818CF8))
+                },
+                fallbackTextStyle = AppleHigTypography.caption2.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = if (isSubReply) 10.sp else 12.sp
+                ),
+                fallbackIconSize = if (isSubReply) 12.dp else 15.dp
+            )
+        }
 
         Spacer(Modifier.width(8.dp))
 
@@ -499,11 +586,22 @@ private fun CommentRow(
                             color = higColors.label,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = if (isSubReply) 12.sp else 13.sp
+                        ),
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            enabled = canOpenAuthor,
+                            onClick = openAuthorProfile
                         )
                     )
 
                     // 如果是针对具体用户的回复
                     if (!comment.replyToUsername.isNullOrBlank()) {
+                        val canOpenReplyTarget = replyToTarget != null &&
+                            !ZeroTalkClientManager.isSelfMember(
+                                replyToTarget.uid,
+                                replyToTarget.userId.toLongOrNull() ?: 0L
+                            )
                         Spacer(Modifier.width(4.dp))
                         BasicText(
                             text = "▶",
@@ -519,6 +617,14 @@ private fun CommentRow(
                                 color = higColors.tint,
                                 fontWeight = FontWeight.Medium,
                                 fontSize = if (isSubReply) 11.sp else 12.sp
+                            ),
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                enabled = canOpenReplyTarget,
+                                onClick = {
+                                    replyToTarget?.let(onUserClick)
+                                }
                             )
                         )
                     }

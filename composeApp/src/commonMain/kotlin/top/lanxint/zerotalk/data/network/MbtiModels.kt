@@ -246,7 +246,51 @@ data class MbtiResult(
             )
         }
     }
+
+    /** 转换为用户资料上的 [top.lanxint.zerotalk.data.model.MbtiInfo] 快照 */
+    fun toMbtiInfo(): top.lanxint.zerotalk.data.model.MbtiInfo =
+        top.lanxint.zerotalk.data.model.MbtiInfo(
+            type = type,
+            name = name,
+            role = role,
+            roleLabel = roleLabel,
+            roleColor = roleColor,
+            roleDescription = roleDescription,
+            summary = summary,
+            keywords = keywords,
+            strengths = strengths,
+            weaknesses = weaknesses,
+            love = love,
+            social = social,
+            career = career,
+            letters = letters,
+            percents = percents,
+            scores = scores,
+            testedAt = testedAt
+        )
 }
+
+/** 从用户资料上的 [top.lanxint.zerotalk.data.model.MbtiInfo] 快照还原为测评结果 */
+fun top.lanxint.zerotalk.data.model.MbtiInfo.toMbtiResult(): MbtiResult =
+    MbtiResult(
+        type = type,
+        name = name,
+        role = role,
+        roleLabel = roleLabel,
+        roleColor = roleColor,
+        roleDescription = roleDescription,
+        summary = summary,
+        keywords = keywords,
+        strengths = strengths,
+        weaknesses = weaknesses,
+        love = love,
+        social = social,
+        career = career,
+        letters = letters,
+        percents = percents,
+        scores = scores,
+        testedAt = testedAt
+    )
 
 /**
  * MBTI 单个维度的百分比（如 E 49% / I 51%）

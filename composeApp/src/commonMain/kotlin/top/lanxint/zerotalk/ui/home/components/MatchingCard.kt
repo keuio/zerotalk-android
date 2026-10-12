@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +45,8 @@ import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.ui.components.LiquidButton
 import top.lanxint.zerotalk.ui.components.ZeroTalkBottomTab
 import top.lanxint.zerotalk.ui.components.ZeroTalkBottomTabs
+import top.lanxint.zerotalk.data.repository.MatchStatus
+import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import com.kashif_e.backdrop.Backdrop
 
 /**
@@ -69,6 +72,8 @@ fun MatchingCard(
 ) {
     var selectedModeIndex by remember { mutableIntStateOf(0) }
     val isVoice = selectedModeIndex == 1
+    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsState()
+    val isMatching = matchStatus is MatchStatus.Matching
 
     // 语音通话被限制：自动切回文字聊天匹配
     LaunchedEffect(forceChatTick) {
@@ -223,7 +228,13 @@ fun MatchingCard(
 
             // 3. 底部主要行动按钮：Surface Liquid Button（宽度缩短至 88%，优雅居中，纯净柔和悬浮阴影）
             LiquidButton(
-                onClick = { onStartMatch(isVoice) },
+                onClick = {
+                    if (isMatching) {
+                        ZeroTalkClientManager.cancelMatching()
+                    } else {
+                        onStartMatch(isVoice)
+                    }
+                },
                 backdrop = backdrop,
                 isDark = isDark,
                 surfaceAlpha = surfaceAlpha,
@@ -238,9 +249,13 @@ fun MatchingCard(
                     )
             ) {
                 BasicText(
-                    text = "开始匹配",
+                    text = if (isMatching) "匹配中 · 点击取消" else "开始匹配",
                     style = TextStyle(
-                        color = if (isDark) Color(0xFF60A5FA) else Color(0xFF007AFF),
+                        color = if (isMatching) {
+                            if (isDark) Color(0xFFF87171) else Color(0xFFEF4444)
+                        } else {
+                            if (isDark) Color(0xFF60A5FA) else Color(0xFF007AFF)
+                        },
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.SemiBold
                     )

@@ -87,6 +87,31 @@ data class OtherUserProfile(
 }
 
 /**
+ * 匿名化脱敏遮罩：
+ * 屏蔽真实昵称、真实头像、签名、属地、性别/年龄段、称号、MBTI 与历史动态，
+ * 统一显示为「匿名用户」与默认占位。
+ */
+fun OtherUserProfile.anonymized(): OtherUserProfile = copy(
+    name = "匿名用户",
+    avatarUrl = "",
+    avatarFallback = "匿",
+    bio = "这个人很神秘，还没有写简介",
+    location = "",
+    ageRangeText = "",
+    genderText = "",
+    title = "",
+    titleColor = "",
+    followingCount = 0,
+    followerCount = 0,
+    likeCount = 0,
+    mutualCount = 0,
+    privacyMode = true,
+    moments = emptyList(),
+    hasMoreMoments = false,
+    mbti = null
+)
+
+/**
  * 他人主页 UI 状态（含加载与错误信息，便于页面重试而不是直接显示服务端报错）
  */
 data class OtherUserProfileState(

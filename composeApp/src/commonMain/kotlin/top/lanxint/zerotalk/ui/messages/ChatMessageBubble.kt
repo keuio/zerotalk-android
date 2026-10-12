@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,9 +41,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
+import top.lanxint.zerotalk.ui.utils.LinkTextHelper
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -255,6 +263,45 @@ internal fun Modifier.tapPreservingLongPress(key: Any?, onTap: () -> Unit): Modi
 }
 
 /**
+ * 文本内超链接专用点击修饰符：在 BasicText 自身坐标系中直接命中 URL，
+ * 命中时仅在短按抬手时消费 up 并打开链接；未命中或长按时完全放行给外层气泡（保留长按菜单与双击拍一拍）。
+ */
+internal fun Modifier.tapUrlPreservingLongPress(
+    key: Any?,
+    resolveUrlAt: (Offset) -> String?,
+    onUrlTap: (String) -> Unit
+): Modifier = pointerInput(key) {
+    val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+    val touchSlop = viewConfiguration.touchSlop
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var tappedUrl: String? = null
+        while (true) {
+            val event = awaitPointerEvent()
+            if (event.changes.size > 1) break
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (change.changedToUpIgnoreConsumed()) {
+                if (change.isConsumed) break
+                val isShortTap = change.uptimeMillis - down.uptimeMillis < longPressTimeout
+                if (isShortTap) {
+                    val hitUrl = resolveUrlAt(change.position) ?: resolveUrlAt(down.position)
+                    if (hitUrl != null) {
+                        tappedUrl = hitUrl
+                        change.consume()
+                    }
+                }
+                break
+            }
+            if (!change.pressed || change.isConsumed) break
+            if ((change.position - down.position).getDistance() > touchSlop) break
+        }
+        if (tappedUrl != null) {
+            onUrlTap(tappedUrl!!)
+        }
+    }
+}
+
+/**
  * 图片消息展示相框组件
  *
  * 遵循标准比例约束规范：限制最大宽 220dp、最大高 260dp，最小 80dp，
@@ -446,7 +493,11 @@ fun BubbleContentBox(
     /** 点击动态分享卡片主体：进入作者资料页并定位到该动态 */
     onMomentCardClick: ((MomentShareCardData) -> Unit)? = null,
     /** 点击动态分享卡片的评论数：打开该动态的评论 */
-    onMomentCardCommentClick: ((MomentShareCardData) -> Unit)? = null
+    onMomentCardCommentClick: ((MomentShareCardData) -> Unit)? = null,
+    /** 点击超链接时的回调；若为 null，则由内部 LocalUriHandler 自动打开 */
+    onUrlClick: ((String) -> Unit)? = null,
+    /** 注册气泡正文文本点击判定处理函数，供外层 detectTapGestures 路由使用 */
+    onRegisterTextTapHandler: (((Offset) -> Boolean) -> Unit)? = null
 ) {
     // 已撤回：类型分发之前整条替换为「该消息已被撤回」（对齐官网 is_deleted 分支）
     if (message.isDeleted) {
@@ -456,12 +507,59 @@ fun BubbleContentBox(
         )
         return
     }
+    val uriHandler = LocalUriHandler.current
+    var boxCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var textCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+
     val isMine = message.isMine
     val quotedText = quotedTextOverride ?: message.quotedText
     val voicePlayer = rememberMomentAudioPlayer()
     var isVoicePlaying by remember(message.id) { mutableStateOf(false) }
     // 服务端不下发语音时长（官方同样靠音频元数据现算）：消息本身没有时长时，用播放器就绪后回传的值
     var resolvedVoiceDuration by remember(message.id) { mutableStateOf(0) }
+
+    val textContent = if (message.isPat) message.patText.ifBlank { "拍了拍" } else message.content
+    val annotatedContent = remember(textContent) {
+        LinkTextHelper.buildAnnotatedTextWithLinks(textContent)
+    }
+    val hasLinks = remember(annotatedContent) {
+        annotatedContent.getStringAnnotations("URL", 0, annotatedContent.length).isNotEmpty()
+    }
+    val openDetectedUrl: (String) -> Unit = remember(onUrlClick, uriHandler) {
+        { targetUri ->
+            if (onUrlClick != null) {
+                runCatching { onUrlClick(targetUri) }
+            } else {
+                runCatching { uriHandler.openUri(targetUri) }
+            }
+        }
+    }
+
+    val tapHandler: ((Offset) -> Boolean)? = remember(annotatedContent, hasLinks, openDetectedUrl) {
+        if (!hasLinks) null
+        else { bubbleOffset: Offset ->
+            val layout = textLayoutResult ?: return@remember false
+            val tCoords = textCoordinates ?: return@remember false
+            val bCoords = boxCoordinates ?: return@remember false
+            if (!tCoords.isAttached || !bCoords.isAttached) return@remember false
+            val textOffset = tCoords.localPositionOf(bCoords, bubbleOffset)
+            val targetUri = LinkTextHelper.findUrlAt(layout, annotatedContent, textOffset)
+            if (targetUri != null) {
+                openDetectedUrl(targetUri)
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    DisposableEffect(tapHandler, onRegisterTextTapHandler) {
+        onRegisterTextTapHandler?.invoke(tapHandler ?: { false })
+        onDispose {
+            onRegisterTextTapHandler?.invoke { false }
+        }
+    }
 
     val bubbleShape = customShape ?: remember(isMine, hasTail) {
         if (hasTail) {
@@ -556,6 +654,9 @@ fun BubbleContentBox(
 
         Box(
             modifier = modifier
+                .onGloballyPositioned { coords ->
+                    boxCoordinates = coords
+                }
                 .clip(bubbleShape)
                 .background(bubbleBg)
                 .then(
@@ -609,14 +710,35 @@ fun BubbleContentBox(
                     )
                 } else {
                     // 普通文本 / 拍一拍
-                    val textContent = if (message.isPat) message.patText.ifBlank { "拍了拍" } else message.content
                     val textStyle = TextStyle(
                         color = Color.White,
                         fontSize = 17.sp,
                         lineHeight = 22.sp
                     )
+                    val textModifier = Modifier
+                        .onGloballyPositioned { coords ->
+                            textCoordinates = coords
+                        }
+                        .then(
+                            if (hasLinks) {
+                                Modifier.tapUrlPreservingLongPress(
+                                    key = annotatedContent,
+                                    resolveUrlAt = { localOffset ->
+                                        textLayoutResult?.let { layout ->
+                                            LinkTextHelper.findUrlAt(layout, annotatedContent, localOffset)
+                                        }
+                                    },
+                                    onUrlTap = openDetectedUrl
+                                )
+                            } else Modifier
+                        )
                     if (trailingContent == null) {
-                        BasicText(text = textContent, style = textStyle)
+                        BasicText(
+                            text = annotatedContent,
+                            style = textStyle,
+                            onTextLayout = { textLayoutResult = it },
+                            modifier = textModifier
+                        )
                     } else {
                         // 行尾附加槽位（公共大厅：气泡内保留消息时间戳）
                         // 不能用 Row + weight：那会让气泡恒为最大宽度。
@@ -625,7 +747,12 @@ fun BubbleContentBox(
                             spacing = 8.dp,
                             trailing = { trailingContent() }
                         ) {
-                            BasicText(text = textContent, style = textStyle)
+                            BasicText(
+                                text = annotatedContent,
+                                style = textStyle,
+                                onTextLayout = { textLayoutResult = it },
+                                modifier = textModifier
+                            )
                         }
                     }
                 }

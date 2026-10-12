@@ -5,7 +5,6 @@ package top.lanxint.zerotalk.ui.sheets
  */
 sealed interface HomeSheetType {
     data object MatchingSettings : HomeSheetType
-    data class MatchingInProgress(val isVoice: Boolean) : HomeSheetType
     data object CatchMoments : HomeSheetType
     data object CatchHistory : HomeSheetType
     data object CreateRoom : HomeSheetType

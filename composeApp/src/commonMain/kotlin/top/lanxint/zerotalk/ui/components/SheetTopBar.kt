@@ -203,11 +203,10 @@ fun SheetTopBar(
                         .align(Alignment.CenterStart)
                         .size(36.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBackIos,
-                        contentDescription = "返回",
+                    IosRoundedChevronBackIcon(
                         tint = leadingIconColor,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp),
+                        strokeWidthDp = 2.16.dp
                     )
                 }
             }

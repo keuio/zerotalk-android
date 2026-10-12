@@ -87,7 +87,7 @@ fun SheetMatchingSettingsContent(
                 )
 
                 LiquidSegmentedControl(
-                    options = listOf("18-23", "23以上"),
+                    options = listOf("18-23", "23+"),
                     selectedIndex = preferences.ageIndex,
                     onOptionSelect = { onPreferencesChange(preferences.copy(ageIndex = it)) },
                     modifier = Modifier.width(138.dp),

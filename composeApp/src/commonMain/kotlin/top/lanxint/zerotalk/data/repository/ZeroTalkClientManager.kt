@@ -8,6 +8,7 @@ import top.lanxint.zerotalk.data.model.EchoMatcher
 import top.lanxint.zerotalk.data.model.ConversationItem
 import top.lanxint.zerotalk.data.model.IncomingMessageNotification
 import top.lanxint.zerotalk.data.log.ZtLog
+import top.lanxint.zerotalk.data.settings.UiPreferencesStore
 import top.lanxint.zerotalk.data.notify.SystemNotificationBridge
 import top.lanxint.zerotalk.data.model.MessageCategory
 import top.lanxint.zerotalk.data.model.MomentItem
@@ -2161,29 +2162,20 @@ object ZeroTalkClientManager {
 
     /**
      * 发起棋牌游戏对局邀请（实测 WS `{"event":"{gameType}_create"}`）
+     * 不再插入本地纯文本假回显，纯粹等待服务端广播真实游戏卡片上屏。
      */
     fun sendRoomGameInvite(roomId: String, gameType: String, gameName: String) {
         if (wsClient.currentRoomId != roomId) {
             wsClient.joinRoom(roomId)
         }
-        val success = wsClient.sendGameCreate(gameType)
-        if (success) {
-            val nowMs = System.currentTimeMillis()
-            val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
-            val contentText = "发起了「$gameName」对战邀请"
-            val myMsg = ChatMessage(
-                id = "room_${roomId}_$nowMs",
-                senderId = "me",
-                content = contentText,
-                timestamp = nowTimeStr,
-                isMine = true,
-                timestampMs = nowMs,
-                senderName = _userProfile.value.name,
-                senderAvatar = _userProfile.value.avatarUrl,
-                previewText = contentText
-            )
-            appendLocalOutgoing(roomId, myMsg, contentText)
-        }
+        wsClient.sendGameCreate(gameType)
+    }
+
+    /**
+     * 发起大厅棋牌游戏对局邀请
+     */
+    fun sendHallGameInvite(gameType: String, gameName: String) {
+        sendRoomGameInvite(_hallRoomId.value, gameType, gameName)
     }
 
     // ==================== 对战小游戏全局会话状态与双通道同步 ====================
@@ -4025,6 +4017,15 @@ object ZeroTalkClientManager {
                     val tagStr = resolveConversationStatusTag(cat)
 
                     val lastMsg = existingConv?.lastMessage?.takeIf { it != "点击查看最新消息" } ?: "点击查看最新消息"
+                    val isEncrypted = dto.encryptionEnabled ||
+                        UiPreferencesStore.isRoomEncrypted(dto.roomId) ||
+                        cachedBootstrap?.encryptionEnabled == true ||
+                        _roomEncryption.value[dto.roomId]?.enabled == true ||
+                        existingConv?.isEncrypted == true
+
+                    if (isEncrypted) {
+                        UiPreferencesStore.markRoomEncrypted(dto.roomId, true)
+                    }
 
                     ConversationItem(
                         id = dto.roomId,
@@ -4048,7 +4049,8 @@ object ZeroTalkClientManager {
                         tag = tagStr,
                         isMuted = dto.isMuted,
                         isPinned = dto.isPinned,
-                        isRoomCreator = dto.isCreator
+                        isRoomCreator = dto.isCreator,
+                        isEncrypted = isEncrypted
                     )
                 }
 
@@ -4090,6 +4092,10 @@ object ZeroTalkClientManager {
             if (res.isSuccess) {
                 val data = res.getOrThrow()
                 val nowTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                val isEncryptedRoom = data.encryptionEnabled ?: encryptionEnabled
+                if (isEncryptedRoom) {
+                    UiPreferencesStore.markRoomEncrypted(data.roomId, true)
+                }
                 val newConv = ConversationItem(
                     id = data.roomId,
                     targetName = data.roomName,
@@ -4099,7 +4105,9 @@ object ZeroTalkClientManager {
                     unreadCount = 0,
                     category = MessageCategory.CODE,
                     isOnline = null,
-                    tag = "暗号"
+                    tag = "暗号",
+                    isRoomCreator = true,
+                    isEncrypted = isEncryptedRoom
                 )
                 upsertConversation(newConv)
                 fetchRoomList()
@@ -4589,23 +4597,30 @@ object ZeroTalkClientManager {
         )
     }
 
+    /** 同步当前用户的 MBTI 测评结果到本地个人资料快照 */
+    fun syncMyMbti(mbti: top.lanxint.zerotalk.data.model.MbtiInfo?) {
+        _userProfile.value = _userProfile.value.copy(mbti = mbti)
+    }
+
     /**
      * 拉取房间初始化元数据及历史聊天记录 (/api/chat/bootstrap)
      */
     fun loadRoomHistory(roomId: String) {
         if (_loginData.value == null) return
-        // 重新进入房间：重置分页游标与「还有更早消息」标记，避免沿用上一次的过期位置
-        oldestServerMessageId.remove(roomId)
+        val previousHasMore = _roomHasMoreHistory.value[roomId]
         _roomHistoryLoading.value = _roomHistoryLoading.value + (roomId to false)
-        _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to false)
         scope.launch {
             val res = apiService.getChatBootstrap(roomId)
             res.getOrNull()?.let { bootstrap ->
-                // 1. 同步对端用户信息
+                val isEncryptedRoom = bootstrap.encryptionEnabled || bootstrap.room?.encryptionEnabled == true
+                if (isEncryptedRoom) {
+                    UiPreferencesStore.markRoomEncrypted(roomId, true)
+                }
+                // 1. 同步对端用户信息与房间加密标记
                 bootstrap.peerUser?.let { peer ->
                     if (peer.uid.isNotBlank()) {
                         rememberMember(peer.uid, peer.username, peer.gender, peer.avatarUrl)
-                        _roomPeers.value = _roomPeers.value + (roomId to WsServerEvent.UserJoined(
+                        val peerJoined = WsServerEvent.UserJoined(
                             uid = peer.uid,
                             username = peer.username,
                             gender = peer.gender ?: "unknown",
@@ -4613,7 +4628,14 @@ object ZeroTalkClientManager {
                             mbti = null,
                             cleanStreamMode = if (peer.cleanStreamMode == true) 1 else 0,
                             roomId = roomId
-                        ))
+                        )
+                        _roomPeers.value = _roomPeers.value + (roomId to peerJoined)
+                        val currMatch = _matchStatus.value
+                        if (currMatch is MatchStatus.Matched && currMatch.roomId == roomId) {
+                            if (currMatch.partner == null || currMatch.partner.username == "神秘零友" || currMatch.partner.username.isBlank()) {
+                                _matchStatus.value = currMatch.copy(partner = peerJoined)
+                            }
+                        }
                         _conversations.value = _conversations.value.map { conv ->
                             if (conv.id == roomId) {
                                 val shouldUpdate = conv.targetName == "神秘零友" || conv.targetName == "神秘人" || conv.targetName == "对方" || conv.targetName.startsWith("匹配房间-")
@@ -4631,10 +4653,22 @@ object ZeroTalkClientManager {
                                     targetUid = peer.uid.ifBlank { conv.targetUid },
                                     targetLoginName = peer.loginName.ifBlank { conv.targetLoginName },
                                     isOnline = isOnline,
-                                    tag = tag
+                                    tag = tag,
+                                    isRoomCreator = bootstrap.room?.isCreator == true || conv.isRoomCreator,
+                                    isEncrypted = isEncryptedRoom || conv.isEncrypted
                                 )
                             } else conv
                         }
+                    }
+                }
+                if (isEncryptedRoom || bootstrap.room?.isCreator == true) {
+                    _conversations.value = _conversations.value.map { conv ->
+                        if (conv.id == roomId) {
+                            conv.copy(
+                                isRoomCreator = bootstrap.room?.isCreator == true || conv.isRoomCreator,
+                                isEncrypted = isEncryptedRoom || conv.isEncrypted
+                            )
+                        } else conv
                     }
                 }
 
@@ -4658,6 +4692,15 @@ object ZeroTalkClientManager {
                             config = cfg
                         )
                     )
+                    // 预拉取房间成员：bootstrap 未内联房主信息时，「忘记暗号」折叠区依赖成员列表解析房主昵称与头像
+                    val hasInlineCreator = bootstrap.roomCreator?.username?.isNotBlank() == true ||
+                        bootstrap.members?.any {
+                            it.isCreator || it.role?.lowercase() in setOf("creator", "owner") ||
+                                (!bootstrap.room?.createdByUid.isNullOrBlank() && it.uid == bootstrap.room?.createdByUid)
+                        } == true
+                    if (!hasInlineCreator && _roomMembers.value[roomId].isNullOrEmpty()) {
+                        loadRoomMembers(roomId)
+                    }
                     if (!locallyUnlocked) requestRoomEncryptionUnlock(roomId)
                 } else {
                     _roomEncryption.value = _roomEncryption.value - roomId
@@ -4672,12 +4715,21 @@ object ZeroTalkClientManager {
                     roomId to (!bootstrap.isDmRoom && !bootstrap.isMatchRoom && !bootstrap.isPublicRoom)
                     )
 
-                _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to bootstrap.hasMoreMessages)
+                val existingList = _roomMessages.value[roomId] ?: emptyList()
+                val previousMinId = ChatMessageMerge.minServerId(existingList)
+                val incomingMinId = ChatMessageMerge.minServerId(msgList)
+                val hadOlderLocalPages = previousMinId != null && incomingMinId != null && previousMinId < incomingMinId
+                val nextHasMore = if (hadOlderLocalPages) {
+                    previousHasMore ?: bootstrap.hasMoreMessages
+                } else {
+                    bootstrap.hasMoreMessages || msgList.size >= 50
+                }
+                _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to nextHasMore)
 
                 // 记录合并前的本地最大服务端 id：bootstrap 只回最近 N 条，中间漏段要用它补（官方 te）
-                val previousMaxId = ChatMessageMerge.maxServerId(_roomMessages.value[roomId] ?: emptyList())
+                val previousMaxId = ChatMessageMerge.maxServerId(existingList)
                 // 去重 + 排序合并，不再整体替换：断线期间实时收到 / 更早加载的消息不能被 bootstrap 覆盖丢失
-                val merged = ChatMessageMerge.merge(_roomMessages.value[roomId] ?: emptyList(), msgList)
+                val merged = ChatMessageMerge.merge(existingList, msgList)
                 ChatMessageMerge.minServerId(merged)?.let { oldestServerMessageId[roomId] = it }
 
                 if (msgList.isNotEmpty()) {
@@ -4710,30 +4762,39 @@ object ZeroTalkClientManager {
         if (roomId.isBlank()) return
         if (_roomHistoryLoading.value[roomId] == true) return
         if (_roomHasMoreHistory.value[roomId] != true) return
-        val beforeId = oldestServerMessageId[roomId] ?: return
+        val isHall = isHallRoom(roomId)
+        val currentList = if (isHall) _hallMessages.value else (_roomMessages.value[roomId] ?: emptyList())
+        val beforeId = oldestServerMessageId[roomId] ?: ChatMessageMerge.minServerId(currentList) ?: return
+        val pageLimit = if (isHall) 100 else 50
 
         _roomHistoryLoading.value = _roomHistoryLoading.value + (roomId to true)
         scope.launch {
-            val res = apiService.getChatMessages(roomId = roomId, beforeId = beforeId, limit = 50)
-            _roomHistoryLoading.value = _roomHistoryLoading.value + (roomId to false)
-            val data = res.getOrNull() ?: return@launch
+            try {
+                val res = apiService.getChatMessages(roomId = roomId, beforeId = beforeId, limit = pageLimit)
+                val data = res.getOrNull() ?: return@launch
 
-            val older = data.messages.map { dto -> mapChatMessageDto(dto, roomId) }
-            if (older.isNotEmpty()) {
-                // 分页游标取更早的最小服务端 id（不能假设服务端按顺序返回）
-                ChatMessageMerge.minServerId(older)?.let { incomingMin ->
-                    val current = oldestServerMessageId[roomId]
-                    oldestServerMessageId[roomId] = if (current == null) incomingMin else minOf(current, incomingMin)
+                val older = data.messages.map { dto -> mapChatMessageDto(dto, roomId) }
+                val incomingMin = ChatMessageMerge.minServerId(older)
+                val progressed = incomingMin != null && incomingMin < beforeId
+                if (older.isNotEmpty()) {
+                    // 分页游标取更早的最小服务端 id（不能假设服务端按顺序返回）
+                    if (incomingMin != null) {
+                        val current = oldestServerMessageId[roomId]
+                        oldestServerMessageId[roomId] = if (current == null) incomingMin else minOf(current, incomingMin)
+                    }
+                    // 去重 + 排序合并（此前是 `older + current` 直接前插，既不判重也会打乱顺序）
+                    if (isHall) {
+                        _hallMessages.value = ChatMessageMerge.merge(_hallMessages.value, older)
+                    } else {
+                        val current = _roomMessages.value[roomId] ?: emptyList()
+                        _roomMessages.value = _roomMessages.value + (roomId to ChatMessageMerge.merge(current, older))
+                    }
                 }
-                // 去重 + 排序合并（此前是 `older + current` 直接前插，既不判重也会打乱顺序）
-                if (roomId == _hallRoomId.value) {
-                    _hallMessages.value = ChatMessageMerge.merge(_hallMessages.value, older)
-                } else {
-                    val current = _roomMessages.value[roomId] ?: emptyList()
-                    _roomMessages.value = _roomMessages.value + (roomId to ChatMessageMerge.merge(current, older))
-                }
+                val nextHasMore = progressed && (data.hasMore || older.size >= pageLimit)
+                _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to nextHasMore)
+            } finally {
+                _roomHistoryLoading.value = _roomHistoryLoading.value + (roomId to false)
             }
-            _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to data.hasMore)
         }
     }
 
@@ -4817,8 +4878,8 @@ object ZeroTalkClientManager {
             if (bootstrap != null && bootstrap.messages.isNotEmpty()) {
                 applyHallHistory(roomId, bootstrap.messages, bootstrap.hasMoreMessages, bootstrap)
             } else {
-                // 回退：分页接口取最近一页
-                val fallback = apiService.getChatMessages(roomId = roomId, limit = 50).getOrNull()
+                // 回退：分页接口取最近一页（对齐官网大厅 limit=100）
+                val fallback = apiService.getChatMessages(roomId = roomId, limit = 100).getOrNull()
                 applyHallHistory(
                     roomId = roomId,
                     dtos = fallback?.messages ?: emptyList(),
@@ -4849,17 +4910,27 @@ object ZeroTalkClientManager {
         if (bootstrap != null) {
             _roomBootstrapMap.value = _roomBootstrapMap.value + (roomId to bootstrap)
         }
+        val existingList = _hallMessages.value
+        val previousMinId = ChatMessageMerge.minServerId(existingList)
+        val previousHasMore = _roomHasMoreHistory.value[roomId]
         val history = dtos.map { dto -> mapChatMessageDto(dto, roomId) }
+        val incomingMin = ChatMessageMerge.minServerId(history)
         if (history.isNotEmpty()) {
             // 去重 + 排序合并（此前是「history 前插 + existing 后接」：
             // 既补不上中间缺口，又会把较新的实时消息排到较旧的历史消息后面）
-            _hallMessages.value = ChatMessageMerge.merge(_hallMessages.value, history)
-            ChatMessageMerge.minServerId(history)?.let { incomingMin ->
+            _hallMessages.value = ChatMessageMerge.merge(existingList, history)
+            if (incomingMin != null) {
                 val current = oldestServerMessageId[roomId]
                 oldestServerMessageId[roomId] = if (current == null) incomingMin else minOf(current, incomingMin)
             }
         }
-        _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to hasMore)
+        val hadOlderLocalPages = previousMinId != null && incomingMin != null && previousMinId < incomingMin
+        val effectiveHasMore = if (hadOlderLocalPages) {
+            previousHasMore ?: (hasMore || history.size >= 50)
+        } else {
+            hasMore || history.size >= 50
+        }
+        _roomHasMoreHistory.value = _roomHasMoreHistory.value + (roomId to effectiveHasMore)
     }
 
     /**
@@ -6515,15 +6586,29 @@ object ZeroTalkClientManager {
         ageRange: String,
         oppositeGenderOnly: Boolean,
         sameGenderOnly: Boolean,
-        cleanStreamMode: Boolean
+        cleanStreamMode: Boolean,
+        matchPrivacyMode: Boolean = true,
+        showLocation: Boolean = true
     ) {
         myMatchPreferences = MyMatchPreferences(
             ageRange = ageRange,
             oppositeGenderOnly = oppositeGenderOnly,
             sameGenderOnly = sameGenderOnly,
-            cleanStreamMode = cleanStreamMode
+            cleanStreamMode = cleanStreamMode,
+            matchPrivacyMode = matchPrivacyMode,
+            showLocation = showLocation
         )
         _myCleanStreamMode.value = cleanStreamMode
+        // 同步持久化存储
+        top.lanxint.zerotalk.data.settings.UiPreferencesStore.setMatchPreferences(
+            top.lanxint.zerotalk.ui.sheets.MatchingPreferences(
+                ageIndex = if (ageRange == "18-23") 0 else 1,
+                genderIndex = if (sameGenderOnly) 2 else if (oppositeGenderOnly) 1 else 0,
+                showLocation = showLocation,
+                cleanStreamMode = cleanStreamMode,
+                anonymousMode = matchPrivacyMode
+            )
+        )
     }
 
     /**
@@ -6543,10 +6628,22 @@ object ZeroTalkClientManager {
                 ageRange = myMatchPreferences.ageRange,
                 matchOppositeGenderOnly = if (myMatchPreferences.oppositeGenderOnly) 1 else 0,
                 matchSameGenderOnly = if (myMatchPreferences.sameGenderOnly) 1 else 0,
-                cleanStreamMode = if (enabled) 1 else 0
+                cleanStreamMode = if (enabled) 1 else 0,
+                matchPrivacyMode = if (myMatchPreferences.matchPrivacyMode) 1 else 0,
+                showLocation = if (myMatchPreferences.showLocation) 1 else 0
             )
             if (res.getOrNull() == true) {
                 myMatchPreferences = myMatchPreferences.copy(cleanStreamMode = enabled)
+                // 同步持久化存储
+                top.lanxint.zerotalk.data.settings.UiPreferencesStore.setMatchPreferences(
+                    top.lanxint.zerotalk.ui.sheets.MatchingPreferences(
+                        ageIndex = if (myMatchPreferences.ageRange == "18-23") 0 else 1,
+                        genderIndex = if (myMatchPreferences.sameGenderOnly) 2 else if (myMatchPreferences.oppositeGenderOnly) 1 else 0,
+                        showLocation = myMatchPreferences.showLocation,
+                        cleanStreamMode = enabled,
+                        anonymousMode = myMatchPreferences.matchPrivacyMode
+                    )
+                )
                 onResult?.invoke(true, null)
             } else {
                 _myCleanStreamMode.value = previous
@@ -6580,8 +6677,14 @@ object ZeroTalkClientManager {
                 matchTimeoutJob?.cancel()
                 matchTimeoutJob = null
                 wsClient.joinRoom(event.roomId)
-                val existingPeer = _roomPeers.value[event.roomId]
-                _matchStatus.value = MatchStatus.Matched(event.roomId, existingPeer)
+                if (event.peer != null) {
+                    rememberMember(event.peer.uid, event.peer.username, event.peer.gender, event.peer.avatarUrl)
+                    _roomPeers.value = _roomPeers.value + (event.roomId to event.peer)
+                }
+                val effectivePeer = event.peer ?: _roomPeers.value[event.roomId]
+                _matchStatus.value = MatchStatus.Matched(event.roomId, effectivePeer)
+                // 立即拉取房间初始化数据与对端资料（确保 peerUser/历史记录/加密状态就绪）
+                loadRoomHistory(event.roomId)
                 // 语音匹配：服务端随 match_success 下发 voice 载荷 → 自动接通语音（官网 applyMatchVoiceAuto）
                 event.voice?.let { voice ->
                     voiceCall.startAutoFromMatch(voice, fallbackRoomId = event.roomId)
@@ -7540,6 +7643,8 @@ private data class MyMatchPreferences(
     val ageRange: String = "18-23",
     val oppositeGenderOnly: Boolean = false,
     val sameGenderOnly: Boolean = false,
-    val cleanStreamMode: Boolean = false
+    val cleanStreamMode: Boolean = false,
+    val matchPrivacyMode: Boolean = true,
+    val showLocation: Boolean = true
 )
 

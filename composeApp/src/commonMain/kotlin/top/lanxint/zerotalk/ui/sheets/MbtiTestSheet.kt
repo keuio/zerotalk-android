@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,10 +48,12 @@ import top.lanxint.zerotalk.data.network.MbtiQuestion
 import top.lanxint.zerotalk.data.network.MbtiQuestionsData
 import top.lanxint.zerotalk.data.network.MbtiResult
 import top.lanxint.zerotalk.data.network.MbtiResultDimension
+import top.lanxint.zerotalk.data.network.toMbtiResult
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AppleHigFillCard
 import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.ui.components.LiquidButton
+import top.lanxint.zerotalk.ui.components.rememberSheetContentHeight
 import top.lanxint.zerotalk.ui.theme.AppleHigColorTokens
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
@@ -102,26 +105,39 @@ fun SheetMbtiTestContent(
     val higColors = AppleHigColors.colors(isDark)
     val scope = rememberCoroutineScope()
     val api = ZeroTalkClientManager.apiService
+    val userProfile by ZeroTalkClientManager.userProfile.collectAsState()
+    val cachedMbtiResult = remember(userProfile.mbti) {
+        userProfile.mbti?.takeIf { it.hasDetails }?.toMbtiResult()
+    }
 
-    var phase by remember { mutableStateOf<MbtiTestPhase>(MbtiTestPhase.Loading) }
+    var phase by remember {
+        mutableStateOf<MbtiTestPhase>(
+            if (cachedMbtiResult != null) MbtiTestPhase.Done(cachedMbtiResult) else MbtiTestPhase.Loading
+        )
+    }
     var questions by remember { mutableStateOf<MbtiQuestionsData?>(null) }
     var answers by remember { mutableStateOf<Map<Int, Int>>(emptyMap()) }
-    var result by remember { mutableStateOf<MbtiResult?>(null) }
+    var result by remember { mutableStateOf<MbtiResult?>(cachedMbtiResult) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var isClearing by remember { mutableStateOf(false) }
 
     suspend fun loadMyResult() {
-        phase = MbtiTestPhase.Loading
+        if (result == null) {
+            phase = MbtiTestPhase.Loading
+        }
         api.getMyMbtiResult()
             .onSuccess { loaded ->
                 result = loaded
+                ZeroTalkClientManager.syncMyMbti(loaded?.toMbtiInfo())
                 phase = if (loaded == null) MbtiTestPhase.Guide else MbtiTestPhase.Done(loaded)
             }
             .onFailure { error ->
-                phase = MbtiTestPhase.Failed(
-                    message = error.message ?: "获取测评状态失败",
-                    retry = MbtiRetryTarget.LOAD_ME
-                )
+                if (result == null) {
+                    phase = MbtiTestPhase.Failed(
+                        message = error.message ?: "获取测评状态失败",
+                        retry = MbtiRetryTarget.LOAD_ME
+                    )
+                }
             }
     }
 
@@ -158,6 +174,7 @@ fun SheetMbtiTestContent(
         api.submitMbtiTest(version = data.version, answers = payload)
             .onSuccess { submitted ->
                 result = submitted
+                ZeroTalkClientManager.syncMyMbti(submitted.toMbtiInfo())
                 phase = MbtiTestPhase.Done(submitted)
                 onShowMessage("测评完成")
             }
@@ -181,56 +198,68 @@ fun SheetMbtiTestContent(
 
     LaunchedEffect(Unit) { loadMyResult() }
 
-    when (val current = phase) {
-        MbtiTestPhase.Loading -> MbtiLoadingCard(text = "正在加载测评状态…", isDark = isDark)
-        MbtiTestPhase.LoadingQuestions -> MbtiLoadingCard(text = "正在获取题目…", isDark = isDark)
-        MbtiTestPhase.Submitting -> MbtiLoadingCard(text = "正在计算结果…", isDark = isDark)
-        MbtiTestPhase.Guide -> MbtiGuideCard(
-            isDark = isDark,
-            onStart = { scope.launch { loadQuestions() } }
-        )
-        is MbtiTestPhase.Failed -> MbtiFailedCard(
-            message = current.message,
-            isDark = isDark,
-            onRetry = { retry(current.retry) }
-        )
-        is MbtiTestPhase.Quiz -> {
-            val data = questions
-            val question = data?.questions?.getOrNull(current.index)
-            if (data == null || question == null) {
-                MbtiFailedCard(
-                    message = "题目已失效，请重新开始测试",
-                    isDark = isDark,
-                    onRetry = { retry(MbtiRetryTarget.LOAD_QUESTIONS) }
-                )
-            } else {
-                MbtiQuizCard(
-                    data = data,
-                    index = current.index,
-                    question = question,
-                    selectedValue = answers[question.id],
-                    isDark = isDark,
-                    onSelect = { value ->
-                        answers = answers + (question.id to value)
-                        if (current.index < data.questions.size - 1) {
-                            phase = MbtiTestPhase.Quiz(current.index + 1)
-                        } else {
-                            scope.launch { submitAnswers() }
+    // 已完成测试时，与「捞取历史记录」一致使用固定 75% 屏高容器，配合 skipPartiallyExpanded = false
+    // 使打开 Sheet 时默认落在半屏（PartialExpanded），上滑可完整展开并滚动浏览报告
+    val fixedContentHeight = rememberSheetContentHeight()
+    val useFixedHalfScreenHeight = phase is MbtiTestPhase.Done ||
+        (phase is MbtiTestPhase.Loading && userProfile.mbti != null)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (useFixedHalfScreenHeight) Modifier.height(fixedContentHeight) else Modifier)
+    ) {
+        when (val current = phase) {
+            MbtiTestPhase.Loading -> MbtiLoadingCard(text = "正在加载测评状态…", isDark = isDark)
+            MbtiTestPhase.LoadingQuestions -> MbtiLoadingCard(text = "正在获取题目…", isDark = isDark)
+            MbtiTestPhase.Submitting -> MbtiLoadingCard(text = "正在计算结果…", isDark = isDark)
+            MbtiTestPhase.Guide -> MbtiGuideCard(
+                isDark = isDark,
+                onStart = { scope.launch { loadQuestions() } }
+            )
+            is MbtiTestPhase.Failed -> MbtiFailedCard(
+                message = current.message,
+                isDark = isDark,
+                onRetry = { retry(current.retry) }
+            )
+            is MbtiTestPhase.Quiz -> {
+                val data = questions
+                val question = data?.questions?.getOrNull(current.index)
+                if (data == null || question == null) {
+                    MbtiFailedCard(
+                        message = "题目已失效，请重新开始测试",
+                        isDark = isDark,
+                        onRetry = { retry(MbtiRetryTarget.LOAD_QUESTIONS) }
+                    )
+                } else {
+                    MbtiQuizCard(
+                        data = data,
+                        index = current.index,
+                        question = question,
+                        selectedValue = answers[question.id],
+                        isDark = isDark,
+                        onSelect = { value ->
+                            answers = answers + (question.id to value)
+                            if (current.index < data.questions.size - 1) {
+                                phase = MbtiTestPhase.Quiz(current.index + 1)
+                            } else {
+                                scope.launch { submitAnswers() }
+                            }
+                        },
+                        onPrevious = {
+                            if (current.index > 0) phase = MbtiTestPhase.Quiz(current.index - 1)
                         }
-                    },
-                    onPrevious = {
-                        if (current.index > 0) phase = MbtiTestPhase.Quiz(current.index - 1)
-                    }
-                )
+                    )
+                }
             }
+            is MbtiTestPhase.Done -> MbtiResultCard(
+                result = current.result,
+                isDark = isDark,
+                isClearing = isClearing,
+                onRetest = { scope.launch { loadQuestions() } },
+                onClear = { showClearConfirm = true }
+            )
         }
-        is MbtiTestPhase.Done -> MbtiResultCard(
-            result = current.result,
-            isDark = isDark,
-            isClearing = isClearing,
-            onRetest = { scope.launch { loadQuestions() } },
-            onClear = { showClearConfirm = true }
-        )
     }
 
     if (showClearConfirm) {
@@ -261,6 +290,7 @@ fun SheetMbtiTestContent(
                                     result = null
                                     questions = null
                                     answers = emptyMap()
+                                    ZeroTalkClientManager.syncMyMbti(null)
                                     phase = MbtiTestPhase.Guide
                                     onShowMessage("已清除本次 MBTI 测评结果")
                                 }

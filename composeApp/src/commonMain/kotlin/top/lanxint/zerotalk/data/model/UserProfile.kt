@@ -8,7 +8,7 @@ import top.lanxint.zerotalk.data.network.AvatarUploadDto
  * @param name 昵称
  * @param avatarUrl 头像链接（后续对接图床或 OSS，当前使用预设/生成式头像）
  * @param gender 性别（"男" / "女"）
- * @param ageRange 年龄区间（严格限定为 "18-23" 和 "23以上"）
+ * @param ageRange 年龄区间（严格限定为 "18-23" 和 "23+"）
  * @param userId 用户唯一数字 ID
  * @param bio 个人签名
  * @param avatarUpload 头像上传限制与状态
@@ -32,7 +32,7 @@ data class UserProfile(
     val mbti: MbtiInfo? = null
 ) {
     companion object {
-        val AGE_OPTIONS = listOf("18-23", "23以上")
+        val AGE_OPTIONS = listOf("18-23", "23+")
         val GENDER_OPTIONS = listOf("男", "女")
 
         val NO_ACCOUNT = UserProfile(

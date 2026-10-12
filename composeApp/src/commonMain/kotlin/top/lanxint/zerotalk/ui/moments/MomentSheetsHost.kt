@@ -3,6 +3,7 @@ package top.lanxint.zerotalk.ui.moments
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import top.lanxint.zerotalk.data.model.MomentItem
+import top.lanxint.zerotalk.data.model.UserProfileTarget
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.utils.BackHandler
 import com.kashif_e.backdrop.Backdrop
@@ -21,7 +22,8 @@ fun MomentSheetsHost(
     isDark: Boolean,
     backdrop: Backdrop? = null,
     onDismissComment: () -> Unit,
-    onDismissShare: () -> Unit
+    onDismissShare: () -> Unit,
+    onOpenUserProfile: ((UserProfileTarget) -> Unit)? = null
 ) {
     BackHandler(enabled = commentTarget != null || shareTarget != null) {
         if (commentTarget != null) onDismissComment()
@@ -37,7 +39,8 @@ fun MomentSheetsHost(
             MomentCommentSheet(
                 moment = moment,
                 isDark = isDark,
-                onClose = onDismissComment
+                onClose = onDismissComment,
+                onOpenUserProfile = onOpenUserProfile
             )
         }
     }

@@ -429,7 +429,7 @@ fun SheetEditProfileContent(
 
             AppleHigDivider(isDark = isDark, insetStart = 16.dp)
 
-            // 年龄区间选择（严格仅限 18-23 和 23以上）
+            // 年龄区间选择（严格仅限 18-23 和 23+）
             AppleHigRow(
                 title = "年龄区间",
                 isDark = isDark,

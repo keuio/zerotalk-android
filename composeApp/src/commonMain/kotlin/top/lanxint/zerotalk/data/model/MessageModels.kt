@@ -56,7 +56,9 @@ data class ConversationItem(
      * 用于长按菜单：私聊双方均可「删除房间」，而暗号房/群聊仅创建者可「删除房间」，
      * 非创建者只提供「退出房间」（对齐官网 ChatView 的 canLeave / canDelete 判定）。
      */
-    val isRoomCreator: Boolean = false
+    val isRoomCreator: Boolean = false,
+    /** 该房间是否开启端到端暗号加密（来源 `/room/list` 或 `chat/bootstrap` 的 `encryption_enabled`） */
+    val isEncrypted: Boolean = false
 )
 
 /**
@@ -71,11 +73,10 @@ fun resolveConversationStatusTag(
     category: MessageCategory,
     isOnline: Boolean? = null,
     cleanStreamMode: Boolean? = null
-): String? {
-    if (category == MessageCategory.CODE) {
-        return "暗号"
-    }
-    return null
+): String? = when (category) {
+    MessageCategory.CODE -> "暗号"
+    MessageCategory.MATCH -> "匹配"
+    else -> null
 }
 
 /**

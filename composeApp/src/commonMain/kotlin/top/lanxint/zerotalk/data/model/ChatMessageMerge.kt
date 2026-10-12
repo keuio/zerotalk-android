@@ -47,9 +47,39 @@ internal object ChatMessageMerge {
     fun merge(existing: List<ChatMessage>, incoming: List<ChatMessage>): List<ChatMessage> {
         if (incoming.isEmpty()) return existing
         if (existing.isEmpty()) return incoming.sortedWith(ORDER)
+
+        // 收集待对账的本地回显（serverId == 0L 且 isMine == true）
+        val pendingEchoes = existing.filter { it.serverId == 0L && it.isMine }.toMutableList()
+        val consumedEchoIds = mutableSetOf<String>()
+
+        // 针对每个 incoming 服务端消息核销匹配的本地回显
+        val resolvedIncoming = incoming.map { serverMsg ->
+            if (serverMsg.serverId <= 0L) return@map serverMsg
+            val matchedEcho = pendingEchoes.firstOrNull { echo ->
+                !consumedEchoIds.contains(echo.id) &&
+                    (serverMsg.isMine || echo.isMine) &&
+                    (
+                        (serverMsg.clientMessageId.isNotBlank() && echo.clientMessageId.isNotBlank() && serverMsg.clientMessageId == echo.clientMessageId) ||
+                        EchoMatcher.isSameKind(echo, serverMsg)
+                    )
+            }
+            if (matchedEcho != null) {
+                consumedEchoIds.add(matchedEcho.id)
+                pendingEchoes.remove(matchedEcho)
+                LocalEchoMerge.merge(serverMsg, matchedEcho)
+            } else {
+                serverMsg
+            }
+        }
+
         val map = LinkedHashMap<String, ChatMessage>(existing.size + incoming.size)
-        existing.forEach { map[dedupeKey(it)] = it }
-        incoming.forEach { message ->
+        // 仅保留未被核销的 existing 消息
+        existing.forEach {
+            if (!consumedEchoIds.contains(it.id)) {
+                map[dedupeKey(it)] = it
+            }
+        }
+        resolvedIncoming.forEach { message ->
             val key = dedupeKey(message)
             val old = map[key]
             map[key] = if (old == null) message else mergeDuplicate(old, message)

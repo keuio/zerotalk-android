@@ -236,7 +236,9 @@ class ZeroTalkApiService(
         ageRange: String = "18-23",
         matchOppositeGenderOnly: Int = 0,
         matchSameGenderOnly: Int = 0,
-        cleanStreamMode: Int = 0
+        cleanStreamMode: Int = 0,
+        matchPrivacyMode: Int = 0,
+        showLocation: Int = 1
     ): Result<Boolean> = apiDataRequest<Any>(
         path = "/profile/update_match_settings",
         type = object : TypeToken<ApiResponse<Any>>() {}.type,
@@ -244,7 +246,9 @@ class ZeroTalkApiService(
             "age_range" to ageRange,
             "match_opposite_gender_only" to matchOppositeGenderOnly.toString(),
             "match_same_gender_only" to matchSameGenderOnly.toString(),
-            "clean_stream_mode" to cleanStreamMode.toString()
+            "clean_stream_mode" to cleanStreamMode.toString(),
+            "match_privacy_mode" to matchPrivacyMode.toString(),
+            "show_location" to showLocation.toString()
         ),
         fallbackMessage = "匹配设置保存失败"
     ).mapCatching { true }

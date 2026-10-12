@@ -84,9 +84,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalUriHandler
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -108,6 +110,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -228,7 +231,16 @@ fun PrivateChatScreen(
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
+    val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
+
+    val allConversations by ZeroTalkClientManager.conversations.collectAsState()
+    val otherUnreadCount = remember(allConversations, conversation.id) {
+        allConversations
+            .filter { it.id != conversation.id }
+            .sumOf { it.unreadCount }
+            .takeIf { it > 0 }
+    }
 
     // 进入房间时自动加入 WebSocket 房间并拉取真实历史聊天记录
     LaunchedEffect(conversation.id) {
@@ -265,8 +277,57 @@ fun PrivateChatScreen(
     val encryptionUnlockError by ZeroTalkClientManager.encryptionUnlockError.collectAsState()
     val encryptionResettingPassword by ZeroTalkClientManager.encryptionResettingPassword.collectAsState()
     val encryptionContactingCreator by ZeroTalkClientManager.encryptionContactingCreator.collectAsState()
+    val roomMembersMap by ZeroTalkClientManager.roomMembers.collectAsState()
+    val roomMembersLoadingMap by ZeroTalkClientManager.roomMembersLoading.collectAsState()
     val roomBootstrap = roomBootstrapMap[conversation.id]
+    val roomMembersList = roomMembersMap[conversation.id].orEmpty()
+    val creatorUid = roomBootstrap?.room?.createdByUid?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.roomCreator?.uid?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.room?.creator?.uid?.takeIf { it.isNotBlank() }
+    val creatorFromApiMembers = roomMembersList.firstOrNull { dto ->
+        val role = dto.role.orEmpty().lowercase()
+        dto.isCreator || role == "creator" || role == "owner" ||
+            (!creatorUid.isNullOrBlank() && dto.uid == creatorUid)
+    }
+    val creatorFromBootstrapMembers = roomBootstrap?.members?.firstOrNull { dto ->
+        val role = dto.role.orEmpty().lowercase()
+        dto.isCreator || role == "creator" || role == "owner" ||
+            (!creatorUid.isNullOrBlank() && dto.uid == creatorUid)
+    }
+    val resolvedIsRoomCreator = roomBootstrap?.room?.isCreator == true ||
+        conversation.isRoomCreator ||
+        (!creatorUid.isNullOrBlank() && ZeroTalkClientManager.isSelfMember(creatorUid, 0L)) ||
+        (creatorFromApiMembers != null && (creatorFromApiMembers.isSelf || ZeroTalkClientManager.isSelfMember(creatorFromApiMembers.uid, creatorFromApiMembers.userId))) ||
+        (creatorFromBootstrapMembers != null && ZeroTalkClientManager.isSelfMember(creatorFromBootstrapMembers.uid, creatorFromBootstrapMembers.userId))
+    val rawCreatorName = roomBootstrap?.roomCreator?.username?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.creatorUsername?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.room?.creator?.username?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.room?.creatorUsername?.takeIf { it.isNotBlank() }
+        ?: creatorFromApiMembers?.username?.takeIf { it.isNotBlank() }
+        ?: creatorFromBootstrapMembers?.username?.takeIf { it.isNotBlank() }
+    val resolvedCreatorAvatar = roomBootstrap?.roomCreator?.avatarUrl?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.creatorAvatarUrl?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.room?.creator?.avatarUrl?.takeIf { it.isNotBlank() }
+        ?: roomBootstrap?.room?.creatorAvatarUrl?.takeIf { it.isNotBlank() }
+        ?: creatorFromApiMembers?.avatarUrl?.takeIf { it.isNotBlank() }
+        ?: creatorFromBootstrapMembers?.avatarUrl?.takeIf { it.isNotBlank() }
     var showUnlockRoomSheet by remember(conversation.id) { mutableStateOf(false) }
+    var creatorLookupFinished by remember(conversation.id) { mutableStateOf(false) }
+    LaunchedEffect(showUnlockRoomSheet, conversation.id, resolvedIsRoomCreator, rawCreatorName) {
+        if (showUnlockRoomSheet && !resolvedIsRoomCreator && rawCreatorName == null) {
+            if (roomMembersList.isEmpty() && roomMembersLoadingMap[conversation.id] != true) {
+                ZeroTalkClientManager.loadRoomMembers(conversation.id)
+            }
+            delay(800)
+            creatorLookupFinished = true
+        }
+    }
+    val resolvedCreatorName = rawCreatorName
+        ?: if (creatorLookupFinished || (roomBootstrap != null && roomMembersMap.containsKey(conversation.id) && roomMembersLoadingMap[conversation.id] != true)) {
+            "房主"
+        } else {
+            null
+        }
     // 管理器请求解锁（进入加密房间 / 服务端拒绝明文发送）时自动弹出
     LaunchedEffect(encryptionUnlockRequest, conversation.id, roomEncryptionMap[conversation.id]?.enabled) {
         if (encryptionUnlockRequest == conversation.id) {
@@ -548,43 +609,18 @@ fun PrivateChatScreen(
         }
     }
 
-    // 上拉到顶后继续上拉 -> 请求更早的历史消息，并在插入后补偿滚动位置避免跳动
-    val currentHasMore by rememberUpdatedState(hasMoreHistory)
-    val currentLoadingHistory by rememberUpdatedState(isLoadingHistory)
-    val currentMessageCount by rememberUpdatedState(messageList.size)
-    LaunchedEffect(conversation.id) {
-        snapshotFlow {
-            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        }
-            .distinctUntilChanged()
-            .collect { atTop ->
-                // 首页历史尚未载入时不触发分页（否则会与首次定位互相打架）
-                if (atTop && currentHasMore && !currentLoadingHistory && currentMessageCount > 0) {
-                    val before = currentMessageCount
-                    ZeroTalkClientManager.loadOlderMessages(conversation.id)
-                    val newSize = withTimeoutOrNull(6000L) {
-                        snapshotFlow { messageList.size }.first { it > before }
-                    }
-                    if (newSize != null && newSize > before) {
-                        listState.scrollToItem(newSize - before)
-                    }
-                }
-            }
-    }
-
     // 仅在「首次载入本会话」或「末尾新增消息且用户本就贴近底部」时定位到底部；
     // 顶部前插历史时不滚动，避免与上拉分页互相打架导致页面错乱。
     var anchoredTailId by remember(conversation.id) { mutableStateOf<String?>(null) }
+    val headerCount = 1 + (if (showPeerCard) 1 else 0)
     LaunchedEffect(messageList, showPeerCard, isLoadingHistory) {
         if (messageList.isEmpty()) return@LaunchedEffect
         val tailId = messageList.last().id
         val isInitial = anchoredTailId == null
         // LazyColumn 首项 "history_loading_indicator" 是无条件声明的（非加载态只是空内容），
         // 因此头部项数恒为 1 + (peer 卡片 ? 1 : 0)；旧写法在非加载态少算 1，只是被 coerceAtLeast 掩盖。
-        val headerCount = 1 + (if (showPeerCard) 1 else 0)
         val targetIndex = (headerCount + messageList.size - 1).coerceAtLeast(0)
         if (isInitial || anchoredTailId != tailId) {
-            anchoredTailId = tailId
             val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
             val totalItems = headerCount + messageList.size
             val nearBottom = lastVisibleIndex >= totalItems - 4
@@ -596,7 +632,41 @@ fun PrivateChatScreen(
                     listState.scrollToItem(targetIndex)
                 }
             }
+            anchoredTailId = tailId
         }
+    }
+
+    // 上拉到顶后继续上拉 -> 请求更早的历史消息，并在插入后补偿滚动位置避免跳动
+    val currentHasMore by rememberUpdatedState(hasMoreHistory)
+    val currentLoadingHistory by rememberUpdatedState(isLoadingHistory)
+    val currentMessageList by rememberUpdatedState(messageList)
+    val currentHeaderCount by rememberUpdatedState(headerCount)
+    val currentAnchoredTailId by rememberUpdatedState(anchoredTailId)
+    LaunchedEffect(conversation.id) {
+        snapshotFlow {
+            val nearTop = listState.firstVisibleItemIndex <= currentHeaderCount + 2
+            val ready = currentAnchoredTailId != null &&
+                currentHasMore &&
+                !currentLoadingHistory &&
+                currentMessageList.isNotEmpty()
+            if (nearTop && ready) currentMessageList.first().id else null
+        }
+            .distinctUntilChanged()
+            .collect { topMsgId ->
+                if (topMsgId != null) {
+                    val before = currentMessageList.size
+                    ZeroTalkClientManager.loadOlderMessages(conversation.id)
+                    val newSize = withTimeoutOrNull(6000L) {
+                        snapshotFlow { currentMessageList.size }.first { it > before }
+                    }
+                    if (newSize != null && newSize > before) {
+                        val added = newSize - before
+                        if (listState.firstVisibleItemIndex < currentHeaderCount) {
+                            listState.scrollToItem(currentHeaderCount + added, 0)
+                        }
+                    }
+                }
+            }
     }
 
     // 专属壁纸与液态玻璃折射采样 Backdrop
@@ -1040,7 +1110,7 @@ fun PrivateChatScreen(
             surfaceColor = buttonSurfaceColor,
             surfaceAlpha = buttonSurfaceAlpha,
             backdrop = chatBackdrop,
-            unreadCount = 520, // 完美复刻图中 '< 520' 胶囊返回
+            unreadCount = otherUnreadCount,
             showChevron = true,
             onTitleClick = {
                 if (isGroupRoom) showSecretRoomInfo = true else showConversationInfo = true
@@ -1447,6 +1517,12 @@ fun PrivateChatScreen(
                         dismissContextMenu()
                     },
                     onCopy = {
+                        val textToCopy = if (anchor.message.isImage) {
+                            anchor.message.imageUrl.ifBlank { anchor.message.content }
+                        } else {
+                            anchor.message.content
+                        }
+                        clipboardManager.setText(AnnotatedString(textToCopy))
                         notificationState.show(if (anchor.message.isImage) "已拷贝图片" else "已拷贝文本")
                         dismissContextMenu()
                     },
@@ -1578,7 +1654,8 @@ fun PrivateChatScreen(
             isDark = isDark,
             backdrop = chatBackdrop,
             onDismissComment = { momentCardComment = null },
-            onDismissShare = {}
+            onDismissShare = {},
+            onOpenUserProfile = { target -> openMemberProfile(target) }
         )
 
         // ---- 7. 顶部联系人「对话资料详情页」仅用于私聊 ----
@@ -1733,9 +1810,9 @@ fun PrivateChatScreen(
             visible = showUnlockRoomSheet,
             loading = encryptionUnlocking,
             titleMode = UnlockRoomMode.UNLOCK,
-            isRoomCreator = roomBootstrap?.room?.isCreator == true,
-            roomCreatorName = roomBootstrap?.roomCreator?.username,
-            roomCreatorAvatar = roomBootstrap?.roomCreator?.avatarUrl,
+            isRoomCreator = resolvedIsRoomCreator,
+            roomCreatorName = resolvedCreatorName,
+            roomCreatorAvatar = resolvedCreatorAvatar,
             errorMessage = encryptionUnlockError,
             onSubmit = { password ->
                 ZeroTalkClientManager.unlockRoomEncryption(conversation.id, password) { success, _ ->
@@ -1747,10 +1824,19 @@ fun PrivateChatScreen(
                 ZeroTalkClientManager.closeRoomEncryptionUnlock()
             },
             onContactCreator = {
-                ZeroTalkClientManager.contactRoomEncryptionCreator(conversation.id)
+                ZeroTalkClientManager.contactRoomEncryptionCreator(conversation.id) { ok, err ->
+                    if (ok) {
+                        showUnlockRoomSheet = false
+                        ZeroTalkClientManager.closeRoomEncryptionUnlock()
+                    } else if (!err.isNullOrBlank()) {
+                        notificationState.show(err)
+                    }
+                }
             },
             onResetPassword = { newPassword ->
-                ZeroTalkClientManager.resetRoomEncryptionPassword(conversation.id, newPassword)
+                ZeroTalkClientManager.resetRoomEncryptionPassword(conversation.id, newPassword) { ok, err ->
+                    notificationState.show(if (ok) "房间暗号已重置，请使用新暗号解锁" else (err ?: "重置暗号失败"))
+                }
             },
             resettingPassword = encryptionResettingPassword,
             isDark = isDark,
@@ -1994,6 +2080,9 @@ private fun BubbleMessageItem(
                 }
 
                 val imageViewer = LocalImageViewer.current
+                val uriHandler = LocalUriHandler.current
+                var textTapHandler by remember(message.id) { mutableStateOf<((Offset) -> Boolean)?>(null) }
+                val currentTextTapHandler by rememberUpdatedState(textTapHandler)
 
                 // pointerInput 的 block 只在 key 变化时重启，回调与 message 必须经 rememberUpdatedState
                 // 取最新值：同一条消息被原地更新（引用 / 尾巴 / 是否末条变化）时 item.id 不变，
@@ -2019,6 +2108,12 @@ private fun BubbleMessageItem(
                     onEnterGame = { gameType, gameId ->
                         ZeroTalkClientManager.openGameSession(gameType, gameId)
                     },
+                    onUrlClick = { url ->
+                        runCatching { uriHandler.openUri(url) }
+                    },
+                    onRegisterTextTapHandler = { handler ->
+                        textTapHandler = handler
+                    },
                     modifier = Modifier
                         .then(
                             // 图片 / 游戏卡片 / 骰子 / 歌单 / 表情包为「自撑尺寸」的媒体内容，不施加气泡最小宽度；
@@ -2036,21 +2131,24 @@ private fun BubbleMessageItem(
                         }
                         // key 用「是否可双击」这个稳定布尔，而不是每次组合都新建的 lambda 实例
                         .pointerInput(message.id, hasDoubleTap) {
-                            val handleTap = {
-                                val current = currentMessage
-                                if (current.isImage && current.imageUrl.isNotBlank()) {
-                                    imageViewer.open(current.imageUrl)
+                            val handleTap: (Offset) -> Unit = { offset ->
+                                val handled = currentTextTapHandler?.invoke(offset) == true
+                                if (!handled) {
+                                    val current = currentMessage
+                                    if (current.isImage && current.imageUrl.isNotBlank()) {
+                                        imageViewer.open(current.imageUrl)
+                                    }
                                 }
                             }
                             if (hasDoubleTap) {
                                 detectTapGestures(
-                                    onTap = { handleTap() },
+                                    onTap = { offset -> handleTap(offset) },
                                     onDoubleTap = { currentOnDoubleTapPat?.invoke() },
                                     onLongPress = { currentOnLongPress(bubbleBounds) }
                                 )
                             } else {
                                 detectTapGestures(
-                                    onTap = { handleTap() },
+                                    onTap = { offset -> handleTap(offset) },
                                     onLongPress = { currentOnLongPress(bubbleBounds) }
                                 )
                             }

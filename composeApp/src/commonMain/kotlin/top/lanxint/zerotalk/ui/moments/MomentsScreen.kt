@@ -7,7 +7,12 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.TextLayoutResult
+import top.lanxint.zerotalk.ui.utils.LinkTextHelper
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -833,13 +838,34 @@ internal fun MomentCard(
 
         // ---- 动态正文 ----
         if (moment.textContent.isNotBlank()) {
+            val uriHandler = LocalUriHandler.current
+            var textLayoutResult by remember(moment.textContent) { mutableStateOf<TextLayoutResult?>(null) }
+            val annotatedContent = remember(moment.textContent) {
+                LinkTextHelper.buildAnnotatedTextWithLinks(moment.textContent)
+            }
+            val hasLinks = remember(annotatedContent) {
+                annotatedContent.getStringAnnotations("URL", 0, annotatedContent.length).isNotEmpty()
+            }
+
             BasicText(
-                text = moment.textContent,
+                text = annotatedContent,
                 style = AppleHigTypography.body.copy(
                     color = higColors.label,
                     fontSize = 15.sp,
                     lineHeight = 22.sp
-                )
+                ),
+                onTextLayout = { textLayoutResult = it },
+                modifier = if (hasLinks) {
+                    Modifier.pointerInput(annotatedContent) {
+                        detectTapGestures { offset ->
+                            val layout = textLayoutResult ?: return@detectTapGestures
+                            val target = LinkTextHelper.findUrlAt(layout, annotatedContent, offset)
+                            if (target != null) {
+                                runCatching { uriHandler.openUri(target) }
+                            }
+                        }
+                    }
+                } else Modifier
             )
         }
 

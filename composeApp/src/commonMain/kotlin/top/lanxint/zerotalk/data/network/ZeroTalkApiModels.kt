@@ -229,7 +229,8 @@ sealed class WsServerEvent {
     data class MatchSuccess(
         val roomId: String,
         val matchMode: String? = null,
-        val voice: VoiceCallInfoDto? = null
+        val voice: VoiceCallInfoDto? = null,
+        val peer: UserJoined? = null
     ) : WsServerEvent()
     data class UserJoined(
         val uid: String,
@@ -491,8 +492,11 @@ data class PeerUserDto(
     /** 对端称号（官方 peer 对象 `title`） */
     @SerializedName("title") val title: String? = null,
     /** 对端称号颜色 key（官方 `title_color`） */
-    @SerializedName("title_color") val titleColor: String? = null
+    @SerializedName("title_color") val titleColor: String? = null,
+    @SerializedName(value = "privacy_mode", alternate = ["privacyMode", "match_privacy_mode"]) val privacyMode: Boolean? = null
 )
+
+typealias PeerUserBootstrapDto = PeerUserDto
 
 /**
  * 房间列表项 DTO (/room/list)
@@ -504,11 +508,15 @@ data class RoomListItemDto(
     @SerializedName("created_at") val createdAt: String = "",
     @SerializedName("last_message_at") val lastMessageAt: String? = null,
     @SerializedName("created_by_uid") val createdByUid: String? = null,
+    @SerializedName(value = "creator_username", alternate = ["creator_name", "owner_username"]) val creatorUsername: String? = null,
+    @SerializedName(value = "creator_avatar_url", alternate = ["creator_avatar", "owner_avatar_url"]) val creatorAvatarUrl: String? = null,
+    @SerializedName(value = "creator", alternate = ["owner"]) val creator: PeerUserDto? = null,
     @SerializedName("is_creator") val isCreator: Boolean = false,
     @SerializedName("member_count") val memberCount: Int = 0,
     @SerializedName("unread_count") val unreadCount: Int = 0,
     @SerializedName("is_pinned") val isPinned: Boolean = false,
     @SerializedName("is_muted") val isMuted: Boolean = false,
+    @SerializedName(value = "encryption_enabled", alternate = ["is_encrypted", "encrypted"]) val encryptionEnabled: Boolean = false,
     @SerializedName("peer") val peer: PeerUserDto? = null
 )
 
@@ -578,7 +586,9 @@ data class ChatBootstrapData(
      * 解锁弹窗的「忘记暗号 → 联系房主」需要展示房主昵称与头像；
      * 非创建者房间才会下发，缺省为 null。
      */
-    @SerializedName("room_creator") val roomCreator: PeerUserDto? = null,
+    @SerializedName(value = "room_creator", alternate = ["creator", "owner", "roomCreator"]) val roomCreator: PeerUserDto? = null,
+    @SerializedName(value = "creator_username", alternate = ["creator_name", "owner_username"]) val creatorUsername: String? = null,
+    @SerializedName(value = "creator_avatar_url", alternate = ["creator_avatar", "owner_avatar_url"]) val creatorAvatarUrl: String? = null,
     @SerializedName("ws_token") val wsToken: String? = null,
     // ---- 群聊权限与成员（服务端权威下发，客户端不自算）----
     @SerializedName("members") val members: List<BootstrapMemberDto>? = null,
@@ -599,7 +609,7 @@ data class ChatBootstrapData(
 data class ChatMessagesData(
     @SerializedName("room_id") val roomId: String = "",
     @SerializedName("messages") val messages: List<ChatMessageDto> = emptyList(),
-    @SerializedName("has_more") val hasMore: Boolean = false
+    @SerializedName(value = "has_more", alternate = ["has_more_messages", "hasMore", "hasMoreMessages"]) val hasMore: Boolean = false
 )
 
 /**
@@ -610,7 +620,7 @@ data class CreateRoomData(
     @SerializedName("room_name") val roomName: String = "",
     @SerializedName("creator_username") val creatorUsername: String? = null,
     /** 未下发时按「未加密」处理：官方创建弹窗默认不加密 */
-    @SerializedName("encryption_enabled") val encryptionEnabled: Boolean? = false,
+    @SerializedName(value = "encryption_enabled", alternate = ["is_encrypted", "encrypted"]) val encryptionEnabled: Boolean? = false,
     @SerializedName("share_hint") val shareHint: String? = null
 )
 
@@ -627,6 +637,7 @@ data class JoinRoomData(
 data class MomentCommentDto(
     @SerializedName("id") val id: Long = 0,
     @SerializedName("moment_id") val momentId: Long = 0,
+    @SerializedName("user_id") val userId: Long = 0,
     @SerializedName("uid") val uid: String = "",
     @SerializedName("username") val username: String = "",
     @SerializedName("gender") val gender: String? = null,
@@ -639,6 +650,7 @@ data class MomentCommentDto(
     @SerializedName("parent_id") val parentId: Long? = null,
     @SerializedName("reply_to_username") val replyToUsername: String? = null,
     @SerializedName("reply_to_user_id") val replyToUserId: Long? = null,
+    @SerializedName("reply_to_uid") val replyToUid: String? = null,
     @SerializedName("replies") val replies: List<MomentCommentDto> = emptyList()
 )
 

@@ -166,4 +166,90 @@ class ChatMessageMergeTest {
         assertNull(ChatMessageMerge.maxServerId(listOf(msg("local_1", serverId = 0L))))
         assertNull(ChatMessageMerge.minServerId(emptyList()))
     }
+
+    // ---------------- 本地回显与历史消息核销去重 ----------------
+
+    @Test
+    fun `合并历史消息时自动核销匹配的本地动态分享临时回显`() {
+        val localEcho = msg("local_moment", serverId = 0L, isMine = true, content = """{"moment_id":12345}""").copy(
+            isMomentShare = true,
+            momentShare = MomentShareCardData(momentId = 12345L)
+        )
+        val serverMsg = msg("server_moment", serverId = 500L, isMine = true, content = """{"moment_id":12345,"username":"Alice"}""").copy(
+            isMomentShare = true,
+            momentShare = MomentShareCardData(momentId = 12345L, username = "Alice")
+        )
+
+        val merged = ChatMessageMerge.merge(listOf(localEcho), listOf(serverMsg))
+        assertEquals(1, merged.size, "本地临时回显应该被核销，只保留 1 条服务端消息")
+        assertEquals(500L, merged.single().serverId)
+        assertEquals("server_moment", merged.single().id)
+    }
+
+    @Test
+    fun `合并历史消息时核销继承本地回显的特有字段（voiceDurationSec、引用回复等）`() {
+        val localEcho = msg("local_voice", serverId = 0L, isMine = true).copy(
+            isVoice = true,
+            voiceDurationSec = 15,
+            audioUrl = "https://oss.example.com/audio.mp3",
+            quotedText = "引用的消息",
+            quotedSenderName = "Bob"
+        )
+        val serverMsg = msg("server_voice", serverId = 888L, isMine = true).copy(
+            isVoice = true,
+            voiceDurationSec = 0, // 服务端回推通常缺失时长
+            audioUrl = "https://oss.example.com/audio.mp3"
+        )
+
+        val merged = ChatMessageMerge.merge(listOf(localEcho), listOf(serverMsg))
+        assertEquals(1, merged.size)
+        val result = merged.single()
+        assertEquals(888L, result.serverId)
+        assertEquals(15, result.voiceDurationSec, "应继承本地回显的时长")
+        assertEquals("引用的消息", result.quotedText, "应继承本地回显的引用文本")
+        assertEquals("Bob", result.quotedSenderName)
+    }
+
+    @Test
+    fun `未匹配的服务端历史与新发出的本地回显互不影响`() {
+        // localEcho1 与 serverMsg1 匹配（按 clientMessageId）
+        val localEcho1 = msg("local_1", serverId = 0L, isMine = true).copy(clientMessageId = "cid_1")
+        val serverMsg1 = msg("server_1", serverId = 100L, isMine = true).copy(clientMessageId = "cid_1")
+
+        // localEcho2 是一条还在发送中的新消息（未被任何 incoming 命中）
+        val localEcho2 = msg("local_2", serverId = 0L, isMine = true, content = "正在发送中...")
+
+        val merged = ChatMessageMerge.merge(listOf(localEcho1, localEcho2), listOf(serverMsg1))
+        assertEquals(2, merged.size, "已命中的回显被替换，未命中的回显仍安全保留")
+        assertTrue(merged.any { it.serverId == 100L })
+        assertTrue(merged.any { it.id == "local_2" && it.serverId == 0L })
+    }
+
+    @Test
+    fun `歌单与表情包本地回显合并核销去重`() {
+        val localPlaylist = msg("local_pl", serverId = 0L, isMine = true).copy(
+            isMusicPlaylist = true,
+            musicPlaylist = MusicPlaylist(provider = "netease", playlistId = "777", name = "我的歌单")
+        )
+        val serverPlaylist = msg("server_pl", serverId = 200L, isMine = true).copy(
+            isMusicPlaylist = true,
+            musicPlaylist = MusicPlaylist(provider = "netease", playlistId = "777", name = "我的歌单")
+        )
+
+        val localSticker = msg("local_stk", serverId = 0L, isMine = true).copy(
+            isSticker = true,
+            stickerAssetId = 999L
+        )
+        val serverSticker = msg("server_stk", serverId = 201L, isMine = true).copy(
+            isSticker = true,
+            stickerAssetId = 999L
+        )
+
+        val merged = ChatMessageMerge.merge(
+            listOf(localPlaylist, localSticker),
+            listOf(serverPlaylist, serverSticker)
+        )
+        assertEquals(2, merged.size, "两张本地回显卡片均被正确核销为服务端历史卡片，无重复")
+        assertEquals(setOf(200L, 201L), merged.map { it.serverId }.toSet())
+    }
 }

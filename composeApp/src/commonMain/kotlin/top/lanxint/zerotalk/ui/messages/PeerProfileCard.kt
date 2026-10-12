@@ -28,8 +28,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
+import top.lanxint.zerotalk.data.model.ConversationItem
 import top.lanxint.zerotalk.data.model.OtherUserProfile
+import top.lanxint.zerotalk.data.model.anonymized
+import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.GenderBadge
 import top.lanxint.zerotalk.ui.components.LiquidToggle
 import top.lanxint.zerotalk.ui.components.UserAvatar
@@ -66,11 +70,27 @@ fun PeerProfileCard(
     onMoments: () -> Unit,
     onReport: () -> Unit,
     modifier: Modifier = Modifier,
-    tip: String = "点击右上角删除按钮，删除后彼此将无法查看该房间"
+    tip: String = "点击右上角删除按钮，删除后彼此将无法查看该房间",
+    conversation: ConversationItem? = null,
+    isAnonymous: Boolean = false
 ) {
+    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
+    val isAnonymousPeer = isAnonymous ||
+        conversation?.targetName == "匿名用户" ||
+        (conversation != null && roomBootstrapMap[conversation.id]?.peerUser?.privacyMode == true) ||
+        peer?.privacyMode == true ||
+        peer?.name == "匿名用户" ||
+        roomBootstrapMap.values.any { bootstrap ->
+            bootstrap.peerUser?.privacyMode == true && (
+                (peer?.userId?.isNotBlank() == true && bootstrap.peerUser.userId.toString() == peer.userId) ||
+                (peer?.uid?.isNotBlank() == true && bootstrap.peerUser.uid == peer.uid)
+            )
+        }
+
+    val effectivePeer = if (isAnonymousPeer) peer?.anonymized() else peer
     val higColors = AppleHigColors.colors(isDark)
-    val displayName = peer?.name?.takeIf { it.isNotBlank() } ?: "匿名用户"
-    val bio = peer?.bio?.takeIf { it.isNotBlank() } ?: "这个人很神秘，还没有写简介"
+    val displayName = if (isAnonymousPeer) "匿名用户" else (effectivePeer?.name?.takeIf { it.isNotBlank() } ?: "匿名用户")
+    val bio = if (isAnonymousPeer) "这个人很神秘，还没有写简介" else (effectivePeer?.bio?.takeIf { it.isNotBlank() } ?: "这个人很神秘，还没有写简介")
 
     Column(
         modifier = modifier
@@ -82,7 +102,7 @@ fun PeerProfileCard(
         // ---- 头部：头像 + 昵称 + 标签 + 操作 ----
         Row(verticalAlignment = Alignment.Top) {
             UserAvatar(
-                url = peer?.avatarUrl?.takeIf { it.isNotBlank() },
+                url = if (isAnonymousPeer) null else effectivePeer?.avatarUrl?.takeIf { it.isNotBlank() },
                 name = displayName,
                 size = 38.dp,
                 fallbackIconSize = 18.dp
@@ -102,7 +122,7 @@ fun PeerProfileCard(
                         ),
                         maxLines = 1
                     )
-                    val genderLabel = genderTextOf(peer)
+                    val genderLabel = if (isAnonymousPeer) "" else genderTextOf(effectivePeer)
                     if (genderLabel.isNotBlank()) {
                         Spacer(Modifier.width(4.dp))
                         GenderBadge(
@@ -112,11 +132,11 @@ fun PeerProfileCard(
                     }
                 }
 
-                // 标签行：年龄段 / 地区（官方 peer-card__tags）
-                val tags = buildList {
-                    peer?.ageRangeText?.takeIf { it.isNotBlank() && it != "保密" }?.let { add(it) }
+                // 标签行：年龄段 / 地区（官方 peer-card__tags，匿名模式隐藏）
+                val tags = if (isAnonymousPeer) emptyList() else buildList {
+                    effectivePeer?.ageRangeText?.takeIf { it.isNotBlank() && it != "保密" }?.let { add(it) }
                 }
-                val location = peer?.location.orEmpty()
+                val location = if (isAnonymousPeer) "" else effectivePeer?.location.orEmpty()
                 if (tags.isNotEmpty() || location.isNotBlank()) {
                     Spacer(Modifier.height(4.dp))
                     Row(
@@ -148,7 +168,7 @@ fun PeerProfileCard(
 
             // 操作：动态 / 举报（官方 peer-card__actions，隐私模式隐藏动态入口）
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (peer?.privacyMode != true) {
+                if (!isAnonymousPeer && effectivePeer?.privacyMode != true) {
                     CardPillButton(text = "动态", isDark = isDark, onClick = onMoments)
                 }
                 CardPillButton(text = "举报", isDark = isDark, destructive = true, onClick = onReport)
@@ -166,7 +186,7 @@ fun PeerProfileCard(
         BasicText(
             text = bio,
             style = AppleHigTypography.footnote.copy(
-                color = if (peer?.bio.isNullOrBlank()) higColors.tertiaryLabel else higColors.secondaryLabel
+                color = if (effectivePeer?.bio.isNullOrBlank() && !isAnonymousPeer) higColors.tertiaryLabel else higColors.secondaryLabel
             )
         )
 
