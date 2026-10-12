@@ -1,6 +1,7 @@
 package top.lanxint.zerotalk.data.model
 
 import org.jetbrains.compose.resources.DrawableResource
+import top.lanxint.zerotalk.ui.utils.SelectedPhoto
 
 /**
  * 捞动态数据模型（预留后续与后端 API 接口对接）
@@ -86,4 +87,20 @@ data class MomentMusic(
             .replace("\r", "\\r")
         return """{"provider":"${plain(provider)}","song_id":"${plain(songId)}","name":"${plain(name)}","artists":"${plain(artists)}","album":"${plain(album)}","cover_url":"${plain(coverUrl)}"}"""
     }
+}
+
+/**
+ * 动态发布草稿模型
+ *
+ * @param content 动态正文文本
+ * @param music 附带的网易云音乐对象
+ * @param photos 选中的相册配图列表
+ */
+data class MomentDraft(
+    val content: String = "",
+    val music: MomentMusic? = null,
+    val photos: List<SelectedPhoto> = emptyList()
+) {
+    val isEmpty: Boolean
+        get() = content.isBlank() && music == null && photos.isEmpty()
 }

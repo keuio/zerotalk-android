@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -114,6 +115,7 @@ import top.lanxint.zerotalk.ui.components.UserAvatar
 import top.lanxint.zerotalk.ui.components.GenderBadge
 import top.lanxint.zerotalk.ui.components.UserTitleBadge
 import top.lanxint.zerotalk.ui.components.IosChatNavBar
+import top.lanxint.zerotalk.ui.components.RoomAnnouncementBanner
 import top.lanxint.zerotalk.ui.components.LocalImageViewer
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
 import top.lanxint.zerotalk.ui.components.ContextMenuItem
@@ -146,6 +148,7 @@ import top.lanxint.zerotalk.ui.messages.resolveLocalWallpaperFile
 import top.lanxint.zerotalk.ui.moments.MomentNeteasePickerSheet
 import top.lanxint.zerotalk.ui.navigation.rememberHasUserProfileLayers
 import top.lanxint.zerotalk.ui.sheets.GamePickerSheet
+import top.lanxint.zerotalk.ui.sheets.MyGameSessionsSheet
 import top.lanxint.zerotalk.ui.utils.BackHandler
 import top.lanxint.zerotalk.ui.utils.rememberPhotoPickerLauncher
 
@@ -240,7 +243,22 @@ fun PublicChatroomScreen(
     val inputFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    var inputText by remember { mutableStateOf("") }
+    val initialDraft = remember(hallRoomId) {
+        ZeroTalkClientManager.getChatDraft(hallRoomId)
+    }
+    var inputText by remember(hallRoomId) { mutableStateOf(initialDraft) }
+    val currentInputText by rememberUpdatedState(inputText)
+
+    DisposableEffect(hallRoomId) {
+        onDispose {
+            val trimmed = currentInputText.trim()
+            if (trimmed.isNotEmpty()) {
+                ZeroTalkClientManager.saveChatDraft(hallRoomId, currentInputText)
+            } else {
+                ZeroTalkClientManager.clearChatDraft(hallRoomId)
+            }
+        }
+    }
     var mentionTargets by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     // 底部 [+] 扩展抽屉开合（hoisted：返回键、列表底部避让都要读它）
     var showComposerDrawer by remember { mutableStateOf(false) }
@@ -253,6 +271,7 @@ fun PublicChatroomScreen(
     var stickerDeleting by remember { mutableStateOf(false) }
     var stickerAdding by remember { mutableStateOf(false) }
     var showGamePickerSheet by remember { mutableStateOf(false) }
+    var showMyGameSessionsSheet by remember { mutableStateOf(false) }
     // 顶栏昵称 / 头像胶囊 → 详细资料页（内含聊天背景设置）
     var showHallInfo by remember { mutableStateOf(false) }
     // 退出大厅后继续接收通知（设备级偏好，放在大厅设置页里，与私聊「隐藏提醒」同位置）
@@ -352,6 +371,9 @@ fun PublicChatroomScreen(
     BackHandler(enabled = !hasProfileLayers && showGamePickerSheet) {
         showGamePickerSheet = false
     }
+    BackHandler(enabled = !hasProfileLayers && showMyGameSessionsSheet) {
+        showMyGameSessionsSheet = false
+    }
 
     // 详细资料页浮层拦截：先关资料页，再谈退出大厅（页面内下钻的资料层由资料页自己拦）
     BackHandler(enabled = !hasProfileLayers && showHallInfo) {
@@ -361,7 +383,7 @@ fun PublicChatroomScreen(
     // 大厅主界面返回拦截：退出大厅回到首页（被资料页层级 / 浮层覆盖时让出返回）
     BackHandler(
         enabled = !hasProfileLayers && !showHallInfo && menuAnchor == null &&
-            !showComposerDrawer && !showStickerPanel && !showMusicShareSheet && !showGamePickerSheet
+            !showComposerDrawer && !showStickerPanel && !showMusicShareSheet && !showGamePickerSheet && !showMyGameSessionsSheet
     ) {
         onBack()
     }
@@ -867,6 +889,26 @@ fun PublicChatroomScreen(
                 }
         )
 
+        // ---- 房间公告横幅条（对齐官方公共大厅 public-announcement-bar）----
+        val hallAnnouncement = (roomBootstrapMap[hallRoomId]?.announcement
+            ?: roomBootstrapMap[hallRoomId]?.room?.announcement)?.trim().orEmpty()
+        val dismissedAnnouncementsMap by ZeroTalkClientManager.dismissedRoomAnnouncements.collectAsState()
+        val isAnnouncementDismissed = dismissedAnnouncementsMap[hallRoomId] == hallAnnouncement
+
+        if (hallAnnouncement.isNotEmpty() && !isAnnouncementDismissed) {
+            RoomAnnouncementBanner(
+                announcement = hallAnnouncement,
+                isDark = isDark,
+                onDismiss = {
+                    ZeroTalkClientManager.dismissRoomAnnouncement(hallRoomId, hallAnnouncement)
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 98.dp, start = 16.dp, end = 16.dp)
+            )
+        }
+
         // ---- 底部输入控制栏（公共组件 ChatComposerBar：[+] + 输入框 + 引用条 + 4 项扩展抽屉）----
         // 根是 fillMaxSize 的悬浮外壳（scrim + 底部悬浮输入栏），必须作为聊天内容的**兄弟**声明，
         // 且长按菜单 / 资料页等浮层要声明在它之后（z 序）。
@@ -894,6 +936,7 @@ fun PublicChatroomScreen(
                     inputText = ""
                     mentionTargets = emptyList()
                     quotingMessage = null
+                    ZeroTalkClientManager.clearChatDraft(hallRoomId)
                     ZeroTalkClientManager.sendHallMessage(
                         content = textToSend,
                         mentionIds = mentionIds,
@@ -1171,7 +1214,31 @@ fun PublicChatroomScreen(
                         ZeroTalkClientManager.sendRoomGameInvite(hallRoomId, gameType, gameName)
                         notificationState.show("已发起「$gameName」对战")
                     },
+                    onOpenMySessions = {
+                        showGamePickerSheet = false
+                        showMyGameSessionsSheet = true
+                    },
                     onDismiss = { showGamePickerSheet = false }
+                )
+            }
+        }
+
+        // ---- 我的游戏对局列表抽屉（与私聊一致）----
+        if (showMyGameSessionsSheet) {
+            AppleModalBottomSheet(
+                onDismissRequest = { showMyGameSessionsSheet = false },
+                backdrop = null,
+                title = null,
+                leadingAction = SheetAction.None,
+                isDark = isDark
+            ) {
+                MyGameSessionsSheet(
+                    clientManager = ZeroTalkClientManager,
+                    isDark = isDark,
+                    onSelectSession = { gameType, gameId ->
+                        ZeroTalkClientManager.openGameSession(gameType, gameId)
+                    },
+                    onDismiss = { showMyGameSessionsSheet = false }
                 )
             }
         }

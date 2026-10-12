@@ -32,7 +32,7 @@ class ZeroTalkApplication : Application() {
         // 日志落盘 + 读取（同一个 zt_log.txt，共用一把锁）。
         //
         // 落盘：部分国产 ROM 禁用 logcat，这里额外写私有目录，便于 adb run-as 拉取排查。
-        // 该实现不再限定 debug 包 —— 「一键发送诊断信息到 App端群」是面向真实用户的反馈入口，
+        // 该实现不再限定 debug 包 —— 「一键发送诊断信息到 第三方App群」是面向真实用户的反馈入口，
         // release 包同样需要可读日志；release 下 ZtLog.d 静默，只有 ZtLog.w 会落盘，
         // 配合下方 512KB 轮转，开销可忽略。
         //

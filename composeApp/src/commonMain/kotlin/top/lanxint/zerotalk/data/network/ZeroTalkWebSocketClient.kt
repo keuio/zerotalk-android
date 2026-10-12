@@ -70,8 +70,29 @@ class ZeroTalkWebSocketClient(
     private val _events = MutableSharedFlow<WsServerEvent>(replay = 1, extraBufferCapacity = 64)
     val events: SharedFlow<WsServerEvent> = _events.asSharedFlow()
 
+    /**
+     * 本机「认为」自己所在的房间（乐观值，发帧前立即写入）。
+     *
+     * ⚠️ 该值**不代表服务端已经切换到这个房间**：`join_room` 是异步处理的，
+     * 服务端在收到该帧之前仍把消息路由到旧房间。判断「能否安全发送」请用
+     * [isRoomReadyForSend]，不要直接读本字段。
+     */
     @Volatile
     var currentRoomId: String? = null
+        private set
+
+    /**
+     * 服务端已确认（或本机已按保守延迟放行）可投递消息的房间。
+     *
+     * 只有它与 [currentRoomId] 一致时，`sendMessage` 才允许发出不带 `room_id` 的消息帧；
+     * 否则服务端会在错误的房间上下文里丢弃该帧——这正是「有时候消息发不出去」的根因。
+     */
+    @Volatile
+    private var ackedRoomId: String? = null
+
+    /** 最近一次 join_room 发出的时刻（用于「等待服务端处理」的保守延迟） */
+    @Volatile
+    private var lastJoinSentAtMs = 0L
 
     private var currentUserId: Long = 0
     private var currentWsToken: String = ""
@@ -86,6 +107,54 @@ class ZeroTalkWebSocketClient(
 
         /** 已认证后允许的最长静默（3 个心跳周期），超过即判半死连接 */
         const val SERVER_IDLE_TIMEOUT_MS = 90_000L
+
+        /**
+         * `join_room` 后等待服务端切换房间上下文的最短时间（判定逻辑见 [RoomReadiness]）。
+         */
+        const val JOIN_SETTLE_MS = RoomReadiness.JOIN_SETTLE_MS
+    }
+
+    /**
+     * 当前房间是否已可安全投递消息（不带 `room_id` 的帧）。
+     *
+     * `join_room` 是异步的：本机写入 [currentRoomId] 只代表「打算切过去」，
+     * 服务端在处理完该帧之前仍会按旧房间路由，此时发出的 `message` 帧会被静默丢弃。
+     * 因此必须同时满足：
+     * 1. [ackedRoomId] 等于目标房间（即最近一次 join 发的是这个房间）；
+     * 2. 距该次 join 发出已过去 [JOIN_SETTLE_MS]，给服务端留出处理时间。
+     */
+    fun isRoomReadyForSend(roomId: String?): Boolean = RoomReadiness.isReady(
+        targetRoom = roomId,
+        ackedRoom = ackedRoomId,
+        joinSentAtMs = lastJoinSentAtMs,
+        nowMs = System.currentTimeMillis()
+    )
+
+    /**
+     * 距离可以安全发送还需要等待的毫秒数（已就绪返回 0）。
+     *
+     * 调用方在切房间后 `delay(wsClient.roomReadyDelayMs(roomId))` 即可，
+     * 不必自己拼凑固定延迟。
+     */
+    fun roomReadyDelayMs(roomId: String?): Long = RoomReadiness.remainingDelayMs(
+        targetRoom = roomId,
+        ackedRoom = ackedRoomId,
+        joinSentAtMs = lastJoinSentAtMs,
+        nowMs = System.currentTimeMillis()
+    )
+
+    /**
+     * 重放 join_room（重连 / 认证成功后调用）。
+     *
+     * `currentRoomId` 是实例字段、跨连接保留，重连后它仍等于旧房间，
+     * 但新连接在服务端侧**并没有**加入任何房间。若不重放，重连后发出的第一条消息
+     * 必然被丢弃（旧实现即如此）。
+     */
+    fun replayJoinRoomIfNeeded() {
+        val room = currentRoomId?.trim().orEmpty()
+        if (room.isEmpty()) return
+        ZtLog.d("ZeroTalk", "[WS] replay join_room room=$room")
+        sendJoinRoomFrame(room)
     }
 
     /**
@@ -94,6 +163,9 @@ class ZeroTalkWebSocketClient(
     fun connect(userId: Long, wsToken: String) {
         currentUserId = userId
         currentWsToken = wsToken
+
+        // 新连接尚未加入任何房间：确认状态回退，等 auth_success 后重放 join_room
+        ackedRoomId = null
 
         if (webSocket != null) {
             // 静默关闭旧连接：若走 disconnect() 会置 DISCONNECTED，
@@ -114,7 +186,7 @@ class ZeroTalkWebSocketClient(
         val request = Request.Builder()
             .url(WS_URL)
             .header("Origin", ORIGIN)
-            .header("User-Agent", USER_AGENT)
+            .header("User-Agent", DeviceIdManager.getUserAgent())
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -169,7 +241,7 @@ class ZeroTalkWebSocketClient(
             addProperty("user_id", userId)
             addProperty("ws_token", wsToken)
             addProperty("device_id", DeviceIdManager.getDeviceId())
-            addProperty("user_agent", USER_AGENT)
+            addProperty("user_agent", DeviceIdManager.getUserAgent())
         }
         sendRawJson(authPayload.toString())
     }
@@ -230,6 +302,7 @@ class ZeroTalkWebSocketClient(
         stopPingLoop()
         stopAuthWatchdog()
         _connectionState.value = WsConnectionState.FAILED
+        ackedRoomId = null
         runCatching { webSocket?.close(4001, reason) }
         webSocket = null
     }
@@ -283,6 +356,9 @@ class ZeroTalkWebSocketClient(
                     stopAuthWatchdog()
                     lastServerActivityAtMs = System.currentTimeMillis()
                     _connectionState.value = WsConnectionState.AUTHENTICATED
+                    // 重连后新连接在服务端侧没有加入任何房间，必须重放 join_room，
+                    // 否则重连后发出的第一条消息会被服务端按「无房间上下文」丢弃
+                    replayJoinRoomIfNeeded()
                     WsServerEvent.AuthSuccess
                 }
                 "pong" -> {
@@ -305,7 +381,12 @@ class ZeroTalkWebSocketClient(
                 "match_success" -> {
                     val dataObj = root.getAsJsonObject("data")
                     val roomId = (root.get("room_id") ?: dataObj?.get("room_id"))?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    currentRoomId = roomId
+                    // 匹配成功时服务端已把本连接放进该房间，可视为已确认；
+                    // 但若 room_id 为空则保持原状，避免把房间状态清成「未知」
+                    if (roomId.isNotBlank()) {
+                        currentRoomId = roomId
+                        ackedRoomId = roomId
+                    }
                     val matchMode = (root.get("match_mode") ?: dataObj?.get("match_mode"))
                         ?.takeIf { !it.isJsonNull }?.asString
                     // 语音匹配：服务端随 match_success 下发 voice 自动接通载荷
@@ -380,6 +461,22 @@ class ZeroTalkWebSocketClient(
                     val message = (root.get("message") ?: dataObj?.get("message"))
                         ?.takeIf { !it.isJsonNull }?.asString
                     WsServerEvent.EncryptionLocked(roomId, message)
+                }
+                "announcement", "room_announcement", "room_update" -> {
+                    val dataObj = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val roomObj = (root.get("room") ?: dataObj?.get("room"))?.takeIf { it.isJsonObject }?.asJsonObject
+                    val roomId = (root.get("room_id") ?: dataObj?.get("room_id") ?: roomObj?.get("room_id"))
+                        ?.takeIf { !it.isJsonNull }?.asString ?: currentRoomId
+                    val announcement = (root.get("announcement") ?: dataObj?.get("announcement")
+                        ?: roomObj?.get("announcement") ?: root.get("content") ?: dataObj?.get("content"))
+                        ?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+                    val roomName = (root.get("room_name") ?: dataObj?.get("room_name") ?: roomObj?.get("room_name"))
+                        ?.takeIf { !it.isJsonNull }?.asString
+                    WsServerEvent.Announcement(
+                        roomId = roomId,
+                        announcement = announcement,
+                        roomName = roomName
+                    )
                 }
                 else -> when {
                     // 语音通话全量下行（voice_invite_sent / ringing / offer / answer / ice / …）
@@ -686,14 +783,40 @@ class ZeroTalkWebSocketClient(
 
     /**
      * 进入/切换房间（多窗关键：发完 join_room 之后发消息不带 room_id）
+     *
+     * ⚠️ 本方法只负责**发出** join_room，返回后服务端未必已经切好房间。
+     * 若紧接着要发消息，调用方必须用 [isRoomReadyForSend] 确认，或走
+     * [ensureRoomForSend]（推荐）；否则消息可能落在错误的房间被静默丢弃。
      */
     fun joinRoom(roomId: String): Boolean {
+        val target = roomId.trim()
+        if (target.isEmpty()) return false
+        return sendJoinRoomFrame(target)
+    }
+
+    /**
+     * 真正发送 join_room 帧并更新本地房间状态。
+     *
+     * 切换房间时必须先把 [ackedRoomId] 置空：从此刻起到服务端处理完为止，
+     * 该连接都处于「房间上下文未知」的窗口期，任何发送都必须先等待。
+     */
+    private fun sendJoinRoomFrame(roomId: String): Boolean {
+        val isSwitch = currentRoomId?.trim() != roomId
         currentRoomId = roomId
+        if (isSwitch) ackedRoomId = null
         val payload = JsonObject().apply {
             addProperty("event", "join_room")
             addProperty("room_id", roomId)
         }
-        return sendRawJson(payload.toString())
+        val sent = sendRawJson(payload.toString())
+        if (!sent) {
+            // 未连上：保持未确认状态，上层重连后会通过 replayJoinRoomIfNeeded 补齐
+            return false
+        }
+        // 记录帧发出的时刻，[isRoomReadyForSend] 据此扣掉服务端的处理时间
+        lastJoinSentAtMs = System.currentTimeMillis()
+        ackedRoomId = roomId
+        return true
     }
 
     /**
@@ -701,6 +824,8 @@ class ZeroTalkWebSocketClient(
      */
     fun leaveRoom(): Boolean {
         currentRoomId = null
+        ackedRoomId = null
+        lastJoinSentAtMs = 0L
         val payload = JsonObject().apply {
             addProperty("event", "leave_room")
         }
@@ -1137,6 +1262,9 @@ class ZeroTalkWebSocketClient(
         stopAuthWatchdog()
         lastServerActivityAtMs = 0L
         lastPongAtMs = 0L
+        // 连接已断，服务端侧的房间订阅随之失效；本地房间状态保留（currentRoomId）
+        // 以便重连后重放 join_room，但确认状态必须回退
+        ackedRoomId = null
         webSocket?.close(1000, "Client closed")
         webSocket = null
         _connectionState.value = WsConnectionState.DISCONNECTED

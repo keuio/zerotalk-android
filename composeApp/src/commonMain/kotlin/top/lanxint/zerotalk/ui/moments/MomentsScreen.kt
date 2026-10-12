@@ -838,34 +838,11 @@ internal fun MomentCard(
 
         // ---- 动态正文 ----
         if (moment.textContent.isNotBlank()) {
-            val uriHandler = LocalUriHandler.current
-            var textLayoutResult by remember(moment.textContent) { mutableStateOf<TextLayoutResult?>(null) }
-            val annotatedContent = remember(moment.textContent) {
-                LinkTextHelper.buildAnnotatedTextWithLinks(moment.textContent)
-            }
-            val hasLinks = remember(annotatedContent) {
-                annotatedContent.getStringAnnotations("URL", 0, annotatedContent.length).isNotEmpty()
-            }
-
-            BasicText(
-                text = annotatedContent,
-                style = AppleHigTypography.body.copy(
-                    color = higColors.label,
-                    fontSize = 15.sp,
-                    lineHeight = 22.sp
-                ),
-                onTextLayout = { textLayoutResult = it },
-                modifier = if (hasLinks) {
-                    Modifier.pointerInput(annotatedContent) {
-                        detectTapGestures { offset ->
-                            val layout = textLayoutResult ?: return@detectTapGestures
-                            val target = LinkTextHelper.findUrlAt(layout, annotatedContent, offset)
-                            if (target != null) {
-                                runCatching { uriHandler.openUri(target) }
-                            }
-                        }
-                    }
-                } else Modifier
+            MomentRichText(
+                text = moment.textContent,
+                isDark = isDark,
+                key = moment.id,
+                maxCollapsedLines = 5
             )
         }
 

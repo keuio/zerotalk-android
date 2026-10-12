@@ -81,6 +81,7 @@ import okhttp3.Request
 import top.lanxint.zerotalk.data.network.MessageEncryptionDto
 import top.lanxint.zerotalk.data.network.RoomEncryptionDto
 import top.lanxint.zerotalk.data.network.RoomEncryptionUnlockData
+import top.lanxint.zerotalk.data.network.RoomListItemDto
 import top.lanxint.zerotalk.data.network.ZeroTalkApiService
 import top.lanxint.zerotalk.data.network.ZeroTalkWebSocketClient
 import top.lanxint.zerotalk.data.security.RoomKeyStore
@@ -333,24 +334,24 @@ object ZeroTalkClientManager {
      *
      * 优先采用服务端显式下发的 `is_self`；否则兼容 `from_uid` 下发 uid 字符串、
      * 数字 user_id、以及缺失发送者（此时用昵称兜底）三种情况。
+     *
+     * ⚠️ 这里的 `true` 语义是**「本账号」**，不是「本设备」：多端同时在线时，
+     * 另一台设备发的消息同样为 `true`。要区分二者请配合
+     * [top.lanxint.zerotalk.data.model.resolveAccountMessageRoute] 使用。
      */
     private fun isMessageFromMe(fromUid: String?, username: String?, isSelf: Boolean? = null): Boolean {
         if (isSelf != null) return isSelf
-        val myUid = _loginData.value?.uid
-        val myUserId = _loginData.value?.userId?.toString()
-        val myName = _userProfile.value.name
-        return when {
-            fromUid != null && myUid != null && fromUid == myUid -> true
-            fromUid != null && myUserId != null && fromUid == myUserId -> true
-            fromUid == null && myName.isNotBlank() && username == myName -> true
-            else -> false
-        }
+        return isOwnAccountSender(
+            fromUid = fromUid,
+            username = username,
+            myUid = _loginData.value?.uid,
+            myUserId = _loginData.value?.userId ?: 0L,
+            myName = _userProfile.value.name
+        )
     }
 
     /**
-     * 与本地即时回显对账：视为同一条时用服务端消息替换本地回显，避免出现两条。
-     * 同时返回被匹配到的本地回显，供调用方将引用回复信息（quotedText / quotedIsMine）
-     * 合并到服务端消息中，因为服务端目前不会回传引用字段。
+     * 在待核销回显中找出与服务端消息对应的那一条（不修改列表）。
      *
      * 先在时间窗内按内容/类型匹配；**匹配不到时退化为「同类 + FIFO」**，
      * 用来兜两类必然失配的场景：
@@ -358,28 +359,40 @@ object ZeroTalkClientManager {
      * 2. 设备时区/时钟与服务端不一致——实测模拟器为 GMT，而服务端 `created_at`
      *    是 GMT+8，`eventMs - timestampMs` 恒定偏 8 小时，时间窗永远打不中。
      *
-     * 失配的后果不是「多一条」，而是自己的消息被当成重复消息**丢弃**
-     * （见消息分支里的 `isMine -> currentList`），气泡就永远停在本地回显上。
+     * 调用方据此区分「本机发出的消息（有回显，需核销替换）」与
+     * 「本账号在另一台设备发出的消息（无回显，必须照常入库）」。
      */
-    private fun reconcilePendingEcho(
+    private fun findPendingEcho(
         list: List<ChatMessage>,
         event: WsServerEvent.Message,
         eventMs: Long
-    ): Triple<List<ChatMessage>, Boolean, ChatMessage?> {
-        val pendingEchoes = list.filter { it.serverId == 0L && it.isMine }
-        if (pendingEchoes.isEmpty()) return Triple(list, false, null)
+    ): ChatMessage? {
+        val pendingEchoes = list.filter {
+            it.serverId == 0L && it.isMine &&
+                (eventMs <= 0L || kotlin.math.abs(eventMs - it.timestampMs) <= ECHO_FALLBACK_WINDOW_MS)
+        }
+        if (pendingEchoes.isEmpty()) return null
 
-        val matched = pendingEchoes.firstOrNull { item ->
+        // 首选：时间窗内按内容/类型精确匹配
+        pendingEchoes.firstOrNull { item ->
             (eventMs - item.timestampMs) in -ECHO_MATCH_WINDOW_MS..ECHO_MATCH_WINDOW_MS &&
                 isSameEchoKind(item, event)
-        } ?: pendingEchoes.firstOrNull { isSameEchoKind(it, event) }
-        ?: return Triple(list, false, null)
+        }?.let { return it }
 
-        return Triple(list.filterNot { it.id == matched.id }, true, matched)
+        // 兜底：同类 + FIFO（骰子点数由服务端摇出、设备与服务端时钟偏差等必然失配的场景）
+        return pendingEchoes.firstOrNull { isSameEchoKind(it, event) }
     }
 
     /** 本地回显与服务端消息的常规时间窗（设备与服务端时钟一致时的首选判据） */
     private const val ECHO_MATCH_WINDOW_MS = 15_000L
+
+    /**
+     * FIFO 兜底的候选窗（时钟偏差兜底用的宽松窗口）
+     *
+     * 设成分钟级而不是无限：既能覆盖设备时钟与服务端相差数小时这类失配，
+     * 又能避免把很久以前的回显认领给刚到达的消息。
+     */
+    private const val ECHO_FALLBACK_WINDOW_MS = 5 * 60_000L
 
     /**
      * 本地回显与服务端消息是否同一条
@@ -1493,9 +1506,9 @@ object ZeroTalkClientManager {
             }
 
             // 2. 确保当前 WS 处于大厅房间，并给服务端留出 join_room 的处理时间
-            if (wsClient.currentRoomId != currentHall) {
+            if (!wsClient.isRoomReadyForSend(currentHall)) {
                 wsClient.joinRoom(currentHall)
-                delay(150)
+                delay(wsClient.roomReadyDelayMs(currentHall))
             }
 
             // 3. 发送并在本机即时回显
@@ -1557,6 +1570,58 @@ object ZeroTalkClientManager {
             }
         }
         return true
+    }
+
+    /**
+     * 处理 WebSocket 下发或消息携带的房间/大厅公告变更事件
+     */
+    private fun handleAnnouncementEvent(event: WsServerEvent.Announcement) {
+        val roomId = event.roomId?.takeIf { it.isNotBlank() } ?: _hallRoomId.value
+        val announcementText = event.announcement.trim()
+        val existingBootstrap = _roomBootstrapMap.value[roomId]
+        val updatedBootstrap = if (existingBootstrap != null) {
+            val updatedRoom = if (!event.roomName.isNullOrBlank()) {
+                existingBootstrap.room?.copy(
+                    roomName = event.roomName,
+                    announcement = announcementText.ifEmpty { null }
+                ) ?: RoomListItemDto(
+                    roomId = roomId,
+                    roomName = event.roomName,
+                    announcement = announcementText.ifEmpty { null }
+                )
+            } else {
+                existingBootstrap.room?.copy(
+                    announcement = announcementText.ifEmpty { null }
+                )
+            }
+            existingBootstrap.copy(
+                announcement = announcementText.ifEmpty { null },
+                room = updatedRoom
+            )
+        } else {
+            ChatBootstrapData(
+                roomId = roomId,
+                announcement = announcementText.ifEmpty { null },
+                room = RoomListItemDto(
+                    roomId = roomId,
+                    roomName = event.roomName.orEmpty(),
+                    announcement = announcementText.ifEmpty { null }
+                )
+            )
+        }
+        _roomBootstrapMap.value = _roomBootstrapMap.value + (roomId to updatedBootstrap)
+
+        // 清除该房间被关闭的公告记录，重新向用户弹出
+        _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - roomId
+
+        // 若有更新房间名称，同步到 conversations
+        if (!event.roomName.isNullOrBlank()) {
+            _conversations.value = _conversations.value.map { conv ->
+                if (conv.id == roomId) {
+                    conv.copy(targetName = event.roomName)
+                } else conv
+            }
+        }
     }
 
     /**
@@ -1781,7 +1846,17 @@ object ZeroTalkClientManager {
         val now = System.currentTimeMillis()
         if (now - lastPatAtMs < PAT_COOLDOWN_MS) return PatSendResult.COOLDOWN
 
-        if (wsClient.currentRoomId != roomId) wsClient.joinRoom(roomId)
+        // 切房间时必须等服务端处理完 join_room，否则拍一拍会落在旧房间
+        val switched = !wsClient.isRoomReadyForSend(roomId)
+        wsClient.joinRoom(roomId)
+        if (switched) {
+            scope.launch {
+                delay(wsClient.roomReadyDelayMs(roomId))
+                if (wsClient.sendPat(target)) lastPatAtMs = System.currentTimeMillis()
+            }
+            lastPatAtMs = now
+            return PatSendResult.SENT
+        }
         if (!wsClient.sendPat(target)) return PatSendResult.NOT_CONNECTED
 
         lastPatAtMs = now
@@ -1811,9 +1886,43 @@ object ZeroTalkClientManager {
             }
             prepareEncryptedTextMessage(roomId, content)
         } else null
-        if (wsClient.currentRoomId != roomId) {
-            wsClient.joinRoom(roomId)
+        // 先确保房间上下文就绪：join_room 是异步的，直接发送会被服务端按旧房间丢弃
+        val switched = !wsClient.isRoomReadyForSend(roomId)
+        wsClient.joinRoom(roomId)
+        if (switched) {
+            // 切房间需要给服务端留出处理 join_room 的时间；同房间重发无需等待
+            scope.launch {
+                delay(wsClient.roomReadyDelayMs(roomId))
+                dispatchRoomMessage(
+                    roomId, content, messageType, replyToId, mentionIds,
+                    quotedText, quotedIsMine, quotedSenderName, encryptedPayload
+                )
+            }
+            return
         }
+        dispatchRoomMessage(
+            roomId, content, messageType, replyToId, mentionIds,
+            quotedText, quotedIsMine, quotedSenderName, encryptedPayload
+        )
+    }
+
+    /**
+     * 真正投递房间消息并写入本地乐观回显。
+     *
+     * 从 [sendRoomMessage] 拆出，是为了让「切房间后延迟发送」与「同房间直接发送」
+     * 共用同一份投递逻辑，避免两处漂移。
+     */
+    private fun dispatchRoomMessage(
+        roomId: String,
+        content: String,
+        messageType: String,
+        replyToId: Long?,
+        mentionIds: List<String>,
+        quotedText: String?,
+        quotedIsMine: Boolean?,
+        quotedSenderName: String?,
+        encryptedPayload: Triple<String, MessageEncryptionDto?, String?>?
+    ) {
         val success = wsClient.sendMessage(
             content = encryptedPayload?.first ?: content,
             type = messageType,
@@ -1939,8 +2048,13 @@ object ZeroTalkClientManager {
         }
     }
 
-    /** 上传成功后发送 WS 帧并写入本地乐观回显（图片 / 语音共用） */
-    private fun appendLocalRoomMessage(
+    /**
+     * 上传成功后发送 WS 帧并写入本地乐观回显（图片 / 语音共用）
+     *
+     * 切房间时先 join_room 并等待服务端就绪再发送：上传耗时较长，期间用户可能已经
+     * 切到别的会话，直接发送会被服务端按旧房间上下文丢弃（表现为「图片发出去了但对方收不到」）。
+     */
+    private suspend fun appendLocalRoomMessage(
         roomId: String,
         content: String,
         isImage: Boolean = false,
@@ -1953,9 +2067,9 @@ object ZeroTalkClientManager {
         onError: ((String) -> Unit)? = null,
         send: () -> Boolean
     ) {
-        if (wsClient.currentRoomId != roomId) {
-            wsClient.joinRoom(roomId)
-        }
+        val switched = !wsClient.isRoomReadyForSend(roomId)
+        wsClient.joinRoom(roomId)
+        if (switched) delay(wsClient.roomReadyDelayMs(roomId))
         if (!send()) {
             onError?.invoke("消息发送失败，请检查网络后重试")
             return
@@ -2013,9 +2127,6 @@ object ZeroTalkClientManager {
      * 发送聊天分享歌曲（实测 WS `type: "music"`）
      */
     fun sendRoomMusic(roomId: String, music: MomentMusic) {
-        if (wsClient.currentRoomId != roomId) {
-            wsClient.joinRoom(roomId)
-        }
         val songJson = JsonObject().apply {
             addProperty("provider", "netease")
             addProperty("song_id", music.songId)
@@ -2025,25 +2136,38 @@ object ZeroTalkClientManager {
             addProperty("cover_url", music.coverUrl)
         }.toString()
 
-        val success = wsClient.sendMusicMessage(songJson)
-        if (success) {
-            val nowMs = System.currentTimeMillis()
-            val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
-            val preview = "[歌曲] ${music.name}"
-            val myMsg = ChatMessage(
-                id = "room_${roomId}_$nowMs",
-                senderId = "me",
-                content = songJson,
-                timestamp = nowTimeStr,
-                isMine = true,
-                timestampMs = nowMs,
-                senderName = _userProfile.value.name,
-                senderAvatar = _userProfile.value.avatarUrl,
-                isMusic = true,
-                musicData = music,
-                previewText = preview
-            )
-            appendLocalOutgoing(roomId, myMsg, preview)
+        // 切房间时等服务端处理完 join_room 再发送，避免落在旧房间被丢弃
+        val switched = !wsClient.isRoomReadyForSend(roomId)
+        wsClient.joinRoom(roomId)
+        val buildAndEcho = {
+            val success = wsClient.sendMusicMessage(songJson)
+            if (success) {
+                val nowMs = System.currentTimeMillis()
+                val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
+                val preview = "[歌曲] ${music.name}"
+                val myMsg = ChatMessage(
+                    id = "room_${roomId}_$nowMs",
+                    senderId = "me",
+                    content = songJson,
+                    timestamp = nowTimeStr,
+                    isMine = true,
+                    timestampMs = nowMs,
+                    senderName = _userProfile.value.name,
+                    senderAvatar = _userProfile.value.avatarUrl,
+                    isMusic = true,
+                    musicData = music,
+                    previewText = preview
+                )
+                appendLocalOutgoing(roomId, myMsg, preview)
+            }
+        }
+        if (switched) {
+            scope.launch {
+                delay(wsClient.roomReadyDelayMs(roomId))
+                buildAndEcho()
+            }
+        } else {
+            buildAndEcho()
         }
     }
 
@@ -2059,11 +2183,24 @@ object ZeroTalkClientManager {
      */
     fun sendSticker(roomId: String, assetId: Long): Boolean {
         if (assetId <= 0L) return false
-        if (wsClient.currentRoomId != roomId) {
-            wsClient.joinRoom(roomId)
+        // 切房间时先 join_room 并等就绪，避免表情包落在旧房间被丢弃
+        val switched = !wsClient.isRoomReadyForSend(roomId)
+        wsClient.joinRoom(roomId)
+        if (switched) {
+            scope.launch {
+                delay(wsClient.roomReadyDelayMs(roomId))
+                emitStickerEcho(roomId, assetId)
+            }
+            return true
         }
+        emitStickerEcho(roomId, assetId)
+        return true
+    }
+
+    /** 发送表情包帧并写本地回显 */
+    private fun emitStickerEcho(roomId: String, assetId: Long) {
         val success = wsClient.sendStickerMessage(assetId)
-        if (!success) return false
+        if (!success) return
 
         val nowMs = System.currentTimeMillis()
         val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
@@ -2083,7 +2220,6 @@ object ZeroTalkClientManager {
             )
         )
         appendLocalOutgoing(roomId, myMsg, preview)
-        return true
     }
 
     /**
@@ -2103,9 +2239,9 @@ object ZeroTalkClientManager {
             if (state == WsConnectionState.DISCONNECTED || state == WsConnectionState.FAILED) {
                 reconnectWebSocket()
             }
-            if (wsClient.currentRoomId != currentHall) {
+            if (!wsClient.isRoomReadyForSend(currentHall)) {
                 wsClient.joinRoom(currentHall)
-                delay(150)
+                delay(wsClient.roomReadyDelayMs(currentHall))
             }
             val success = wsClient.sendStickerMessage(assetId)
             if (success) {
@@ -2135,28 +2271,37 @@ object ZeroTalkClientManager {
      * 发送摇骰子（实测 WS `{"event":"message","type":"dice","content":""}`）
      */
     fun sendRoomDice(roomId: String) {
-        if (wsClient.currentRoomId != roomId) {
-            wsClient.joinRoom(roomId)
+        val switched = !wsClient.isRoomReadyForSend(roomId)
+        wsClient.joinRoom(roomId)
+        val rollAndEcho = {
+            val success = wsClient.sendDice()
+            if (success) {
+                val nowMs = System.currentTimeMillis()
+                val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
+                val preview = "[骰子]"
+                val myMsg = ChatMessage(
+                    id = "room_${roomId}_$nowMs",
+                    senderId = "me",
+                    content = "",
+                    timestamp = nowTimeStr,
+                    isMine = true,
+                    timestampMs = nowMs,
+                    senderName = _userProfile.value.name,
+                    senderAvatar = _userProfile.value.avatarUrl,
+                    isDice = true,
+                    diceValue = 0,
+                    previewText = preview
+                )
+                appendLocalOutgoing(roomId, myMsg, preview)
+            }
         }
-        val success = wsClient.sendDice()
-        if (success) {
-            val nowMs = System.currentTimeMillis()
-            val nowTimeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(nowMs))
-            val preview = "[骰子]"
-            val myMsg = ChatMessage(
-                id = "room_${roomId}_$nowMs",
-                senderId = "me",
-                content = "",
-                timestamp = nowTimeStr,
-                isMine = true,
-                timestampMs = nowMs,
-                senderName = _userProfile.value.name,
-                senderAvatar = _userProfile.value.avatarUrl,
-                isDice = true,
-                diceValue = 0,
-                previewText = preview
-            )
-            appendLocalOutgoing(roomId, myMsg, preview)
+        if (switched) {
+            scope.launch {
+                delay(wsClient.roomReadyDelayMs(roomId))
+                rollAndEcho()
+            }
+        } else {
+            rollAndEcho()
         }
     }
 
@@ -2165,10 +2310,16 @@ object ZeroTalkClientManager {
      * 不再插入本地纯文本假回显，纯粹等待服务端广播真实游戏卡片上屏。
      */
     fun sendRoomGameInvite(roomId: String, gameType: String, gameName: String) {
-        if (wsClient.currentRoomId != roomId) {
-            wsClient.joinRoom(roomId)
+        val switched = !wsClient.isRoomReadyForSend(roomId)
+        wsClient.joinRoom(roomId)
+        if (switched) {
+            scope.launch {
+                delay(wsClient.roomReadyDelayMs(roomId))
+                wsClient.sendGameCreate(gameType)
+            }
+        } else {
+            wsClient.sendGameCreate(gameType)
         }
-        wsClient.sendGameCreate(gameType)
     }
 
     /**
@@ -2283,7 +2434,7 @@ object ZeroTalkClientManager {
             ?: viewingRoomId?.takeIf { it.isNotBlank() }
         gameSessionPreviousRoomId = null
         gameSessionJoinedRoomId = null
-        if (joinedGameRoom != null && !restoreRoom.isNullOrBlank() && wsClient.currentRoomId != restoreRoom) {
+        if (joinedGameRoom != null && !restoreRoom.isNullOrBlank() && !wsClient.isRoomReadyForSend(restoreRoom)) {
             wsClient.joinRoom(restoreRoom)
         }
         _activeGameSession.value = null
@@ -2302,7 +2453,9 @@ object ZeroTalkClientManager {
     private fun joinGameRoomIfNeeded(roomId: String?) {
         val room = roomId?.trim().orEmpty()
         if (room.isEmpty()) return
-        if (wsClient.currentRoomId == room) return
+        // 用「已确认」而非 currentRoomId 判断：重连后 currentRoomId 仍等于该房间，
+        // 但新连接在服务端侧并未加入，必须重新 join 才收得到 <type>_update
+        if (wsClient.isRoomReadyForSend(room)) return
         if (wsClient.joinRoom(room)) {
             gameSessionJoinedRoomId = room
         }
@@ -4163,7 +4316,8 @@ object ZeroTalkClientManager {
      * 进入房间：自动加入 WebSocket 房间并拉取真实历史消息
      */
     fun enterRoom(roomId: String) {
-        if (wsClient.currentRoomId != roomId) {
+        // 用「已确认」判断：重连后 currentRoomId 可能仍等于该房间，但服务端侧并未加入
+        if (!wsClient.isRoomReadyForSend(roomId)) {
             wsClient.joinRoom(roomId)
         }
         loadRoomHistory(roomId)
@@ -4394,6 +4548,111 @@ object ZeroTalkClientManager {
         }
     }
 
+    /** 已被用户关闭/隐去的房间公告集合（按 roomId 记录；若公告更新则会自动重现） */
+    private val _dismissedRoomAnnouncements = MutableStateFlow<Map<String, String>>(emptyMap())
+    val dismissedRoomAnnouncements: StateFlow<Map<String, String>> = _dismissedRoomAnnouncements.asStateFlow()
+
+    /** 用户手动关闭聊天页顶部的房间公告横幅条 */
+    fun dismissRoomAnnouncement(roomId: String, announcementText: String) {
+        if (roomId.isBlank()) return
+        _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value + (roomId to announcementText)
+    }
+
+    /**
+     * 修改房间暗号、房间公告与房间名称 (POST /room/update)
+     *
+     * 仅创建者（房主）可操作。
+     * - [roomName]: 房间名称 (必填，最多 100 字)
+     * - [password]: 房间暗号（为 null 或空串表示不修改）
+     * - [announcement]: 房间公告（为 null 或空串表示清除公告，最多 60 字）
+     */
+    fun updateSecretRoomSettings(
+        roomId: String,
+        roomName: String,
+        password: String?,
+        announcement: String?,
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        val room = roomId.trim()
+        val name = roomName.trim()
+        if (room.isEmpty()) {
+            onResult?.invoke(false, "房间信息缺失")
+            return
+        }
+        if (name.isEmpty()) {
+            onResult?.invoke(false, "房间名称不能为空")
+            return
+        }
+        val trimmedPassword = password?.trim()?.takeIf { it.isNotEmpty() }
+        val trimmedAnnouncement = announcement?.trim().orEmpty()
+
+        val params = mutableMapOf<String, String>(
+            "room_id" to room,
+            "room_name" to name,
+            "announcement" to trimmedAnnouncement
+        )
+        if (trimmedPassword != null) {
+            params["password"] = trimmedPassword
+        }
+
+        scope.launch {
+            val result = apiService.roomManagementRequest("/room/update", params)
+            if (result.isSuccess) {
+                // 如果修改了暗号，旧暗号派生的 DEK 失效：清解锁态并保留加密配置
+                if (trimmedPassword != null) {
+                    roomKeyStore.lock(room)
+                    val current = _roomEncryption.value[room]
+                    if (current != null) {
+                        _roomEncryption.value = _roomEncryption.value + (
+                            room to current.copy(unlocked = false, serverUnlocked = false)
+                        )
+                    }
+                }
+
+                // 更新本地 bootstrap 中的 announcement 和 roomName
+                val currentBootstrap = _roomBootstrapMap.value[room]
+                val updatedBootstrap = if (currentBootstrap != null) {
+                    val updatedRoom = currentBootstrap.room?.copy(
+                        roomName = name,
+                        announcement = trimmedAnnouncement.ifEmpty { null }
+                    ) ?: RoomListItemDto(
+                        roomId = room,
+                        roomName = name,
+                        announcement = trimmedAnnouncement.ifEmpty { null }
+                    )
+                    currentBootstrap.copy(
+                        room = updatedRoom,
+                        announcement = trimmedAnnouncement.ifEmpty { null }
+                    )
+                } else {
+                    ChatBootstrapData(
+                        roomId = room,
+                        announcement = trimmedAnnouncement.ifEmpty { null },
+                        room = RoomListItemDto(
+                            roomId = room,
+                            roomName = name,
+                            announcement = trimmedAnnouncement.ifEmpty { null }
+                        )
+                    )
+                }
+                _roomBootstrapMap.value = _roomBootstrapMap.value + (room to updatedBootstrap)
+
+                // 更新会话列表中的房间名称
+                _conversations.value = _conversations.value.map { conv ->
+                    if (conv.id == room) conv.copy(targetName = name) else conv
+                }
+
+                // 如果公告发生了实质变更，清掉此前的关闭记录，让新公告重新上屏
+                _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - room
+
+                fetchRoomList()
+                onResult?.invoke(true, null)
+            } else {
+                onResult?.invoke(false, result.exceptionOrNull()?.message ?: "保存房间设置失败")
+            }
+        }
+    }
+
     /**
      * 非房主忘记暗号：调用 `/room/encryption/dm-creator` 创建与房主的私聊，
      * 并把服务端返回的房间设为待打开会话，UI 侧据此直达。
@@ -4616,6 +4875,15 @@ object ZeroTalkClientManager {
                 if (isEncryptedRoom) {
                     UiPreferencesStore.markRoomEncrypted(roomId, true)
                 }
+                val creatorUid = bootstrap.room?.createdByUid?.takeIf { it.isNotBlank() }
+                    ?: bootstrap.roomCreator?.uid?.takeIf { it.isNotBlank() }
+                val isResolvedCreator = bootstrap.room?.isCreator == true ||
+                    (!creatorUid.isNullOrBlank() && isSelfMember(creatorUid, bootstrap.roomCreator?.userId ?: 0L)) ||
+                    bootstrap.members?.any { m ->
+                        val role = m.role?.lowercase()
+                        (m.isCreator || role == "creator" || role == "owner") && isSelfMember(m.uid, m.userId)
+                    } == true
+
                 // 1. 同步对端用户信息与房间加密标记
                 bootstrap.peerUser?.let { peer ->
                     if (peer.uid.isNotBlank()) {
@@ -4654,22 +4922,20 @@ object ZeroTalkClientManager {
                                     targetLoginName = peer.loginName.ifBlank { conv.targetLoginName },
                                     isOnline = isOnline,
                                     tag = tag,
-                                    isRoomCreator = bootstrap.room?.isCreator == true || conv.isRoomCreator,
+                                    isRoomCreator = isResolvedCreator || conv.isRoomCreator,
                                     isEncrypted = isEncryptedRoom || conv.isEncrypted
                                 )
                             } else conv
                         }
                     }
                 }
-                if (isEncryptedRoom || bootstrap.room?.isCreator == true) {
-                    _conversations.value = _conversations.value.map { conv ->
-                        if (conv.id == roomId) {
-                            conv.copy(
-                                isRoomCreator = bootstrap.room?.isCreator == true || conv.isRoomCreator,
-                                isEncrypted = isEncryptedRoom || conv.isEncrypted
-                            )
-                        } else conv
-                    }
+                _conversations.value = _conversations.value.map { conv ->
+                    if (conv.id == roomId) {
+                        conv.copy(
+                            isRoomCreator = isResolvedCreator || conv.isRoomCreator,
+                            isEncrypted = isEncryptedRoom || conv.isEncrypted
+                        )
+                    } else conv
                 }
 
                 // 3. 同步存储完整的 bootstrap 数据（成员列表 + 权限字段）
@@ -6756,9 +7022,19 @@ object ZeroTalkClientManager {
                     requestRoomEncryptionUnlock(roomId)
                 }
             }
+            is WsServerEvent.Announcement -> {
+                handleAnnouncementEvent(event)
+            }
             is WsServerEvent.Message -> {
+                if (event.type.equals("announcement", ignoreCase = true)) {
+                    handleAnnouncementEvent(
+                        WsServerEvent.Announcement(
+                            roomId = event.roomId,
+                            announcement = event.content
+                        )
+                    )
+                }
                 val isMine = isMessageFromMe(event.fromUid, event.username, event.isSelf)
-                val isPatEvent = event.type.equals("pat", ignoreCase = true)
                 val timeStr = event.createdAt?.takeLast(8)?.take(5) ?: SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
                 val targetRoom = event.roomId ?: wsClient.currentRoomId
                 ZtLog.d("ZeroTalk", "[MSG] type=${event.type} room=$targetRoom isMine=$isMine")
@@ -6838,19 +7114,28 @@ object ZeroTalkClientManager {
 
                 if (isHallRoom(targetRoom)) {
                     // 大厅消息：先与本地回显对账，避免自己发的消息出现两条
-                    val (afterReconcile, matchedEcho, pendingEcho) = reconcilePendingEcho(_hallMessages.value, event, eventMs)
+                    val matchedEchoItem = findPendingEcho(_hallMessages.value, event, eventMs)
+                    val afterReconcile = if (matchedEchoItem != null) {
+                        _hallMessages.value.filterNot { it.id == matchedEchoItem.id }
+                    } else _hallMessages.value
+                    // 归属判定：本账号发出 + 本机有回显 → 核销替换；
+                    // 本账号发出但本机无回显 → 另一台设备发的，必须照常入库
+                    val hallRoute = resolveAccountMessageRoute(
+                        isSelf = event.isSelf,
+                        hasPendingLocalEcho = matchedEchoItem != null,
+                        isOwnAccount = isMine
+                    )
                     _hallMessages.value = when {
-                        matchedEcho -> {
+                        hallRoute == AccountMessageRoute.RECONCILE_LOCAL_ECHO -> {
                             // 服务端不回传语音时长等「只有本地才知道」的字段，合并时必须保留本地回显
-                            val merged = if (pendingEcho != null) {
-                                LocalEchoMerge.merge(newMsg, pendingEcho)
-                            } else newMsg
+                            val merged = LocalEchoMerge.merge(newMsg, matchedEchoItem!!)
                             // 补页可能已插入同一条服务端消息，追加前按 serverId 去重
                             ChatMessageMerge.appendDeduped(afterReconcile, merged)
                         }
-                        // 拍一拍不做本地回显（文案/后缀由服务端生成），回推必须入库
-                        isMine && !isPatEvent -> _hallMessages.value
-                        else -> ChatMessageMerge.appendDeduped(_hallMessages.value, newMsg)
+                        // 本账号在另一台设备发出（本机无回显）、或其他用户发出：
+                        // 都必须照常入库（appendDeduped 会按 serverId 去重，避免与自己发的那条重复）；
+                        // 拍一拍也无本地回显，同样在这里入库
+                        else -> ChatMessageMerge.appendDeduped(afterReconcile, newMsg)
                     }
                     // 大厅非本人消息实时推到全局通知弹窗
                     if (!isMine) {
@@ -6867,19 +7152,27 @@ object ZeroTalkClientManager {
                 } else if (targetRoom != null) {
                     // 单聊 / 暗号房消息
                     val currentList = _roomMessages.value[targetRoom] ?: emptyList()
-                    val (afterReconcile, matchedEcho, pendingEcho) = reconcilePendingEcho(currentList, event, eventMs)
+                    val matchedEchoItem = findPendingEcho(currentList, event, eventMs)
+                    val afterReconcile = if (matchedEchoItem != null) {
+                        currentList.filterNot { it.id == matchedEchoItem.id }
+                    } else currentList
+                    // 归属判定：`is_self` 只代表「本账号」发出。多端同时在线时，
+                    // 另一台设备（如网页端）发的消息同样带 `is_self=true`，但本机没有对应回显。
+                    // 旧实现把这种情况也当成「重复回显」丢弃 → 消息不发、不通知、不记未读。
+                    val roomRoute = resolveAccountMessageRoute(
+                        isSelf = event.isSelf,
+                        hasPendingLocalEcho = matchedEchoItem != null,
+                        isOwnAccount = isMine
+                    )
                     val updatedList = when {
-                        matchedEcho -> {
+                        roomRoute == AccountMessageRoute.RECONCILE_LOCAL_ECHO -> {
                             // 服务端不回传语音时长等「只有本地才知道」的字段，合并时必须保留本地回显
-                            val mergedRoom = if (pendingEcho != null) {
-                                LocalEchoMerge.merge(newMsg, pendingEcho)
-                            } else newMsg
+                            val mergedRoom = LocalEchoMerge.merge(newMsg, matchedEchoItem!!)
                             // 补页可能已插入同一条服务端消息，追加前按 serverId 去重
                             ChatMessageMerge.appendDeduped(afterReconcile, mergedRoom)
                         }
-                        // 拍一拍不做本地回显（文案/后缀由服务端生成），回推必须入库
-                        isMine && !isPatEvent -> currentList
-                        else -> ChatMessageMerge.appendDeduped(currentList, newMsg)
+                        // 本账号另一台设备发出 / 其他用户发出 / 拍一拍回推：照常入库
+                        else -> ChatMessageMerge.appendDeduped(afterReconcile, newMsg)
                     }
                     if (updatedList !== currentList) {
                         _roomMessages.value = _roomMessages.value + (targetRoom to updatedList)
@@ -7627,6 +7920,38 @@ object ZeroTalkClientManager {
             createdAt
         }
     }
+
+    // ==================== 页面草稿支持 (Draft Support) ====================
+
+    /**
+     * 读取指定房间（私聊、暗号群聊或大厅）的未发送草稿
+     */
+    fun getChatDraft(roomId: String): String = UiPreferencesStore.getChatDraft(roomId)
+
+    /**
+     * 保存指定房间（私聊、暗号群聊或大厅）的未发送草稿
+     */
+    fun saveChatDraft(roomId: String, draft: String) = UiPreferencesStore.setChatDraft(roomId, draft)
+
+    /**
+     * 清空指定房间（私聊、暗号群聊或大厅）的草稿
+     */
+    fun clearChatDraft(roomId: String) = UiPreferencesStore.clearChatDraft(roomId)
+
+    /**
+     * 读取已保存的动态发布草稿（正文、音乐、配图）
+     */
+    fun getMomentDraft(): MomentDraft? = UiPreferencesStore.getMomentDraft()
+
+    /**
+     * 保存动态发布草稿
+     */
+    fun saveMomentDraft(draft: MomentDraft) = UiPreferencesStore.saveMomentDraft(draft)
+
+    /**
+     * 清空动态发布草稿及配图文件
+     */
+    fun clearMomentDraft() = UiPreferencesStore.clearMomentDraft()
 }
 
 /**

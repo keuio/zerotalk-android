@@ -66,6 +66,13 @@ import top.lanxint.zerotalk.data.model.UserProfileTarget
 import top.lanxint.zerotalk.data.network.BootstrapMemberDto
 import top.lanxint.zerotalk.data.network.ChatBootstrapData
 import top.lanxint.zerotalk.data.network.RoomMemberDto
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
@@ -125,6 +132,7 @@ fun SecretRoomInfoScreen(
     val bansLoadingMap by ZeroTalkClientManager.roomJoinBansLoading.collectAsState()
 
     fun mapMember(dto: BootstrapMemberDto): RoomMemberUi {
+        val role = dto.role.orEmpty().lowercase()
         return RoomMemberUi(
             userId = dto.userId.takeIf { it > 0L }?.toString() ?: dto.uid,
             uid = dto.uid,
@@ -133,8 +141,8 @@ fun SecretRoomInfoScreen(
             gender = dto.gender.orEmpty(),
             title = dto.title.orEmpty(),
             titleColor = dto.titleColor.orEmpty(),
-            isAdmin = dto.isAdmin,
-            isOwner = dto.isCreator,
+            isAdmin = dto.isAdmin || role == "admin" || role == "administrator",
+            isOwner = dto.isCreator || role == "creator" || role == "owner",
             canKick = dto.canKick,
             canDeleteMessage = dto.canDeleteMessage,
             isSelf = ZeroTalkClientManager.isSelfMember(dto.uid, dto.userId)
@@ -196,8 +204,14 @@ fun SecretRoomInfoScreen(
     // 否则管理员会被误判成普通成员、「禁止加入」入口被隐藏。
     val viewerCanKick = bootstrap?.viewerCanKick ?: false
     val viewerIsAdmin = (bootstrap?.viewerIsAdmin ?: false) || members.any { it.isSelf && it.isAdmin }
+    val creatorUid = bootstrap?.room?.createdByUid?.takeIf { it.isNotBlank() }
+        ?: bootstrap?.roomCreator?.uid?.takeIf { it.isNotBlank() }
+    val isSelfCreator = !creatorUid.isNullOrBlank() && ZeroTalkClientManager.isSelfMember(creatorUid, 0L)
     // 官方 ChatView 权限模型：仅创建者（群主）可设置管理员/取消管理员；创建者与管理员均可移出成员
-    val viewerIsOwner = members.any { it.isSelf && it.isOwner }
+    val viewerIsOwner = members.any { it.isSelf && it.isOwner } ||
+        bootstrap?.room?.isCreator == true ||
+        conversation.isRoomCreator ||
+        isSelfCreator
     val canSetAdmin = viewerIsOwner
     val canManageMembers = viewerIsOwner || viewerIsAdmin || viewerCanKick
 
@@ -295,6 +309,232 @@ fun SecretRoomInfoScreen(
         )
 
         if (selectedTab == 1) {
+            val isOwner = viewerIsOwner || bootstrap?.room?.isCreator == true || conversation.isRoomCreator || isSelfCreator
+            val currentAnnouncement = (bootstrap?.announcement ?: bootstrap?.room?.announcement).orEmpty()
+            var roomNameDraft by remember(conversation.id, conversation.targetName, bootstrap?.room?.roomName) {
+                mutableStateOf(bootstrap?.room?.roomName?.takeIf { it.isNotBlank() } ?: conversation.targetName)
+            }
+            var passwordDraft by remember(conversation.id) { mutableStateOf("") }
+            var isPasswordVisible by remember { mutableStateOf(false) }
+            var announcementDraft by remember(conversation.id, currentAnnouncement) {
+                mutableStateOf(currentAnnouncement)
+            }
+            var isSavingRoomSettings by remember { mutableStateOf(false) }
+
+            if (isOwner) {
+                // ---- 房主视角：房间设置（修改名称、暗号、公告）----
+                AppleHigFillCard(
+                    isDark = isDark,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
+                    contentPaddingValues = androidx.compose.foundation.layout.PaddingValues(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        BasicText(
+                            text = "房间设置",
+                            style = AppleHigTypography.subhead.copy(color = colors.secondaryLabel, fontWeight = FontWeight.SemiBold)
+                        )
+
+                        // 房间名称
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            BasicText(
+                                text = "房间名称",
+                                style = AppleHigTypography.caption1.copy(color = colors.secondaryLabel)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.quaternarySystemFill)
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                BasicTextField(
+                                    value = roomNameDraft,
+                                    onValueChange = { if (it.length <= 100) roomNameDraft = it },
+                                    textStyle = AppleHigTypography.body.copy(color = colors.label),
+                                    cursorBrush = SolidColor(colors.systemBlue),
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    decorationBox = { inner ->
+                                        if (roomNameDraft.isEmpty()) {
+                                            BasicText(
+                                                text = "房间名称",
+                                                style = AppleHigTypography.body.copy(color = colors.tertiaryLabel)
+                                            )
+                                        }
+                                        inner()
+                                    }
+                                )
+                            }
+                        }
+
+                        // 房间暗号
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                BasicText(
+                                    text = "房间暗号",
+                                    style = AppleHigTypography.caption1.copy(color = colors.secondaryLabel)
+                                )
+                                BasicText(
+                                    text = if (isPasswordVisible) "隐藏" else "显示",
+                                    style = AppleHigTypography.caption1.copy(color = colors.tint, fontWeight = FontWeight.Medium),
+                                    modifier = Modifier.clickable { isPasswordVisible = !isPasswordVisible }
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.quaternarySystemFill)
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                BasicTextField(
+                                    value = passwordDraft,
+                                    onValueChange = { passwordDraft = it },
+                                    textStyle = AppleHigTypography.body.copy(color = colors.label),
+                                    cursorBrush = SolidColor(colors.systemBlue),
+                                    singleLine = true,
+                                    visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    decorationBox = { inner ->
+                                        if (passwordDraft.isEmpty()) {
+                                            BasicText(
+                                                text = "留空表示不修改暗号",
+                                                style = AppleHigTypography.body.copy(color = colors.tertiaryLabel)
+                                            )
+                                        }
+                                        inner()
+                                    }
+                                )
+                            }
+                            BasicText(
+                                text = "修改暗号后，新成员需使用「你的用户名 + 房间名 + 新暗号」加入",
+                                style = AppleHigTypography.caption2.copy(color = colors.tertiaryLabel)
+                            )
+                        }
+
+                        // 房间公告
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                BasicText(
+                                    text = "房间公告",
+                                    style = AppleHigTypography.caption1.copy(color = colors.secondaryLabel)
+                                )
+                                BasicText(
+                                    text = "${announcementDraft.length}/60",
+                                    style = AppleHigTypography.caption2.copy(color = colors.tertiaryLabel)
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.quaternarySystemFill)
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                BasicTextField(
+                                    value = announcementDraft,
+                                    onValueChange = { if (it.length <= 60) announcementDraft = it },
+                                    textStyle = AppleHigTypography.body.copy(color = colors.label),
+                                    cursorBrush = SolidColor(colors.systemBlue),
+                                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                                    decorationBox = { inner ->
+                                        if (announcementDraft.isEmpty()) {
+                                            BasicText(
+                                                text = "向成员展示房间规则或说明，留空则清除公告",
+                                                style = AppleHigTypography.body.copy(color = colors.tertiaryLabel)
+                                            )
+                                        }
+                                        inner()
+                                    }
+                                )
+                            }
+                            BasicText(
+                                text = "最多 60 字，成员可在聊天页查看",
+                                style = AppleHigTypography.caption2.copy(color = colors.tertiaryLabel)
+                            )
+                        }
+
+                        // 保存按钮
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            CapsuleGlassButton(
+                                onClick = {
+                                    if (isSavingRoomSettings) return@CapsuleGlassButton
+                                    if (roomNameDraft.trim().isEmpty()) {
+                                        notificationState.show("房间名称不能为空")
+                                        return@CapsuleGlassButton
+                                    }
+                                    isSavingRoomSettings = true
+                                    ZeroTalkClientManager.updateSecretRoomSettings(
+                                        roomId = conversation.id,
+                                        roomName = roomNameDraft.trim(),
+                                        password = passwordDraft.trim().ifEmpty { null },
+                                        announcement = announcementDraft.trim()
+                                    ) { success, msg ->
+                                        isSavingRoomSettings = false
+                                        if (success) {
+                                            passwordDraft = ""
+                                            notificationState.show("房间设置已保存")
+                                        } else {
+                                            notificationState.show(msg ?: "保存失败")
+                                        }
+                                    }
+                                },
+                                isDark = isDark,
+                                modifier = Modifier.height(34.dp)
+                            ) {
+                                BasicText(
+                                    text = if (isSavingRoomSettings) "保存中…" else "保存",
+                                    style = AppleHigTypography.footnote.copy(
+                                        color = colors.tint,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            } else if (currentAnnouncement.isNotBlank()) {
+                // ---- 非房主视角：只读展示房间公告 ----
+                AppleHigFillCard(
+                    isDark = isDark,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
+                    contentPaddingValues = androidx.compose.foundation.layout.PaddingValues(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        BasicText(
+                            text = "房间公告",
+                            style = AppleHigTypography.subhead.copy(color = colors.secondaryLabel, fontWeight = FontWeight.SemiBold)
+                        )
+                        BasicText(
+                            text = currentAnnouncement,
+                            style = AppleHigTypography.body.copy(color = colors.label)
+                        )
+                        BasicText(
+                            text = "房主可修改房间名称与暗号",
+                            style = AppleHigTypography.caption2.copy(color = colors.tertiaryLabel)
+                        )
+                    }
+                }
+            }
+
             // ---- 设置：通知（隐藏提醒）+ 对话专属壁纸，复用会话资料页同一套内容 ----
             ChatSettingsTabContent(
                 currentWallpaperKey = currentWallpaperKey,

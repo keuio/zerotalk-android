@@ -3,6 +3,8 @@ package top.lanxint.zerotalk.ui.messages
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -50,6 +52,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.style.TextOverflow
 import top.lanxint.zerotalk.ui.utils.LinkTextHelper
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
@@ -62,7 +65,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -733,26 +735,102 @@ fun BubbleContentBox(
                             } else Modifier
                         )
                     if (trailingContent == null) {
-                        BasicText(
-                            text = annotatedContent,
-                            style = textStyle,
-                            onTextLayout = { textLayoutResult = it },
-                            modifier = textModifier
-                        )
+                        val maxCollapsedLines = 6
+                        var isExpanded by remember(message.id) { mutableStateOf(false) }
+                        var hasOverflow by remember(message.id) { mutableStateOf(false) }
+
+                        Column {
+                            BasicText(
+                                text = annotatedContent,
+                                style = textStyle,
+                                maxLines = if (isExpanded) Int.MAX_VALUE else maxCollapsedLines,
+                                overflow = TextOverflow.Ellipsis,
+                                onTextLayout = { layout ->
+                                    textLayoutResult = layout
+                                    if (!isExpanded) {
+                                        val lastLine = layout.lineCount - 1
+                                        val isEllipsized = lastLine >= 0 && layout.isLineEllipsized(lastLine)
+                                        val notAllRendered = lastLine >= 0 && layout.getLineEnd(lastLine) < annotatedContent.length
+                                        if (layout.hasVisualOverflow || layout.didOverflowHeight || isEllipsized || notAllRendered) {
+                                            hasOverflow = true
+                                        }
+                                    }
+                                },
+                                modifier = textModifier
+                            )
+
+                            if (hasOverflow || isExpanded) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                BasicText(
+                                    text = if (isExpanded) "收起" else "全文",
+                                    style = TextStyle(
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    modifier = Modifier
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null
+                                        ) {
+                                            isExpanded = !isExpanded
+                                        }
+                                        .padding(vertical = 2.dp)
+                                )
+                            }
+                        }
                     } else {
                         // 行尾附加槽位（公共大厅：气泡内保留消息时间戳）
                         // 不能用 Row + weight：那会让气泡恒为最大宽度。
                         // 改用先量尾部、再用剩余宽度量正文的布局，气泡宽度仍按正文收缩。
-                        RowWithTrailing(
-                            spacing = 8.dp,
-                            trailing = { trailingContent() }
-                        ) {
-                            BasicText(
-                                text = annotatedContent,
-                                style = textStyle,
-                                onTextLayout = { textLayoutResult = it },
-                                modifier = textModifier
-                            )
+                        val maxCollapsedLines = 6
+                        var isExpanded by remember(message.id) { mutableStateOf(false) }
+                        var hasOverflow by remember(message.id) { mutableStateOf(false) }
+
+                        Column {
+                            RowWithTrailing(
+                                spacing = 8.dp,
+                                trailing = { trailingContent() }
+                            ) {
+                                BasicText(
+                                    text = annotatedContent,
+                                    style = textStyle,
+                                    maxLines = if (isExpanded) Int.MAX_VALUE else maxCollapsedLines,
+                                    overflow = TextOverflow.Ellipsis,
+                                    onTextLayout = { layout ->
+                                        textLayoutResult = layout
+                                        if (!isExpanded) {
+                                            val lastLine = layout.lineCount - 1
+                                            val isEllipsized = lastLine >= 0 && layout.isLineEllipsized(lastLine)
+                                            val notAllRendered = lastLine >= 0 && layout.getLineEnd(lastLine) < annotatedContent.length
+                                            if (layout.hasVisualOverflow || layout.didOverflowHeight || isEllipsized || notAllRendered) {
+                                                hasOverflow = true
+                                            }
+                                        }
+                                    },
+                                    modifier = textModifier
+                                )
+                            }
+
+                            if (hasOverflow || isExpanded) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                BasicText(
+                                    text = if (isExpanded) "收起" else "全文",
+                                    style = TextStyle(
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    modifier = Modifier
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null
+                                        ) {
+                                            isExpanded = !isExpanded
+                                        }
+                                        .padding(vertical = 2.dp)
+                                )
+                            }
                         }
                     }
                 }

@@ -60,6 +60,7 @@ import top.lanxint.zerotalk.ui.home.HomeScreen
 import top.lanxint.zerotalk.ui.messages.MessagesScreen
 import top.lanxint.zerotalk.ui.messages.OtherUserProfileScreen
 import top.lanxint.zerotalk.ui.messages.PrivateChatScreen
+import top.lanxint.zerotalk.ui.game.GameSessionScreen
 import top.lanxint.zerotalk.ui.navigation.ZeroTalkNavBar
 import top.lanxint.zerotalk.ui.navigation.ZeroTalkTab
 import top.lanxint.zerotalk.ui.navigation.rememberHasUserProfileLayers
@@ -251,6 +252,7 @@ fun ZeroTalkApp() {
     }
     val voiceBannedTick by ZeroTalkClientManager.voiceBannedTick.collectAsState()
     val matchStatus by ZeroTalkClientManager.matchStatus.collectAsState()
+    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsState()
 
     // 资料页层级栈的两个渲染点：APP（动态作者 / 捞取记录）与 HALL（大厅点发送者）
     // 层级栈是全站唯一事实来源，这里只认领属于自己宿主的栈顶那一层
@@ -376,6 +378,10 @@ fun ZeroTalkApp() {
                 activeProfileSheet = null
             }
 
+            BackHandler(enabled = activeGameSession != null) {
+                ZeroTalkClientManager.closeGameSession()
+            }
+
             // ---- 2. 根页面层级拦截：主 Tab 单步回退与双击退出软件 ----
             // 资料页层级栈非空时返回事件属于栈顶那一层，根页面不参与（覆盖 APP / HALL / PAGE / CHAT 四类宿主）
             val hasProfileLayers = rememberHasUserProfileLayers()
@@ -383,6 +389,7 @@ fun ZeroTalkApp() {
                 activeProfileSheet == null &&
                 !inChatroom &&
                 activeChatConversation == null &&
+                activeGameSession == null &&
                 !hasProfileLayers
 
             BackHandler(enabled = isAtRoot) {
@@ -597,6 +604,21 @@ fun ZeroTalkApp() {
                     onOpenConversation = { activeChatConversation = it }
                 )
             }
+        }
+
+        // 全屏沉浸式独立游戏对局页（五子棋、围棋、象棋、国际象棋、谁是卧底等）
+        AnimatedVisibility(
+            visible = activeGameSession != null,
+            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+        ) {
+            GameSessionScreen(
+                clientManager = ZeroTalkClientManager,
+                onBack = {
+                    ZeroTalkClientManager.closeGameSession()
+                },
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         // Apple HIG 模态底部弹窗 (Modal Bottom Sheet)

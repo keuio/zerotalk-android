@@ -36,10 +36,13 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import top.lanxint.zerotalk.data.model.MomentDraft
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -127,21 +130,44 @@ fun MomentComposer(
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
 
-    var contentText by remember { mutableStateOf("") }
+    val initialDraft = remember { ZeroTalkClientManager.getMomentDraft() }
+    var contentText by remember { mutableStateOf(initialDraft?.content.orEmpty()) }
     var audience by remember { mutableStateOf(MomentAudience.Public) }
     var isSubmitting by remember { mutableStateOf(false) }
     var progressStatus by remember { mutableStateOf<String?>(null) }
-    var photos by remember { mutableStateOf<List<SelectedPhoto>>(emptyList()) }
+    var photos by remember { mutableStateOf<List<SelectedPhoto>>(initialDraft?.photos ?: emptyList()) }
 
     // ---- 语音：点击即开始录音，停止后本地显示时长 + 可移除，发布时才上传 ----
     val audioRecorder = rememberMomentAudioRecorder(MomentAudioFormat.M4A)
     var audioBytes by remember { mutableStateOf<ByteArray?>(null) }
     var audioSeconds by remember { mutableStateOf(0L) }
     var showNeteasePicker by remember { mutableStateOf(false) }
-    var selectedMusic by remember { mutableStateOf<MomentMusic?>(null) }
+    var selectedMusic by remember { mutableStateOf<MomentMusic?>(initialDraft?.music) }
     var showUserPicker by remember { mutableStateOf(false) }
     var selectedUserIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pickerTitle by remember { mutableStateOf("") }
+    var isPublishedSuccess by remember { mutableStateOf(false) }
+
+    val currentContent by rememberUpdatedState(contentText)
+    val currentPhotos by rememberUpdatedState(photos)
+    val currentMusic by rememberUpdatedState(selectedMusic)
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (!isPublishedSuccess) {
+                val draft = MomentDraft(
+                    content = currentContent,
+                    photos = currentPhotos,
+                    music = currentMusic
+                )
+                if (draft.isEmpty) {
+                    ZeroTalkClientManager.clearMomentDraft()
+                } else {
+                    ZeroTalkClientManager.saveMomentDraft(draft)
+                }
+            }
+        }
+    }
 
     fun openUserPicker(mode: MomentAudience) {
         pickerTitle = if (mode == MomentAudience.Allow) "部分人可见" else "不给谁看"
@@ -183,6 +209,8 @@ fun MomentComposer(
                 } else emptyList(),
                 onProgress = { status -> progressStatus = status },
                 onSuccess = {
+                    isPublishedSuccess = true
+                    ZeroTalkClientManager.clearMomentDraft()
                     isSubmitting = false
                     progressStatus = null
                     contentText = ""

@@ -99,6 +99,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -137,6 +138,7 @@ import top.lanxint.zerotalk.ui.components.StickerPanel
 import top.lanxint.zerotalk.ui.components.UserTitleBadge
 import top.lanxint.zerotalk.ui.components.dismissOnTapOrScroll
 import top.lanxint.zerotalk.ui.components.IosChatNavBar
+import top.lanxint.zerotalk.ui.components.RoomAnnouncementBanner
 import top.lanxint.zerotalk.ui.components.LiquidButton
 import top.lanxint.zerotalk.ui.components.LocalImageViewer
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
@@ -378,7 +380,22 @@ fun PrivateChatScreen(
         }
     }
 
-    var inputText by remember { mutableStateOf("") }
+    val initialDraft = remember(conversation.id) {
+        ZeroTalkClientManager.getChatDraft(conversation.id)
+    }
+    var inputText by remember(conversation.id) { mutableStateOf(initialDraft) }
+    val currentInputText by rememberUpdatedState(inputText)
+
+    DisposableEffect(conversation.id) {
+        onDispose {
+            val trimmed = currentInputText.trim()
+            if (trimmed.isNotEmpty()) {
+                ZeroTalkClientManager.saveChatDraft(conversation.id, currentInputText)
+            } else {
+                ZeroTalkClientManager.clearChatDraft(conversation.id)
+            }
+        }
+    }
     var mentionTargets by remember(conversation.id) { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var isVoiceMode by remember { mutableStateOf(false) }
 
@@ -1193,6 +1210,29 @@ fun PrivateChatScreen(
             }
         }
 
+        // ---- 2.1 房间公告横幅条（对齐官方 public-announcement-bar）----
+        // 仅群聊（暗号房间）且公告非空、且用户未主动关闭当前版本公告时展示
+        val roomAnnouncement = (roomBootstrap?.announcement ?: roomBootstrap?.room?.announcement)?.trim().orEmpty()
+        val dismissedAnnouncementsMap by ZeroTalkClientManager.dismissedRoomAnnouncements.collectAsState()
+        val isAnnouncementDismissed = dismissedAnnouncementsMap[conversation.id] == roomAnnouncement
+
+        if (isGroupRoom && roomAnnouncement.isNotEmpty() && !isAnnouncementDismissed && !showMessageSearch) {
+            RoomAnnouncementBanner(
+                announcement = roomAnnouncement,
+                isDark = isDark,
+                onDismiss = {
+                    ZeroTalkClientManager.dismissRoomAnnouncement(conversation.id, roomAnnouncement)
+                },
+                onBannerClick = {
+                    showSecretRoomInfo = true
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 98.dp, start = 16.dp, end = 16.dp)
+            )
+        }
+
         // ---- 3. 底部输入控制栏（公共组件 ChatComposerBar：[+] + 输入框 + 引用条 + 扩展抽屉）----
         ChatComposerBar(
             drawerExpanded = showActionSheet,
@@ -1216,6 +1256,7 @@ fun PrivateChatScreen(
                 inputText = ""
                 mentionTargets = emptyList()
                 quotingMessage = null
+                ZeroTalkClientManager.clearChatDraft(conversation.id)
                 // 管理器统一管理乐观回显与服务端引用/@对账
                 ZeroTalkClientManager.sendRoomMessage(
                     conversation.id, contentToSend,

@@ -79,4 +79,23 @@ object DeviceIdManager {
             saveToStorage(id)
         }
     }
+
+    /**
+     * 获取当前 Android 设备标准 User-Agent。
+     *
+     * 格式形如：
+     * Mozilla/5.0 (Linux; Android {version}; {deviceModel}) ZeroTalk/1.4.0
+     * 服务端识别平台为 Android，浏览器识别为「未知浏览器」（非 Chrome 等常见浏览器）。
+     */
+    fun getUserAgent(): String {
+        val env = top.lanxint.zerotalk.data.log.AppDiagnostics.environment
+        val androidVer = env?.androidVersion
+            ?.replace(Regex("""（.*）"""), "")
+            ?.trim()
+            ?.ifBlank { "Android 14" }
+            ?: "Android 14"
+        val model = env?.deviceModel?.trim()?.ifBlank { "Xiaomi 14" } ?: "Xiaomi 14"
+        val verName = env?.appVersionName?.trim()?.ifBlank { "1.4.0" } ?: "1.4.0"
+        return "Mozilla/5.0 (Linux; $androidVer; $model) ZeroTalk/$verName"
+    }
 }

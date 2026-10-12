@@ -729,16 +729,23 @@ private fun SecondaryActionRow(
     }
 }
 
-/** 设备标题：browser → device_name 中「 · 」之后 → platform · browser → 当前设备/其他设备 */
+/** 设备标题：当前设备优先展示本机真实机型/环境；非当前设备优先取 browser 或 device_name */
 private fun securityDeviceTitle(device: SecurityDeviceDto): String {
+    if (device.isCurrent) {
+        val env = top.lanxint.zerotalk.data.log.AppDiagnostics.environment
+        val localModel = env?.deviceModel?.trim().orEmpty()
+        if (localModel.isNotBlank() && localModel != "未知") {
+            return localModel
+        }
+    }
     val browser = device.browser.trim()
-    if (browser.isNotEmpty()) return browser
+    if (browser.isNotEmpty() && browser != "未知浏览器") return browser
     val name = device.deviceName.trim()
     if (name.isNotEmpty() && name != "Unknown Device") {
         val separatorIndex = name.indexOf(" · ")
         if (separatorIndex >= 0) {
             val tail = name.substring(separatorIndex + 3).trim()
-            if (tail.isNotEmpty()) return tail
+            if (tail.isNotEmpty() && tail != "未知浏览器") return tail
         }
         return name
     }
@@ -746,8 +753,15 @@ private fun securityDeviceTitle(device: SecurityDeviceDto): String {
     return combined.ifBlank { if (device.isCurrent) "当前设备" else "其他设备" }
 }
 
-/** 平台行：platform 非 Web 时用它，否则取 device_name 的第一段 */
+/** 平台行：展示系统平台（如 Android 14、Windows 等） */
 private fun securityDevicePlatform(device: SecurityDeviceDto): String {
+    if (device.isCurrent) {
+        val env = top.lanxint.zerotalk.data.log.AppDiagnostics.environment
+        val localPlatform = env?.androidVersion?.replace(Regex("""（.*）"""), "")?.trim().orEmpty()
+        if (localPlatform.isNotBlank() && localPlatform != "未知") {
+            return localPlatform
+        }
+    }
     val platform = device.platform.trim()
     if (platform.isNotEmpty() && platform != "Web") return platform
     val name = device.deviceName.trim()
@@ -755,7 +769,7 @@ private fun securityDevicePlatform(device: SecurityDeviceDto): String {
         val head = name.substringBefore(" · ").trim()
         if (head.isNotEmpty() && head != "Web") return head
     }
-    return ""
+    return platform.ifBlank { "Android" }
 }
 
 /** 设备 ID 展示：超过 16 字符显示「前 8…后 8」 */
@@ -2469,7 +2483,7 @@ fun SheetContactUsContent(
 
 /** 「App反馈」一键加入的官方暗语群聊（固定参数） */
 private const val APP_FEEDBACK_ROOM_OWNER = "kelo"
-private const val APP_FEEDBACK_ROOM_NAME = "App端群"
+private const val APP_FEEDBACK_ROOM_NAME = "第三方App群"
 private const val APP_FEEDBACK_ROOM_PASSWORD = "1"
 
 /**
@@ -2478,7 +2492,7 @@ private const val APP_FEEDBACK_ROOM_PASSWORD = "1"
  * 上半部分为提交表单（类型 / 标题 / 详细内容），下半部分为「我的反馈」记录；
  * 提交成功后自动刷新记录列表。
  *
- * 顶部另有「App反馈」入口：一键加入官方暗语群聊（创建者 kelo / 房间 App端群 / 暗号 1），
+ * 顶部另有「App反馈」入口：一键加入官方暗语群聊（创建者 kelo / 房间 第三方App群 / 暗号 1），
  * 走 [ZeroTalkClientManager.joinSecretRoom] 的 `POST /room/join`。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2502,7 +2516,7 @@ fun SheetFeedbackContent(
     var formError by remember { mutableStateOf<String?>(null) }
     var isJoiningAppRoom by remember { mutableStateOf(false) }
 
-    // 「发送诊断信息到 App端群」：预览文本 / 预览弹窗 / 发送中
+    // 「发送诊断信息到 第三方App群」：预览文本 / 预览弹窗 / 发送中
     var diagnosticsText by remember { mutableStateOf("") }
     var showDiagnosticsPreview by remember { mutableStateOf(false) }
     var isSendingDiagnostics by remember { mutableStateOf(false) }
@@ -2571,7 +2585,7 @@ fun SheetFeedbackContent(
         onShowMessage("已发送到「$APP_FEEDBACK_ROOM_NAME」")
     }
 
-    /** 尚未加入 App端群：复用「App反馈」同一套常量与 joinSecretRoom */
+    /** 尚未加入 第三方App群：复用「App反馈」同一套常量与 joinSecretRoom */
     fun joinAndSendDiagnostics(text: String) {
         ZeroTalkClientManager.joinSecretRoom(
             creatorUsername = APP_FEEDBACK_ROOM_OWNER,
@@ -2616,7 +2630,7 @@ fun SheetFeedbackContent(
             .verticalScroll(rememberScrollState())
             .padding(bottom = 20.dp)
     ) {
-        // ---- App反馈：一键加入官方暗语群聊（创建者 kelo / 房间 App端群 / 暗号 1） ----
+        // ---- App反馈：一键加入官方暗语群聊（创建者 kelo / 房间 第三方App群 / 暗号 1） ----
         AppleHigFillCard(
             isDark = isDark,
             modifier = Modifier.fillMaxWidth(),
@@ -2680,7 +2694,7 @@ fun SheetFeedbackContent(
                 )
             }
 
-            // ---- 一键发送诊断信息：先弹预览（可编辑），确认后再发到 App端群 ----
+            // ---- 一键发送诊断信息：先弹预览（可编辑），确认后再发到 第三方App群 ----
             LiquidButton(
                 onClick = {
                     if (isSendingDiagnostics) return@LiquidButton
@@ -2709,7 +2723,7 @@ fun SheetFeedbackContent(
                 )
                 Spacer(Modifier.width(6.dp))
                 BasicText(
-                    text = "发送诊断信息到 App端群",
+                    text = "发送诊断信息到 第三方App群",
                     style = AppleHigTypography.subhead.copy(
                         color = Color.White,
                         fontWeight = FontWeight.SemiBold

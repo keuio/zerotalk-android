@@ -30,6 +30,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.Icon
@@ -101,6 +102,7 @@ fun MomentShareSheet(
     val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsState()
 
     var currentStep by remember { mutableStateOf(ShareSheetStep.OPTIONS) }
+    var selectedRoomIds by remember { mutableStateOf(emptySet<String>()) }
 
     val momentLink = remember(moment.id) {
         "https://app.zerotalk.cn/app/moments/${moment.id}"
@@ -163,6 +165,35 @@ fun MomentShareSheet(
         return payload.toString()
     }
 
+    fun dispatchShareToSelectedRooms() {
+        if (selectedRoomIds.isEmpty()) return
+        val payload = buildOfficialSharePayload()
+        if (payload == null) {
+            notificationState.show("动态分享数据无效")
+            return
+        }
+        var count = 0
+        selectedRoomIds.forEach { targetId ->
+            if (targetId == "hall") {
+                ZeroTalkClientManager.sendHallMessage(
+                    content = payload,
+                    mentionIds = emptyList(),
+                    messageType = MESSAGE_TYPE_MOMENT_SHARE
+                )
+                count++
+            } else {
+                ZeroTalkClientManager.sendRoomMessage(
+                    roomId = targetId,
+                    content = payload,
+                    messageType = MESSAGE_TYPE_MOMENT_SHARE
+                )
+                count++
+            }
+        }
+        notificationState.show(if (count > 1) "动态卡片已发送至 $count 个房间" else "动态卡片已发送")
+        onDismiss()
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -174,7 +205,7 @@ fun MomentShareSheet(
             modifier = Modifier.padding(bottom = 18.dp),
             title = when (currentStep) {
                 ShareSheetStep.OPTIONS -> "分享动态"
-                ShareSheetStep.SELECT_ROOM -> "选择分享房间"
+                ShareSheetStep.SELECT_ROOM -> if (selectedRoomIds.isNotEmpty()) "选择房间 (${selectedRoomIds.size})" else "选择分享房间"
             },
             leadingAction = when (currentStep) {
                 ShareSheetStep.OPTIONS -> if (isSubPage) {
@@ -183,6 +214,13 @@ fun MomentShareSheet(
                     SheetAction.Close { onDismiss() }
                 }
                 ShareSheetStep.SELECT_ROOM -> SheetAction.Back { currentStep = ShareSheetStep.OPTIONS }
+            },
+            trailingAction = when (currentStep) {
+                ShareSheetStep.OPTIONS -> SheetAction.None
+                ShareSheetStep.SELECT_ROOM -> SheetAction.Done(
+                    enabled = selectedRoomIds.isNotEmpty(),
+                    onClick = { dispatchShareToSelectedRooms() }
+                )
             }
         )
 
@@ -269,32 +307,28 @@ fun MomentShareSheet(
                         ) {
                             // 公共大厅选项
                             item {
+                                val isHallSelected = selectedRoomIds.contains("hall")
                                 RoomTargetRow(
                                     title = "零语大厅",
                                     subtitle = "公共聊天室 · 在线匿友畅聊",
                                     badgeText = "公共",
                                     badgeColor = Color(0xFF10B981),
                                     icon = Icons.Default.Public,
+                                    isSelected = isHallSelected,
                                     isDark = isDark,
                                     onClick = {
-                                        val payload = buildOfficialSharePayload()
-                                        if (payload == null) {
-                                            notificationState.show("动态分享数据无效")
-                                            return@RoomTargetRow
+                                        selectedRoomIds = if (isHallSelected) {
+                                            selectedRoomIds - "hall"
+                                        } else {
+                                            selectedRoomIds + "hall"
                                         }
-                                        ZeroTalkClientManager.sendHallMessage(
-                                            content = payload,
-                                            mentionIds = emptyList(),
-                                            messageType = MESSAGE_TYPE_MOMENT_SHARE
-                                        )
-                                        notificationState.show("动态卡片已发送")
-                                        onDismiss()
                                     }
                                 )
                             }
 
                             // 当前会话房间列表
                             items(conversations, key = { it.id }) { conv ->
+                                val isSelected = selectedRoomIds.contains(conv.id)
                                 RoomTargetRow(
                                     title = conv.targetName,
                                     subtitle = conv.lastMessage.ifBlank { "暂无最新消息" },
@@ -305,21 +339,42 @@ fun MomentShareSheet(
                                         else -> Color(0xFF007AFF)
                                     },
                                     icon = Icons.AutoMirrored.Filled.Chat,
+                                    isSelected = isSelected,
                                     isDark = isDark,
                                     onClick = {
-                                        val payload = buildOfficialSharePayload()
-                                        if (payload == null) {
-                                            notificationState.show("动态分享数据无效")
-                                            return@RoomTargetRow
+                                        selectedRoomIds = if (isSelected) {
+                                            selectedRoomIds - conv.id
+                                        } else {
+                                            selectedRoomIds + conv.id
                                         }
-                                        ZeroTalkClientManager.sendRoomMessage(
-                                            roomId = conv.id,
-                                            content = payload,
-                                            messageType = MESSAGE_TYPE_MOMENT_SHARE
-                                        )
-                                        notificationState.show("动态卡片已发送")
-                                        onDismiss()
                                     }
+                                )
+                            }
+                        }
+
+                        // 底部操作区：已选数量与确认发送按钮
+                        if (selectedRoomIds.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(higColors.tint)
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = { dispatchShareToSelectedRooms() }
+                                    )
+                                    .padding(vertical = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                BasicText(
+                                    text = "确认分享到 ${selectedRoomIds.size} 个房间",
+                                    style = AppleHigTypography.body.copy(
+                                        color = Color.White,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 )
                             }
                         }
@@ -416,6 +471,7 @@ private fun RoomTargetRow(
     badgeText: String,
     badgeColor: Color,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isSelected: Boolean = false,
     isDark: Boolean,
     onClick: () -> Unit
 ) {
@@ -425,8 +481,15 @@ private fun RoomTargetRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(higColors.secondarySystemBackground)
-            .border(0.5.dp, higColors.separator.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .background(
+                if (isSelected) higColors.tint.copy(alpha = if (isDark) 0.16f else 0.08f)
+                else higColors.secondarySystemBackground
+            )
+            .border(
+                width = if (isSelected) 1.5.dp else 0.5.dp,
+                color = if (isSelected) higColors.tint else higColors.separator.copy(alpha = 0.4f),
+                shape = RoundedCornerShape(14.dp)
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -491,6 +554,31 @@ private fun RoomTargetRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        // 右侧多选 Checkbox 圆圈
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(if (isSelected) higColors.tint else Color.Transparent)
+                .border(
+                    width = 1.5.dp,
+                    color = if (isSelected) higColors.tint else higColors.separator.copy(alpha = 0.6f),
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isSelected) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
         }
     }
 }

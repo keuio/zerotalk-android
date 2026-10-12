@@ -4,6 +4,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import top.lanxint.zerotalk.data.model.MomentDraft
+import top.lanxint.zerotalk.data.model.MomentMusic
+import top.lanxint.zerotalk.data.model.MessageContentParser
+import top.lanxint.zerotalk.ui.utils.SelectedPhoto
 
 /**
  * 本地界面偏好持久化（设备级，与登录态无关）
@@ -35,6 +41,23 @@ object UiPreferencesStore {
     private val cache = mutableMapOf<String, String>()
     /** 已知加密房间 ID 缓存 */
     private val encryptedRoomIds = mutableSetOf<String>()
+
+    // ==================== 聊天草稿 (Chat Drafts) ====================
+    private const val CHAT_DRAFTS_FILE = "zt_chat_drafts.json"
+    private val chatDraftsCache = mutableMapOf<String, String>()
+
+    // ==================== 动态草稿 (Moment Draft) ====================
+    private const val MOMENT_DRAFT_FILE = "zt_moment_draft.json"
+    private const val MOMENT_DRAFT_PHOTOS_DIR = "moment_draft_photos"
+
+    private data class MomentDraftData(
+        val content: String = "",
+        val musicJson: String? = null,
+        val photoCount: Int = 0
+    )
+
+    @Volatile
+    private var cachedMomentDraft: MomentDraft? = null
 
     /**
      * 兼容渲染模式：开启后强制按 Android 13 以下（API 31–32）的渲染能力执行，
@@ -85,6 +108,19 @@ object UiPreferencesStore {
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() }
             ?.let { encryptedRoomIds.addAll(it) }
+
+        // 恢复聊天草稿缓存
+        chatDraftsCache.clear()
+        readText(CHAT_DRAFTS_FILE)?.let { json ->
+            try {
+                val type = object : TypeToken<Map<String, String>>() {}.type
+                val map: Map<String, String>? = Gson().fromJson(json, type)
+                map?.forEach { (k, v) ->
+                    if (k.isNotBlank() && v.isNotEmpty()) chatDraftsCache[k] = v
+                }
+            } catch (_: Exception) {}
+        }
+        cachedMomentDraft = null
     }
 
     /**
@@ -170,6 +206,144 @@ object UiPreferencesStore {
         cache[KEY_MATCH_CLEAN_STREAM] = if (prefs.cleanStreamMode) "1" else "0"
         cache[KEY_MATCH_PRIVACY_MODE] = if (prefs.anonymousMode) "1" else "0"
         writeText(PREF_FILE, cache.entries.joinToString("\n") { "${it.key}=${it.value}" })
+    }
+
+    // ==================== 聊天草稿 (Chat Drafts) ====================
+
+    /**
+     * 获取指定房间（私聊、暗号群聊或大厅）的草稿文本
+     */
+    @Synchronized
+    fun getChatDraft(roomId: String): String {
+        if (roomId.isBlank()) return ""
+        if (chatDraftsCache.isEmpty()) {
+            readText(CHAT_DRAFTS_FILE)?.let { json ->
+                try {
+                    val type = object : TypeToken<Map<String, String>>() {}.type
+                    val map: Map<String, String>? = Gson().fromJson(json, type)
+                    map?.forEach { (k, v) ->
+                        if (k.isNotBlank() && v.isNotEmpty()) chatDraftsCache[k] = v
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+        return chatDraftsCache[roomId].orEmpty()
+    }
+
+    /**
+     * 保存或更新指定房间的草稿文本（若内容为空或空白则自动删除）
+     */
+    @Synchronized
+    fun setChatDraft(roomId: String, draft: String) {
+        if (roomId.isBlank()) return
+        val trimmed = draft.trim()
+        val changed = if (trimmed.isEmpty()) {
+            chatDraftsCache.remove(roomId) != null
+        } else {
+            val prev = chatDraftsCache.put(roomId, draft)
+            prev != draft
+        }
+        if (changed) {
+            val json = Gson().toJson(chatDraftsCache)
+            writeText(CHAT_DRAFTS_FILE, json)
+        }
+    }
+
+    /**
+     * 清空指定房间的草稿
+     */
+    @Synchronized
+    fun clearChatDraft(roomId: String) {
+        setChatDraft(roomId, "")
+    }
+
+    // ==================== 动态草稿 (Moment Draft) ====================
+
+    /**
+     * 读取动态草稿（文字、音乐及相册配图）
+     */
+    @Synchronized
+    fun getMomentDraft(): MomentDraft? {
+        cachedMomentDraft?.let { return it }
+        val json = readText(MOMENT_DRAFT_FILE) ?: return null
+        return try {
+            val data = Gson().fromJson(json, MomentDraftData::class.java) ?: return null
+            val music = data.musicJson?.let {
+                MessageContentParser.parseMusic(it) ?: try {
+                    Gson().fromJson(it, MomentMusic::class.java)
+                } catch (_: Exception) { null }
+            }
+            val photos = mutableListOf<SelectedPhoto>()
+            val photosDir = fileOf(MOMENT_DRAFT_PHOTOS_DIR)
+            if (photosDir != null && photosDir.exists()) {
+                for (i in 0 until data.photoCount) {
+                    val f = File(photosDir, "photo_$i.jpg")
+                    if (f.exists() && f.length() > 0) {
+                        val bytes = f.readBytes()
+                        photos.add(
+                            SelectedPhoto(
+                                id = "draft_photo_${System.currentTimeMillis()}_$i",
+                                uriString = f.toURI().toString(),
+                                byteArray = bytes
+                            )
+                        )
+                    }
+                }
+            }
+            val draft = MomentDraft(
+                content = data.content,
+                music = music,
+                photos = photos
+            )
+            if (draft.isEmpty) {
+                null
+            } else {
+                cachedMomentDraft = draft
+                draft
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 保存动态草稿（文字、音乐及相册配图写入专属目录）
+     */
+    @Synchronized
+    fun saveMomentDraft(draft: MomentDraft) {
+        if (draft.isEmpty) {
+            clearMomentDraft()
+            return
+        }
+        cachedMomentDraft = draft
+        val photosDir = fileOf(MOMENT_DRAFT_PHOTOS_DIR)
+        photosDir?.mkdirs()
+        photosDir?.listFiles()?.forEach { it.delete() }
+        draft.photos.forEachIndexed { i, photo ->
+            try {
+                val f = File(photosDir, "photo_$i.jpg")
+                f.writeBytes(photo.byteArray)
+            } catch (_: Exception) {}
+        }
+        val data = MomentDraftData(
+            content = draft.content,
+            musicJson = draft.music?.toJsonString(),
+            photoCount = draft.photos.size
+        )
+        writeText(MOMENT_DRAFT_FILE, Gson().toJson(data))
+    }
+
+    /**
+     * 清空动态草稿及残留配图文件
+     */
+    @Synchronized
+    fun clearMomentDraft() {
+        cachedMomentDraft = null
+        fileOf(MOMENT_DRAFT_FILE)?.delete()
+        fileOf(MOMENT_DRAFT_PHOTOS_DIR)?.let { dir ->
+            dir.listFiles()?.forEach { it.delete() }
+            dir.delete()
+        }
     }
 
     // ---------------- 文件读写 ----------------

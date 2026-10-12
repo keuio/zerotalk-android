@@ -14,3 +14,4 @@ keystore.properties
 *.keystore
 _private/
 .local/
+*.apk

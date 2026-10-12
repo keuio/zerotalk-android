@@ -258,7 +258,7 @@ private fun NotificationCard(
     onClick: () -> Unit
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val (icon, accent) = notificationVisual(item.type)
+    val (icon, accent) = notificationVisual(item.type.orEmpty())
     val interactionSource = remember { MutableInteractionSource() }
 
     Box(
@@ -299,16 +299,18 @@ private fun NotificationCard(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (item.label.isNotBlank()) {
+                    val labelText = item.label.orEmpty()
+                    if (labelText.isNotBlank()) {
                         NotificationTag(
-                            text = item.label,
+                            text = labelText,
                             accent = accent,
                             isDark = isDark
                         )
                     }
                     Spacer(Modifier.weight(1f))
+                    val createdAtText = item.createdAt.orEmpty()
                     BasicText(
-                        text = formatNotificationTime(item.createdAt),
+                        text = formatNotificationTime(createdAtText),
                         style = AppleHigTypography.caption1.copy(color = higColors.tertiaryLabel)
                     )
                 }
@@ -326,8 +328,9 @@ private fun NotificationCard(
                         )
                         Spacer(Modifier.width(6.dp))
                     }
+                    val titleText = item.title.orEmpty()
                     BasicText(
-                        text = item.title,
+                        text = titleText,
                         style = AppleHigTypography.subhead.copy(
                             color = if (item.isRead) higColors.secondaryLabel else higColors.label,
                             fontWeight = if (item.isRead) FontWeight.Normal else FontWeight.SemiBold
@@ -337,10 +340,11 @@ private fun NotificationCard(
                 }
 
                 // 正文摘要
-                if (item.body.isNotBlank()) {
+                val bodyText = item.body.orEmpty()
+                if (bodyText.isNotBlank()) {
                     Spacer(Modifier.height(4.dp))
                     BasicText(
-                        text = item.body,
+                        text = bodyText,
                         style = AppleHigTypography.caption1.copy(color = higColors.secondaryLabel),
                         maxLines = 3
                     )

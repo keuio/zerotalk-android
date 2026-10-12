@@ -405,6 +405,15 @@ sealed class WsServerEvent {
         val message: String?
     ) : WsServerEvent()
 
+    /**
+     * 房间/大厅公告变更事件（官方 announcement / room_announcement / room_update）
+     */
+    data class Announcement(
+        val roomId: String?,
+        val announcement: String,
+        val roomName: String? = null
+    ) : WsServerEvent()
+
     data class Unknown(val rawEvent: String, val rawJson: String) : WsServerEvent()
 }
 
@@ -517,6 +526,7 @@ data class RoomListItemDto(
     @SerializedName("is_pinned") val isPinned: Boolean = false,
     @SerializedName("is_muted") val isMuted: Boolean = false,
     @SerializedName(value = "encryption_enabled", alternate = ["is_encrypted", "encrypted"]) val encryptionEnabled: Boolean = false,
+    @SerializedName("announcement") val announcement: String? = null,
     @SerializedName("peer") val peer: PeerUserDto? = null
 )
 

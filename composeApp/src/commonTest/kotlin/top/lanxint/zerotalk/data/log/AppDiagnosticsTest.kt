@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 /**
  * [AppDiagnostics] 的脱敏与组装回归测试。
  *
- * 重点保证：发送到 App端群的诊断文本里**不得**出现完整 uid / 房间 id 与聊天正文。
+ * 重点保证：发送到 第三方App群的诊断文本里**不得**出现完整 uid / 房间 id 与聊天正文。
  */
 class AppDiagnosticsTest {
 
