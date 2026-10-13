@@ -105,7 +105,7 @@ fun resolveAvatarSubtitleHint(upload: AvatarUploadDto?): String {
         if (mapped.isNotBlank()) return mapped
     }
     return if (upload?.canUpload == true) {
-        "jpg / png / webp，≤ 1MB"
+        "jpg / png / webp，≤ 1MB；每 3 天可改一次"
     } else {
         "注册满 7 天且无受限后可改"
     }
@@ -127,6 +127,9 @@ fun SheetEditProfileContent(
     val canUpload = uploadDto?.canUpload == true
     val hasCustom = profile.hasCustomAvatar || (uploadDto?.hasCustom == true)
     val subtitleHint = resolveAvatarSubtitleHint(uploadDto)
+    val loginNameChange = profile.loginNameChange
+    val canChangeLoginName = loginNameChange?.canChange != false
+    val nextChangeAt = loginNameChange?.nextChangeAt?.trim().orEmpty()
 
     var isUploadingAvatar by remember { mutableStateOf(false) }
     var avatarError by remember { mutableStateOf<String?>(null) }
@@ -269,8 +272,10 @@ fun SheetEditProfileContent(
                     BasicText(
                         text = subtitleHint,
                         style = AppleHigTypography.caption1.copy(
-                            color = if (!canUpload && uploadDto?.reason?.isNotBlank() == true) higColors.systemRed else higColors.secondaryLabel
-                        )
+                            color = if (!canUpload && uploadDto?.reason?.isNotBlank() == true) higColors.systemRed else higColors.secondaryLabel,
+                            lineHeight = 15.sp
+                        ),
+                        softWrap = true
                     )
                 }
 
@@ -383,6 +388,54 @@ fun SheetEditProfileContent(
                 ),
                 modifier = Modifier.padding(bottom = 2.dp)
             )
+
+            // 用户名输入行（用于登录，对齐官网 editProfileLoginName）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 44.dp)
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.width(80.dp)) {
+                    BasicText(
+                        text = "用户名",
+                        style = AppleHigTypography.groupedRowTitle.copy(color = titleColor)
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                ) {
+                    BasicTextField(
+                        value = profile.loginName,
+                        onValueChange = { input ->
+                            val filtered = input.filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+                            onProfileChange(profile.copy(loginName = filtered))
+                        },
+                        enabled = canChangeLoginName,
+                        textStyle = AppleHigTypography.groupedRowTitle.copy(
+                            color = if (canChangeLoginName) titleColor else higColors.secondaryLabel
+                        ),
+                        cursorBrush = SolidColor(higColors.systemBlue),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    BasicText(
+                        text = if (!canChangeLoginName && nextChangeAt.isNotBlank()) {
+                            "用于登录 · ${nextChangeAt.take(10)} 后可改"
+                        } else {
+                            "用于登录，仅限英文与数字"
+                        },
+                        style = AppleHigTypography.caption2.copy(
+                            color = if (!canChangeLoginName) higColors.tertiaryLabel else higColors.secondaryLabel
+                        )
+                    )
+                }
+            }
+
+            AppleHigDivider(isDark = isDark, insetStart = 16.dp)
 
             // 昵称输入行 (44dp 标准高度)
             Row(

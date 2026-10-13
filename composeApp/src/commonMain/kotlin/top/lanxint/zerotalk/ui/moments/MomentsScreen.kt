@@ -169,6 +169,27 @@ fun MomentsScreen(
         ZeroTalkClientManager.fetchMomentsByCategory(category = cat, sort = currentSort)
     }
 
+    // 记录切换排序前的滚动位置并在数据刷新后恢复（避免切换最新/最热时页面置顶）
+    var pendingRestoreScroll by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    LaunchedEffect(featuredList, followingList, mineList) {
+        val target = pendingRestoreScroll ?: return@LaunchedEffect
+        val currentListState = when (pagerState.currentPage) {
+            0 -> featuredListState
+            1 -> followingListState
+            else -> mineListState
+        }
+        val listSize = when (pagerState.currentPage) {
+            0 -> featuredList.size
+            1 -> followingList.size
+            else -> mineList.size
+        }
+        if (listSize > 0) {
+            val clampedIndex = target.first.coerceAtMost(listSize - 1)
+            currentListState.scrollToItem(clampedIndex, target.second)
+            pendingRestoreScroll = null
+        }
+    }
+
     // 顶部悬浮控制栏总高 = 状态栏 + 上下各 8dp + 胶囊 38dp，再留 16dp 呼吸留白：
     // 首条动态整体下移，不再紧贴顶部栏（此前固定 84dp，在状态栏较高的机型上会被顶部栏压住）
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -350,6 +371,15 @@ fun MomentsScreen(
                 currentSort = currentSort,
                 onSortChange = { newSort ->
                     if (currentSort != newSort) {
+                        val currentListState = when (pagerState.currentPage) {
+                            0 -> featuredListState
+                            1 -> followingListState
+                            else -> mineListState
+                        }
+                        pendingRestoreScroll = Pair(
+                            currentListState.firstVisibleItemIndex,
+                            currentListState.firstVisibleItemScrollOffset
+                        )
                         currentSort = newSort
                         val cat = categories[pagerState.currentPage]
                         ZeroTalkClientManager.fetchMomentsByCategory(category = cat, sort = newSort)

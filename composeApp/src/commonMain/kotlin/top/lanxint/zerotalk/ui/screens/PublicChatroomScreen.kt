@@ -147,6 +147,7 @@ import top.lanxint.zerotalk.ui.messages.looksLikeLocalWallpaperPath
 import top.lanxint.zerotalk.ui.messages.resolveLocalWallpaperFile
 import top.lanxint.zerotalk.ui.moments.MomentNeteasePickerSheet
 import top.lanxint.zerotalk.ui.navigation.rememberHasUserProfileLayers
+import top.lanxint.zerotalk.ui.sheets.ForwardMessageSheet
 import top.lanxint.zerotalk.ui.sheets.GamePickerSheet
 import top.lanxint.zerotalk.ui.sheets.MyGameSessionsSheet
 import top.lanxint.zerotalk.ui.utils.BackHandler
@@ -338,6 +339,7 @@ fun PublicChatroomScreen(
     // 长按菜单锚点（消息 + 气泡在 root 坐标系中的边界，用于放大预览与菜单避让）
     var menuAnchor by remember { mutableStateOf<HallMenuAnchor?>(null) }
     var isMenuShowing by remember { mutableStateOf(false) }
+    var forwardingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     // 撤回已由 ZeroTalkClientManager.recallMessage 发事件 + 服务端 message_recalled 广播就地标记为已撤回，无需本地兜底
     val visibleMessages = hallMessages
 
@@ -358,6 +360,11 @@ fun PublicChatroomScreen(
     // 长按菜单浮层拦截（被资料页层级覆盖时让出返回）
     BackHandler(enabled = !hasProfileLayers && menuAnchor != null) {
         dismissContextMenu()
+    }
+
+    // 消息转发面板拦截
+    BackHandler(enabled = !hasProfileLayers && forwardingMessage != null) {
+        forwardingMessage = null
     }
 
     // [+] 扩展抽屉 / 表情包面板 / 分享歌曲 / 游戏面板浮层拦截（优先于「退出大厅」）
@@ -382,7 +389,7 @@ fun PublicChatroomScreen(
 
     // 大厅主界面返回拦截：退出大厅回到首页（被资料页层级 / 浮层覆盖时让出返回）
     BackHandler(
-        enabled = !hasProfileLayers && !showHallInfo && menuAnchor == null &&
+        enabled = !hasProfileLayers && !showHallInfo && menuAnchor == null && forwardingMessage == null &&
             !showComposerDrawer && !showStickerPanel && !showMusicShareSheet && !showGamePickerSheet && !showMyGameSessionsSheet
     ) {
         onBack()
@@ -1243,6 +1250,23 @@ fun PublicChatroomScreen(
             }
         }
 
+        // ---- 消息多选转发抽屉 ----
+        forwardingMessage?.let { msg ->
+            AppleModalBottomSheet(
+                onDismissRequest = { forwardingMessage = null },
+                backdrop = null,
+                title = null,
+                leadingAction = SheetAction.None,
+                isDark = isDark
+            ) {
+                ForwardMessageSheet(
+                    message = msg,
+                    isDark = isDark,
+                    onDismiss = { forwardingMessage = null }
+                )
+            }
+        }
+
         // ---- 长按上下文菜单（与私聊共用公共组件，毛玻璃菜单 + 气泡 1.1 倍放大预览）----
         menuAnchor?.let { anchor ->
             val target = anchor.message
@@ -1320,6 +1344,10 @@ fun PublicChatroomScreen(
                             notificationState.show(if (success) "已删除该消息" else (message ?: "删除消息失败"))
                         }
                         dismissContextMenu()
+                    },
+                    onForward = {
+                        dismissContextMenu()
+                        forwardingMessage = target
                     }
                 )
             }

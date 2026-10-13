@@ -880,6 +880,7 @@ fun ZeroTalkApp() {
                             ageRange = editingProfile.ageRange,
                             gender = editingProfile.gender,
                             patText = editingProfile.patText,
+                            loginName = editingProfile.loginName,
                             qq = editingProfile.qq,
                             onResult = { success, err ->
                                 if (success) {

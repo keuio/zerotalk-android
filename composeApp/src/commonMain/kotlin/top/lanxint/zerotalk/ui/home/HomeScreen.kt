@@ -82,7 +82,7 @@ fun HomeScreen(
                 onSettingsClick = onOpenMatchingSettings,
                 onlineUsers = onlineUsers,
                 location = myLocation,
-                onRefreshOnlineCount = { ZeroTalkClientManager.fetchOnlineCount() },
+                onRefreshOnlineCount = { ZeroTalkClientManager.refreshOnlineAndLocation() },
                 backdrop = backdrop,
                 isDark = isDark,
                 forceChatTick = voiceBannedTick

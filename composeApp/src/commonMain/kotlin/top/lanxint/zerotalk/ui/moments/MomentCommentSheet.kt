@@ -26,12 +26,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.lanxint.zerotalk.data.model.MomentItem
@@ -121,6 +126,7 @@ fun MomentCommentSheet(
     var inputText by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<ReplyTargetInfo?>(null) }
+    var commentToDelete by remember { mutableStateOf<MomentCommentDto?>(null) }
 
     // 加载评论列表函数
     fun loadComments() {
@@ -262,6 +268,9 @@ fun MomentCommentSheet(
                                         notificationState.show(err)
                                     }
                                 )
+                            },
+                            onDeleteClick = { target ->
+                                commentToDelete = target
                             }
                         )
                     }
@@ -416,6 +425,47 @@ fun MomentCommentSheet(
                 }
             }
         }
+
+        // 删除评论二次确认弹窗
+        commentToDelete?.let { target ->
+            AlertDialog(
+                onDismissRequest = { commentToDelete = null },
+                title = { Text("确认删除评论？") },
+                text = { Text("删除后不可恢复，其下回复也将一并删除") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val targetId = target.id
+                            val decrease = if (target.parentId == null || target.parentId == 0L) 1 + target.replies.size else 1
+                            commentToDelete = null
+                            ZeroTalkClientManager.deleteMomentComment(
+                                momentId = momentIdLong,
+                                commentId = targetId,
+                                decreaseCount = decrease,
+                                onSuccess = {
+                                    commentsList = commentsList.filter { it.id != targetId }.map { root ->
+                                        if (root.replies.isNotEmpty()) {
+                                            root.copy(replies = root.replies.filter { it.id != targetId })
+                                        } else root
+                                    }
+                                    notificationState.show("评论已删除")
+                                },
+                                onError = { err ->
+                                    notificationState.show(err)
+                                }
+                            )
+                        }
+                    ) {
+                        Text("确认删除", color = Color(0xFFFF3B30))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { commentToDelete = null }) {
+                        Text("取消")
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -429,7 +479,8 @@ private fun CommentItemView(
     isDark: Boolean,
     onUserClick: (UserProfileTarget) -> Unit,
     onReplyClick: (MomentCommentDto) -> Unit,
-    onLikeClick: (MomentCommentDto) -> Unit
+    onLikeClick: (MomentCommentDto) -> Unit,
+    onDeleteClick: (MomentCommentDto) -> Unit
 ) {
     val threadParticipants = remember(comment, moment) {
         buildList {
@@ -469,12 +520,14 @@ private fun CommentItemView(
         // 主评论行
         CommentRow(
             comment = comment,
+            moment = moment,
             replyToTarget = resolveReplyTarget(comment),
             isDark = isDark,
             isSubReply = false,
             onUserClick = onUserClick,
             onReplyClick = { onReplyClick(comment) },
-            onLikeClick = { onLikeClick(comment) }
+            onLikeClick = { onLikeClick(comment) },
+            onDeleteClick = { onDeleteClick(comment) }
         )
 
         // 二级回复树嵌套展示
@@ -494,12 +547,14 @@ private fun CommentItemView(
                 comment.replies.forEach { subReply ->
                     CommentRow(
                         comment = subReply,
+                        moment = moment,
                         replyToTarget = resolveReplyTarget(subReply),
                         isDark = isDark,
                         isSubReply = true,
                         onUserClick = onUserClick,
                         onReplyClick = { onReplyClick(subReply) },
-                        onLikeClick = { onLikeClick(subReply) }
+                        onLikeClick = { onLikeClick(subReply) },
+                        onDeleteClick = { onDeleteClick(subReply) }
                     )
                 }
             }
@@ -513,18 +568,22 @@ private fun CommentItemView(
 @Composable
 private fun CommentRow(
     comment: MomentCommentDto,
+    moment: MomentItem,
     replyToTarget: UserProfileTarget?,
     isDark: Boolean,
     isSubReply: Boolean,
     onUserClick: (UserProfileTarget) -> Unit,
     onReplyClick: () -> Unit,
-    onLikeClick: () -> Unit
+    onLikeClick: () -> Unit,
+    onDeleteClick: () -> Unit
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val avatarSize = if (isSubReply) 22.dp else 28.dp
     val authorNumericId = comment.userId.takeIf { it > 0L }?.toString().orEmpty()
     val authorUid = comment.uid.trim()
     val isAuthorSelf = ZeroTalkClientManager.isSelfMember(authorUid, comment.userId)
+    val isMomentAuthor = moment.isMine || ZeroTalkClientManager.isSelfMember(moment.authorUid, moment.authorId.toLongOrNull() ?: 0L)
+    val canDelete = isAuthorSelf || isMomentAuthor
     val canOpenAuthor = !isAuthorSelf && (authorUid.isNotBlank() || authorNumericId.isNotBlank())
     val openAuthorProfile: () -> Unit = {
         onUserClick(
@@ -587,12 +646,16 @@ private fun CommentRow(
                             fontWeight = FontWeight.SemiBold,
                             fontSize = if (isSubReply) 12.sp else 13.sp
                         ),
-                        modifier = Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            enabled = canOpenAuthor,
-                            onClick = openAuthorProfile
-                        )
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                enabled = canOpenAuthor,
+                                onClick = openAuthorProfile
+                            )
                     )
 
                     // 如果是针对具体用户的回复
@@ -618,17 +681,23 @@ private fun CommentRow(
                                 fontWeight = FontWeight.Medium,
                                 fontSize = if (isSubReply) 11.sp else 12.sp
                             ),
-                            modifier = Modifier.clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                enabled = canOpenReplyTarget,
-                                onClick = {
-                                    replyToTarget?.let(onUserClick)
-                                }
-                            )
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    enabled = canOpenReplyTarget,
+                                    onClick = {
+                                        replyToTarget?.let(onUserClick)
+                                    }
+                                )
                         )
                     }
                 }
+
+                Spacer(Modifier.width(8.dp))
 
                 // 时间
                 val timeStr = if (comment.createdAt.length >= 16) {
@@ -639,48 +708,77 @@ private fun CommentRow(
                     style = AppleHigTypography.caption2.copy(
                         color = higColors.tertiaryLabel,
                         fontSize = 11.sp
-                    )
+                    ),
+                    maxLines = 1
                 )
             }
 
             Spacer(Modifier.height(3.dp))
 
-            // 评论正文
-            BasicText(
-                text = comment.content,
-                style = AppleHigTypography.footnote.copy(
-                    color = higColors.label,
-                    fontSize = if (isSubReply) 13.sp else 14.sp
+            // 评论正文（SelectionContainer 支持原生选词复制）
+            SelectionContainer {
+                BasicText(
+                    text = comment.content,
+                    style = AppleHigTypography.footnote.copy(
+                        color = higColors.label,
+                        fontSize = if (isSubReply) 13.sp else 14.sp
+                    )
                 )
-            )
+            }
 
             Spacer(Modifier.height(4.dp))
 
-            // 底部操作区：回复按钮 + 点赞心形
+            // 底部操作区：回复按钮 + 删除按钮（若有权限） + 点赞心形
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // 回复动作
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onReplyClick
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 回复动作
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = onReplyClick
+                            )
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BasicText(
+                            text = "回复",
+                            style = AppleHigTypography.caption2.copy(
+                                color = higColors.secondaryLabel,
+                                fontWeight = FontWeight.Medium
+                            )
                         )
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BasicText(
-                        text = "回复",
-                        style = AppleHigTypography.caption2.copy(
-                            color = higColors.secondaryLabel,
-                            fontWeight = FontWeight.Medium
-                        )
-                    )
+                    }
+
+                    // 删除动作（评论作者本人或动态作者可见）
+                    if (canDelete) {
+                        Spacer(Modifier.width(10.dp))
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = onDeleteClick
+                                )
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicText(
+                                text = "删除",
+                                style = AppleHigTypography.caption2.copy(
+                                    color = Color(0xFFFF3B30).copy(alpha = 0.85f),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
                 }
 
                 // 点赞心形与数字

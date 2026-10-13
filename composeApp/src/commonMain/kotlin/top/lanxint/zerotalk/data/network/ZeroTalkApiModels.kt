@@ -64,11 +64,20 @@ data class BootstrapUser(
     @SerializedName("pat_text") val patText: String? = null,
     @SerializedName("qq") val qq: String? = null,
     @SerializedName("avatar_upload") val avatarUpload: AvatarUploadDto? = null,
-    @SerializedName("has_custom_avatar") val hasCustomAvatar: Boolean = false
+    @SerializedName("has_custom_avatar") val hasCustomAvatar: Boolean = false,
+    @SerializedName("login_name_change") val loginNameChange: LoginNameChangeDto? = null
 ) {
     /** MBTI 完整信息（服务端下发对象或字符串；缺失/异常形态为 null） */
     val mbtiInfo: MbtiInfo? get() = MbtiInfo.fromJson(mbti)
 }
+
+/**
+ * 用户名修改限制与冷却数据 (user.login_name_change)
+ */
+data class LoginNameChangeDto(
+    @SerializedName("can_change") val canChange: Boolean = true,
+    @SerializedName("next_change_at") val nextChangeAt: String? = null
+)
 
 /**
  * Bootstrap 返回的公共房间模型
@@ -756,7 +765,8 @@ data class UpdateProfileData(
     @SerializedName("age_range") val ageRange: String? = null,
     @SerializedName("gender") val gender: String? = null,
     @SerializedName("pat_text") val patText: String? = null,
-    @SerializedName("qq") val qq: String? = null
+    @SerializedName("qq") val qq: String? = null,
+    @SerializedName("login_name_change") val loginNameChange: LoginNameChangeDto? = null
 )
 
 /**

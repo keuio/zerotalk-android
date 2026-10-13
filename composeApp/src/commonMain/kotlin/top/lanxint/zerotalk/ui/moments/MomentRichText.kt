@@ -86,28 +86,30 @@ fun MomentRichText(
             }
         } else Modifier
 
-        BasicText(
-            text = annotatedContent,
-            style = AppleHigTypography.body.copy(
-                color = higColors.label,
-                fontSize = 15.sp,
-                lineHeight = 22.sp
-            ),
-            maxLines = if (isExpanded) Int.MAX_VALUE else maxCollapsedLines.coerceAtLeast(1),
-            overflow = TextOverflow.Ellipsis,
-            onTextLayout = { layout ->
-                textLayoutResult = layout
-                if (!isExpanded) {
-                    val lastLine = layout.lineCount - 1
-                    val isEllipsized = lastLine >= 0 && layout.isLineEllipsized(lastLine)
-                    val notAllRendered = lastLine >= 0 && layout.getLineEnd(lastLine) < annotatedContent.length
-                    if (layout.hasVisualOverflow || layout.didOverflowHeight || isEllipsized || notAllRendered) {
-                        hasOverflow = true
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            BasicText(
+                text = annotatedContent,
+                style = AppleHigTypography.body.copy(
+                    color = higColors.label,
+                    fontSize = 15.sp,
+                    lineHeight = 22.sp
+                ),
+                maxLines = if (isExpanded) Int.MAX_VALUE else maxCollapsedLines.coerceAtLeast(1),
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { layout ->
+                    textLayoutResult = layout
+                    if (!isExpanded) {
+                        val lastLine = layout.lineCount - 1
+                        val isEllipsized = lastLine >= 0 && layout.isLineEllipsized(lastLine)
+                        val notAllRendered = lastLine >= 0 && layout.getLineEnd(lastLine) < annotatedContent.length
+                        if (layout.hasVisualOverflow || layout.didOverflowHeight || isEllipsized || notAllRendered) {
+                            hasOverflow = true
+                        }
                     }
-                }
-            },
-            modifier = clickModifier
-        )
+                },
+                modifier = clickModifier
+            )
+        }
 
         if (hasOverflow) {
             Spacer(Modifier.height(4.dp))

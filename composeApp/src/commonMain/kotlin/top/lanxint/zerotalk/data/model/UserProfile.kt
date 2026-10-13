@@ -1,6 +1,7 @@
 package top.lanxint.zerotalk.data.model
 
 import top.lanxint.zerotalk.data.network.AvatarUploadDto
+import top.lanxint.zerotalk.data.network.LoginNameChangeDto
 
 /**
  * 用户个人资料数据模型（预留后续与后端 API 接口对接）
@@ -29,7 +30,8 @@ data class UserProfile(
     val hasCustomAvatar: Boolean = false,
     val location: String = "",
     /** MBTI 完整信息（未填写 MBTI 时为 null，UI 不展示对应卡片） */
-    val mbti: MbtiInfo? = null
+    val mbti: MbtiInfo? = null,
+    val loginNameChange: LoginNameChangeDto? = null
 ) {
     companion object {
         val AGE_OPTIONS = listOf("18-23", "23+")
@@ -48,7 +50,8 @@ data class UserProfile(
             qq = "",
             avatarUpload = null,
             hasCustomAvatar = false,
-            location = ""
+            location = "",
+            loginNameChange = null
         )
     }
 }

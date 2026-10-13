@@ -72,6 +72,7 @@ import top.lanxint.zerotalk.data.model.canRecallOrEdit
  */
 enum class SFSymbolType {
     REPLY,
+    FORWARD,
     UNDO_SEND,
     RECALL_AND_EDIT,
     EDIT,
@@ -122,6 +123,23 @@ private fun SFSymbolIcon(
                         w * 0.50f, h * 0.38f,
                         w * 0.84f, h * 0.46f,
                         w * 0.84f, h * 0.86f
+                    )
+                }
+                drawPath(path, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+            SFSymbolType.FORWARD -> {
+                // SF Symbol: arrowshape.turn.up.right
+                val strokeWidth = 1.8.dp.toPx()
+                val path = Path().apply {
+                    moveTo(w * 0.88f, h * 0.38f)
+                    lineTo(w * 0.58f, h * 0.12f)
+                    moveTo(w * 0.88f, h * 0.38f)
+                    lineTo(w * 0.58f, h * 0.64f)
+                    moveTo(w * 0.86f, h * 0.38f)
+                    cubicTo(
+                        w * 0.50f, h * 0.38f,
+                        w * 0.16f, h * 0.46f,
+                        w * 0.16f, h * 0.86f
                     )
                 }
                 drawPath(path, color = tint, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
@@ -624,13 +642,19 @@ fun buildContextMenuItems(
     onPat: () -> Unit,
     onMention: () -> Unit,
     canModerateDelete: Boolean,
-    onModerateDelete: () -> Unit
+    onModerateDelete: () -> Unit,
+    onForward: (() -> Unit)? = null
 ): List<ContextMenuItem> {
     val list = mutableListOf<ContextMenuItem>()
 
     // 1. 回复（无引用回复通道时隐藏）
     if (onReply != null) {
         list.add(ContextMenuItem("回复", SFSymbolType.REPLY, onReply))
+    }
+
+    // 2. 转发（支持未撤回且未锁加密的消息）
+    if (onForward != null && !message.isDeleted && !message.isEncrypted) {
+        list.add(ContextMenuItem("转发", SFSymbolType.FORWARD, onForward))
     }
 
     // 2. 仅我方包含：撤回、撤回并编辑、编辑

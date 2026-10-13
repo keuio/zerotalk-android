@@ -752,6 +752,16 @@ class ZeroTalkApiService(
     )
 
     /**
+     * 删除动态评论 (POST /moment/comment/delete)
+     */
+    suspend fun deleteMomentComment(commentId: Long): Result<Unit> = apiDataRequest<Any>(
+        path = "/moment/comment/delete",
+        type = object : TypeToken<ApiResponse<Any>>() {}.type,
+        params = mapOf("comment_id" to commentId.toString()),
+        fallbackMessage = "删除评论失败"
+    ).mapCatching { }
+
+    /**
      * 发布动态 (POST /moment/create)
      *
      * 参数与官方一致：

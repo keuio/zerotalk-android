@@ -1307,7 +1307,8 @@ object ZeroTalkClientManager {
                 hasCustomAvatar = user.hasCustomAvatar || (user.avatarUpload?.hasCustom == true),
                 location = user.location.orEmpty(),
                 // MBTI：服务端下发对象（旧版为字符串），由 mbtiInfo 容错解析
-                mbti = user.mbtiInfo
+                mbti = user.mbtiInfo,
+                loginNameChange = user.loginNameChange
             )
         }
 
@@ -1788,6 +1789,24 @@ object ZeroTalkClientManager {
     }
 
     /**
+     * 刷新在线人数与当前位置及个人信息 (GET /api/home/online + GET /api/home/bootstrap)
+     */
+    fun refreshOnlineAndLocation() {
+        fetchOnlineCount()
+        scope.launch {
+            val res = apiService.bootstrap()
+            res.getOrNull()?.let { bootstrap ->
+                _bootstrapData.value = bootstrap
+                bootstrap.user?.let { user ->
+                    _userProfile.value = _userProfile.value.copy(
+                        location = user.location.orEmpty()
+                    )
+                }
+            }
+        }
+    }
+
+    /**
      * 拍一拍发送结果，供 UI 给出精确反馈（官网同款分支）
      */
     enum class PatSendResult {
@@ -1993,6 +2012,109 @@ object ZeroTalkClientManager {
                 onError = onError,
                 send = { wsClient.sendImageMessage(url) }
             )
+        }
+    }
+
+    /**
+     * 发送已有 URL 的聊天图片（用于转发消息）
+     */
+    fun sendRoomImageByUrl(
+        roomId: String,
+        imageUrl: String,
+        onError: ((String) -> Unit)? = null
+    ) {
+        if (imageUrl.isBlank()) return
+        scope.launch {
+            appendLocalRoomMessage(
+                roomId = roomId,
+                content = "［图片］",
+                isImage = true,
+                imageUrl = imageUrl,
+                preview = "[图片]",
+                onError = onError,
+                send = { wsClient.sendImageMessage(imageUrl) }
+            )
+        }
+    }
+
+    /**
+     * 转发消息到指定房间或公共大厅
+     */
+    fun forwardMessage(
+        message: ChatMessage,
+        targetRoomId: String,
+        onError: ((String) -> Unit)? = null
+    ) {
+        if (message.isDeleted || message.isEncrypted) return
+        val isHall = targetRoomId == "hall"
+
+        when {
+            message.isMomentShare -> {
+                if (isHall) {
+                    sendHallMessage(
+                        content = message.content,
+                        mentionIds = emptyList(),
+                        messageType = MESSAGE_TYPE_MOMENT_SHARE
+                    )
+                } else {
+                    sendRoomMessage(
+                        roomId = targetRoomId,
+                        content = message.content,
+                        messageType = MESSAGE_TYPE_MOMENT_SHARE
+                    )
+                }
+            }
+            message.isMusicPlaylist -> {
+                if (isHall) {
+                    sendHallMessage(
+                        content = message.content,
+                        mentionIds = emptyList(),
+                        messageType = "music_playlist"
+                    )
+                } else {
+                    sendRoomMessage(
+                        roomId = targetRoomId,
+                        content = message.content,
+                        messageType = "music_playlist"
+                    )
+                }
+            }
+            message.isMusic && message.musicData != null -> {
+                if (isHall) {
+                    sendHallMessage(content = "[音乐] ${message.musicData.name} - ${message.musicData.artists}")
+                } else {
+                    sendRoomMusic(roomId = targetRoomId, music = message.musicData)
+                }
+            }
+            message.isSticker -> {
+                if (message.stickerAssetId > 0L) {
+                    if (isHall) {
+                        sendHallSticker(message.stickerAssetId)
+                    } else {
+                        sendSticker(roomId = targetRoomId, assetId = message.stickerAssetId)
+                    }
+                } else if (message.stickerUrl.isNotBlank()) {
+                    if (isHall) {
+                        sendHallMessage(content = message.stickerUrl)
+                    } else {
+                        sendRoomImageByUrl(roomId = targetRoomId, imageUrl = message.stickerUrl, onError = onError)
+                    }
+                }
+            }
+            message.isImage && message.imageUrl.isNotBlank() -> {
+                if (isHall) {
+                    sendHallMessage(content = message.imageUrl)
+                } else {
+                    sendRoomImageByUrl(roomId = targetRoomId, imageUrl = message.imageUrl, onError = onError)
+                }
+            }
+            else -> {
+                if (isHall) {
+                    sendHallMessage(content = message.content)
+                } else {
+                    sendRoomMessage(roomId = targetRoomId, content = message.content)
+                }
+            }
         }
     }
 
@@ -3926,6 +4048,35 @@ object ZeroTalkClientManager {
             call = { apiService.likeMomentComment(commentId) }
         ) { data ->
             onSuccess?.invoke(data)
+        }
+    }
+
+    /**
+     * 删除动态评论 (POST /moment/comment/delete)
+     */
+    fun deleteMomentComment(
+        momentId: Long,
+        commentId: Long,
+        decreaseCount: Int = 1,
+        onSuccess: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
+    ) {
+        if (_loginData.value == null) {
+            onError?.invoke("请先登录后再操作")
+            return
+        }
+        launchApiCall(
+            fallbackMessage = "删除评论失败",
+            onError = onError,
+            call = { apiService.deleteMomentComment(commentId) }
+        ) {
+            // 同步本地各列表中 moment 的 commentsCount
+            updateMomentInAllLists { m ->
+                if (m.id == momentId.toString()) {
+                    m.copy(commentsCount = (m.commentsCount - decreaseCount).coerceAtLeast(0))
+                } else m
+            }
+            onSuccess?.invoke()
         }
     }
 
@@ -6279,6 +6430,7 @@ object ZeroTalkClientManager {
         ageRange: String,
         gender: String,
         patText: String = "",
+        loginName: String? = null,
         qq: String? = null,
         onResult: ((Boolean, String?) -> Unit)? = null
     ) {
@@ -6294,6 +6446,7 @@ object ZeroTalkClientManager {
                 ageRange = ageRange,
                 gender = genderEn,
                 patText = patText,
+                loginName = loginName,
                 qq = qq
             )
             if (res.isSuccess) {
@@ -6304,6 +6457,8 @@ object ZeroTalkClientManager {
                 val newGender = if ((updatedData.gender ?: genderEn) == "female") "女" else "男"
                 val newPat = updatedData.patText ?: patText
                 val newQq = updatedData.qq ?: qq ?: _userProfile.value.qq
+                val newLoginName = updatedData.loginName?.ifBlank { loginName } ?: loginName ?: _userProfile.value.loginName
+                val newLoginNameChange = updatedData.loginNameChange ?: _userProfile.value.loginNameChange
 
                 _userProfile.value = _userProfile.value.copy(
                     name = newName,
@@ -6311,18 +6466,30 @@ object ZeroTalkClientManager {
                     ageRange = newAge,
                     gender = newGender,
                     patText = newPat,
-                    qq = newQq
+                    loginName = newLoginName,
+                    qq = newQq,
+                    loginNameChange = newLoginNameChange
                 )
+                // 同步更新 loginData 中的 loginName
+                _loginData.value?.let { curLogin ->
+                    _loginData.value = curLogin.copy(
+                        loginName = newLoginName,
+                        username = newName,
+                        gender = if (newGender == "女") "female" else "male"
+                    )
+                }
                 // 同步更新 bootstrap.user 缓存
                 _bootstrapData.value?.user?.let { curUser ->
                     _bootstrapData.value = _bootstrapData.value?.copy(
                         user = curUser.copy(
                             username = newName,
+                            loginName = newLoginName,
                             bio = newBio,
                             ageRange = newAge,
                             gender = if (newGender == "女") "female" else "male",
                             patText = newPat,
-                            qq = newQq
+                            qq = newQq,
+                            loginNameChange = newLoginNameChange
                         )
                     )
                 }

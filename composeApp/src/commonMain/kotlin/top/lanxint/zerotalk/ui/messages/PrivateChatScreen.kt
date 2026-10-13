@@ -181,6 +181,7 @@ import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.lazy.LazyListState
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.components.SheetAction
+import top.lanxint.zerotalk.ui.sheets.ForwardMessageSheet
 import top.lanxint.zerotalk.ui.moments.MomentNeteasePickerSheet
 import top.lanxint.zerotalk.ui.sheets.RoomMusicSheet
 import top.lanxint.zerotalk.ui.sheets.GamePickerSheet
@@ -463,6 +464,7 @@ fun PrivateChatScreen(
     // 长按气泡选中的锚点信息及菜单显示动画状态
     var activeBubbleAnchor by remember { mutableStateOf<BubbleAnchorInfo?>(null) }
     var isMenuShowing by remember { mutableStateOf(false) }
+    var forwardingMessage by remember { mutableStateOf<ChatMessage?>(null) }
 
     fun dismissContextMenu() {
         isMenuShowing = false
@@ -1599,6 +1601,11 @@ fun PrivateChatScreen(
                             notificationState.show(if (success) "已删除该消息" else (message ?: "删除消息失败"))
                         }
                         dismissContextMenu()
+                    },
+                    onForward = {
+                        val msg = anchor.message
+                        dismissContextMenu()
+                        forwardingMessage = msg
                     }
                 )
             }
@@ -1842,6 +1849,23 @@ fun PrivateChatScreen(
                         ZeroTalkClientManager.openGameSession(gameType, gameId)
                     },
                     onDismiss = { showMyGameSessionsSheet = false }
+                )
+            }
+        }
+
+        // ---- 11.8 消息多选转发抽屉 ----
+        forwardingMessage?.let { msg ->
+            AppleModalBottomSheet(
+                onDismissRequest = { forwardingMessage = null },
+                backdrop = chatBackdrop,
+                title = null,
+                leadingAction = SheetAction.None,
+                isDark = isDark
+            ) {
+                ForwardMessageSheet(
+                    message = msg,
+                    isDark = isDark,
+                    onDismiss = { forwardingMessage = null }
                 )
             }
         }
@@ -2209,7 +2233,7 @@ private fun BubbleMessageItem(
                             fontWeight = FontWeight.Normal
                         ),
                         modifier = Modifier
-                            .offset(y = (-4).dp)
+                            .offset(y = (-1).dp)
                             .padding(end = if (hasTail) 25.dp else 12.dp)
                     )
                 }
