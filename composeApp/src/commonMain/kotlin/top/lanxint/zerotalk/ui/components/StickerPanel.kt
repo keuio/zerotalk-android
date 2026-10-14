@@ -30,9 +30,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import kotlinx.coroutines.flow.distinctUntilChanged
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -158,13 +155,12 @@ fun StickerPanel(
         }
     }
 
-    val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
-    val isSearchingKeyboardOpen = isSearchFocusedState.value && imeBottom > 0.dp
-    val effectiveHeight = if (isSearchingKeyboardOpen) {
-        imeBottom + 48.dp
-    } else {
-        height
-    }
+    // 搜索态（已有关键词 或 搜索框聚焦）面板固定加高一个搜索栏的高度。
+    // 关键：这里**不能**用实时的 imeBottom 当高度 —— 收放键盘时 ime 逐帧变化（部分输入法直接跳变），
+    // 面板高度跟着变就会「弹跳」。宿主 ChatComposerBar 在搜索态同样使用「抽屉高度 + 搜索栏」的稳定高度，
+    // 两处必须保持同一口径，面板内容才不会在容器里错位。
+    val searchModeActive = searched || isSearchFocusedState.value
+    val effectiveHeight = if (searchModeActive) height + 48.dp else height
 
     Column(
         modifier = modifier

@@ -88,6 +88,13 @@ data class GameSessionDetail(
     @SerializedName("score") val score: Any? = null,
     @SerializedName("passes") val passes: Int = 0,
     @SerializedName("sync_chat_to_room") val syncChatToRoom: Boolean = false,
+    /**
+     * 对局聊天同步是否被锁定（官方 `sync_chat_locked`）
+     *
+     * 实测：公共房间（大厅）不允许把对局聊天同步到房间，此时为 true，页头只展示
+     * 「公共房间不允许同步聊天内容」文案、不渲染开关。
+     */
+    @SerializedName("sync_chat_locked") val syncChatLocked: Boolean = false,
     @SerializedName("created_at") val createdAt: String? = null,
     @SerializedName("started_at") val startedAt: String? = null,
     @SerializedName("finished_at") val finishedAt: String? = null,
@@ -188,8 +195,124 @@ data class ChatGameMessageItem(
     @SerializedName("sender_uid") val senderUid: String = "",
     @SerializedName("sender_username") val senderUsername: String = "",
     @SerializedName("content") val content: String = "",
-    @SerializedName("created_at") val createdAt: String = ""
-)
+    @SerializedName("created_at") val createdAt: String = "",
+    // ---- 兼容「房间消息行」结构：官方对局面板读的就是房间历史，字段名与 ChatMessageDto 一致 ----
+    @SerializedName("uid") val uid: String = "",
+    @SerializedName("username") val username: String = "",
+    @SerializedName("type") val type: String = "text",
+    @SerializedName("image_url") val imageUrl: String? = null,
+    @SerializedName("avatar_url") val avatarUrl: String? = null,
+    @SerializedName("is_deleted") val isDeleted: Boolean = false,
+    @SerializedName("media_expired") val mediaExpired: Boolean = false,
+    @SerializedName("meta") val meta: GameChatMeta? = null
+) {
+    val effectiveUid: String get() = uid.ifBlank { senderUid }
+    val effectiveUsername: String get() = username.ifBlank { senderUsername }
+}
+
+/**
+ * 对局聊天历史条目 -> UI 消息模型
+ *
+ * 历史接口与房间消息同构（含 `type` / `image_url` / `meta`），因此这里只做最小映射：
+ * 文本 / 表情包 / 语音三类由 [ChatMessage.isSticker] / [ChatMessage.isVoice] 标记，
+ * 渲染层再按类型分发；发送者身份用 `uid`（兼容 `sender_uid`）。
+ */
+fun ChatGameMessageItem.toChatMessage(myUid: String? = null): ChatMessage {
+    val sender = effectiveUid
+    val type = type.lowercase()
+    val isSticker = type == "sticker"
+    val isVoice = type == "audio"
+    return ChatMessage(
+        id = if (id > 0L) "msg_$id" else "msg_game_${content.hashCode()}_$createdAt",
+        senderId = sender,
+        content = if (isVoice) "" else content,
+        timestamp = createdAt.takeLast(8).take(5),
+        isMine = sender.isNotBlank() && sender == myUid,
+        isImage = type == "image" || (imageUrl?.isNotBlank() == true && !isSticker),
+        imageUrl = imageUrl.orEmpty(),
+        isSticker = isSticker,
+        stickerUrl = if (isSticker) imageUrl.orEmpty() else "",
+        isVoice = isVoice,
+        audioUrl = if (isVoice) content else "",
+        isDeleted = isDeleted,
+        senderName = effectiveUsername,
+        senderAvatar = avatarUrl.orEmpty(),
+        serverId = id,
+        gameMeta = meta?.takeIf { it.isGameChat }
+    )
+}
+
+/**
+ * 对局聊天 meta（官方 `game-*.js` 的 `Mt` / `zn`）
+ *
+ * 对局聊天**没有独立通道**：发送走房间 `message` 帧，并在 `meta` 里标记
+ * `source=game` + `game_id` + `game_type`；接收端据此把消息分到对局内面板，
+ * 并按 `sync_room` 决定它是否也进房间消息列表。
+ */
+data class GameChatMeta(
+    @SerializedName("source") val source: String = "",
+    @SerializedName("game_id") val gameId: Long = 0L,
+    @SerializedName("game_type") val gameType: String = "",
+    @SerializedName("invite_message_id") val inviteMessageId: Long = 0L,
+    /**
+     * 是否同步到房间（官方 `sync_room`）
+     *
+     * **缺省（null）按 true 处理**：官方 `zn` 判定为「meta 里没有 sync_room 字段 → 照常进房间」。
+     */
+    @SerializedName("sync_room") val syncRoom: Boolean? = null
+) {
+    /** 是否为合法的对局聊天 meta（source=game + game_id>0 + game_type 在白名单内） */
+    val isGameChat: Boolean
+        get() = source == GAME_CHAT_SOURCE && gameId > 0L && gameType.lowercase() in GAME_CHAT_TYPES
+
+    companion object {
+        const val GAME_CHAT_SOURCE = "game"
+
+        /** 官方口径：game_type 仅接受这 5 种，其余视为普通消息 */
+        val GAME_CHAT_TYPES = setOf("gobang", "go", "xiangqi", "chess", "undercover")
+    }
+}
+
+/**
+ * 官方 `zn`：这条消息是否应当进入房间消息列表
+ *
+ * - 非对局聊天消息 → 照常进房间；
+ * - 对局聊天消息 → `sync_room` 显式 false 时**只在对局面板可见**，其余（含缺省）照常进房间。
+ */
+fun GameChatMeta?.shouldShowInRoom(): Boolean = when {
+    this == null -> true
+    !isGameChat -> true
+    else -> syncRoom != false
+}
+
+/**
+ * 官方 `Vn`：这条消息是否属于指定对局的对局面板
+ *
+ * 除 meta 匹配外还要求发送者在双方之内（观战者即使发言也不会出现在对局面板里）。
+ *
+ * @param playerUids 对局双方（含红方）的 uid 集合
+ */
+fun ChatMessage.isGameChatFor(gameId: Long, playerUids: Set<String>): Boolean {
+    val meta = gameMeta ?: return false
+    if (!meta.isGameChat || meta.gameId != gameId) return false
+    if (isDeleted) return false
+    // 官方只让 text / audio / sticker（含图片）进对局面板，其余卡片类型一律不展示
+    if (isDice || isPat || isSystem || isVoiceCall || isGame ||
+        isMomentShare || isMusic || isMusicPlaylist
+    ) {
+        return false
+    }
+    if (playerUids.isEmpty()) return true
+    return senderId in playerUids
+}
+
+/** 对局双方的 uid 集合（白/黑/红；谁是卧底用 players 列表） */
+fun GameSessionDetail.playerUids(): Set<String> = buildSet {
+    whiteUid?.takeIf { it.isNotBlank() }?.let(::add)
+    blackUid?.takeIf { it.isNotBlank() }?.let(::add)
+    redUid?.takeIf { it.isNotBlank() }?.let(::add)
+    players.forEach { player -> player.uid.takeIf { it.isNotBlank() }?.let(::add) }
+}
 
 /**
  * 对局详情 -> 聊天卡片模型。

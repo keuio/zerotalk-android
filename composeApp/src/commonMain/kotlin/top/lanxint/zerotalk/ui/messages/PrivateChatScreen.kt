@@ -8,6 +8,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Canvas
@@ -181,7 +183,6 @@ import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.lazy.LazyListState
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.components.SheetAction
-import top.lanxint.zerotalk.ui.sheets.ForwardMessageSheet
 import top.lanxint.zerotalk.ui.moments.MomentNeteasePickerSheet
 import top.lanxint.zerotalk.ui.sheets.RoomMusicSheet
 import top.lanxint.zerotalk.ui.sheets.GamePickerSheet
@@ -189,7 +190,6 @@ import top.lanxint.zerotalk.ui.sheets.VoiceCallMemberPickerSheet
 import top.lanxint.zerotalk.ui.sheets.MyGameSessionsSheet
 import top.lanxint.zerotalk.ui.sheets.UnlockRoomMode
 import top.lanxint.zerotalk.ui.sheets.UnlockRoomSheet
-import top.lanxint.zerotalk.ui.game.GameSessionScreen
 
 /**
  * 全面复刻 iOS 26 / iMessage 风格的单聊详情页面 (PrivateChatScreen)
@@ -464,7 +464,6 @@ fun PrivateChatScreen(
     // 长按气泡选中的锚点信息及菜单显示动画状态
     var activeBubbleAnchor by remember { mutableStateOf<BubbleAnchorInfo?>(null) }
     var isMenuShowing by remember { mutableStateOf(false) }
-    var forwardingMessage by remember { mutableStateOf<ChatMessage?>(null) }
 
     fun dismissContextMenu() {
         isMenuShowing = false
@@ -519,6 +518,9 @@ fun PrivateChatScreen(
     var stickerPendingAdd by remember { mutableStateOf<StickerSearchItemDto?>(null) }
     var stickerDeleting by remember { mutableStateOf(false) }
     var stickerAdding by remember { mutableStateOf(false) }
+    // 表情包搜索关键词：搜索态下面板高度锁定为固定值（不随键盘收放变化，避免面板弹跳）
+    val stickerSearchKeyword by ZeroTalkClientManager.stickerSearchKeyword.collectAsState()
+    val stickerSearchKeywordActive = stickerSearchKeyword.isNotBlank()
     var showMusicShareSheet by remember { mutableStateOf(false) }
     var showRoomMusicSheet by remember { mutableStateOf(false) }
     var showGamePickerSheet by remember { mutableStateOf(false) }
@@ -526,6 +528,9 @@ fun PrivateChatScreen(
     var showVoiceCallPicker by remember { mutableStateOf(false) }
     var showMyGameSessionsSheet by remember { mutableStateOf(false) }
     val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsState()
+    // 「对方正在输入」：仅 1v1 会话展示（群聊 / 大厅不展示，与官网 peerIsTyping 口径一致）
+    val peerTypingRooms by ZeroTalkClientManager.peerTypingRooms.collectAsState()
+    val peerIsTyping = !isGroupRoom && peerTypingRooms.contains(conversation.id)
     var showConversationInfo by remember(conversation.id) { mutableStateOf(false) }
     // 点动态卡片评论数打开的动态（复用动态主界面的评论抽屉）
     var momentCardComment by remember(conversation.id) { mutableStateOf<MomentItem?>(null) }
@@ -552,31 +557,37 @@ fun PrivateChatScreen(
     // 系统返回手势 / 物理返回键拦截（依次回退：底部动作菜单 -> 搜索栏 -> 举报弹窗 -> 群聊面板 -> 退出单聊）
     val hasChatSubScreen = showConversationInfo || showMemberProfile
 
+    // 游戏对局页是全局覆盖层（由 ZeroTalkApp 统一渲染并带入场动画）：
+    // 它打开时返回事件属于对局页，聊天页所有浮层必须让出返回，
+    // 否则这里的处理器比全局对局页处理器注册得更晚而抢走返回（表现为「游戏页系统返回没实现」）。
+    val gameSessionOpen = activeGameSession != null
+
     // 1) 动作菜单与表情包浮层拦截（被资料页层级覆盖时让出返回）
-    BackHandler(enabled = !hasProfileLayers && (showActionSheet || showStickerPanel)) {
+    BackHandler(enabled = !gameSessionOpen && !hasProfileLayers && (showActionSheet || showStickerPanel)) {
         showActionSheet = false
         showStickerPanel = false
     }
 
     // 1.1) 音乐与游戏面板浮层拦截
-    BackHandler(enabled = !hasProfileLayers && showMusicShareSheet) {
+    BackHandler(enabled = !gameSessionOpen && !hasProfileLayers && showMusicShareSheet) {
         showMusicShareSheet = false
     }
-    BackHandler(enabled = !hasProfileLayers && showRoomMusicSheet) {
+    BackHandler(enabled = !gameSessionOpen && !hasProfileLayers && showRoomMusicSheet) {
         showRoomMusicSheet = false
     }
-    BackHandler(enabled = !hasProfileLayers && showGamePickerSheet) {
+    BackHandler(enabled = !gameSessionOpen && !hasProfileLayers && showGamePickerSheet) {
         showGamePickerSheet = false
     }
-    BackHandler(enabled = !hasProfileLayers && showMyGameSessionsSheet) {
+    BackHandler(enabled = !gameSessionOpen && !hasProfileLayers && showMyGameSessionsSheet) {
         showMyGameSessionsSheet = false
     }
-    BackHandler(enabled = !hasProfileLayers && activeGameSession != null) {
+    // 对局页自身的返回：由这里兜底关闭（全局覆盖层同样注册了同一动作，两者只会有其一处于启用态）
+    BackHandler(enabled = gameSessionOpen) {
         ZeroTalkClientManager.closeGameSession()
     }
 
     // 2) 消息搜索浮层拦截（被资料页层级覆盖时让出返回）
-    BackHandler(enabled = !hasProfileLayers && showMessageSearch) {
+    BackHandler(enabled = !gameSessionOpen && !hasProfileLayers && showMessageSearch) {
         showMessageSearch = false
         messageSearchQuery = ""
     }
@@ -587,13 +598,13 @@ fun PrivateChatScreen(
     }
 
     // 4) 暗号房间面板拦截（页面内浮层：被群成员资料面板或资料页层级覆盖时让出返回）
-    BackHandler(enabled = !hasProfileLayers && !showMemberProfile && showSecretRoomInfo) {
+    BackHandler(enabled = !gameSessionOpen && !hasProfileLayers && !showMemberProfile && showSecretRoomInfo) {
         showSecretRoomInfo = false
     }
 
-    // 5) 聊天页面自身拦截（无子页面/弹窗、且上方没有资料页层级时回退到会话列表）
+    // 5) 聊天页面自身拦截（无子页面/弹窗、且上方没有资料页层级与游戏对局页时回退到会话列表）
     BackHandler(
-        enabled = !hasChatSubScreen && !hasProfileLayers && !showSecretRoomInfo &&
+        enabled = !gameSessionOpen && !hasChatSubScreen && !hasProfileLayers && !showSecretRoomInfo &&
             !showActionSheet && !showStickerPanel && !showMessageSearch && !showPeerReport
     ) {
         onBack()
@@ -652,6 +663,18 @@ fun PrivateChatScreen(
                 }
             }
             anchoredTailId = tailId
+        }
+    }
+
+    // 「对方正在输入」三点气泡：仅在用户本就贴近底部时滚到底部（正在翻历史时不抢滚动）
+    LaunchedEffect(peerIsTyping) {
+        if (!peerIsTyping || messageList.isEmpty()) return@LaunchedEffect
+        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        val totalItems = headerCount + messageList.size
+        if (lastVisibleIndex >= totalItems - 4) {
+            delay(30)
+            // 末尾「正在输入」项的下标 = 头部项数 + 消息条数；滚到它后由底部留白把气泡顶到可见位置
+            listState.animateScrollToItem(totalItems)
         }
     }
 
@@ -1115,6 +1138,35 @@ fun PrivateChatScreen(
                         }
                     }
                 }
+
+                // ---- 「对方正在输入」三点气泡（对方侧，末尾一条）----
+                // 常驻项 + AnimatedVisibility：气泡本身淡入淡出，三点在气泡内波浪式浮现消失
+                item(key = "peer_typing_indicator") {
+                    AnimatedVisibility(
+                        visible = peerIsTyping,
+                        enter = fadeIn(animationSpec = tween(200)) +
+                            scaleIn(
+                                initialScale = 0.92f,
+                                transformOrigin = TransformOrigin(0f, 1f),
+                                animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f)
+                            ),
+                        exit = fadeOut(animationSpec = tween(160)) +
+                            scaleOut(
+                                targetScale = 0.94f,
+                                transformOrigin = TransformOrigin(0f, 1f),
+                                animationSpec = tween(160)
+                            )
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            PeerTypingBubble()
+                        }
+                    }
+                }
             }
         }
 
@@ -1244,7 +1296,11 @@ fun PrivateChatScreen(
                 if (opened) showStickerPanel = false
             },
             inputText = inputText,
-            onInputTextChange = { inputText = it },
+            onInputTextChange = { newText ->
+                inputText = newText
+                // 上报自己的输入状态：有内容 → active=true（仓库层按 2 秒节流）；清空 → active=false
+                ZeroTalkClientManager.sendTypingIndicator(newText.isNotBlank())
+            },
             onSend = {
                 val contentToSend = inputText.trim()
                 val quoted = quotingMessage?.quotePreviewText()
@@ -1258,6 +1314,8 @@ fun PrivateChatScreen(
                 inputText = ""
                 mentionTargets = emptyList()
                 quotingMessage = null
+                // 已发出消息：立刻收掉自己的「正在输入」状态，别让对方一直看到三点
+                ZeroTalkClientManager.sendTypingIndicator(false)
                 ZeroTalkClientManager.clearChatDraft(conversation.id)
                 // 管理器统一管理乐观回显与服务端引用/@对账
                 ZeroTalkClientManager.sendRoomMessage(
@@ -1371,6 +1429,8 @@ fun PrivateChatScreen(
                 showStickerPanel = expanded
                 if (expanded) showActionSheet = false
             },
+            // 搜索态高度稳定化的输入：面板在搜索时保持固定高度，不随键盘收放弹跳
+            stickerSearchKeywordActive = stickerSearchKeywordActive,
             onStickerPick = { assetId, _ ->
                 ZeroTalkClientManager.sendSticker(conversation.id, assetId)
             },
@@ -1380,7 +1440,6 @@ fun PrivateChatScreen(
                 val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsState().value
                 val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsState().value
                 val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsState().value
-                val stickerSearchKeyword = ZeroTalkClientManager.stickerSearchKeyword.collectAsState().value
                 val stickerSearching = ZeroTalkClientManager.stickerSearching.collectAsState().value
                 val stickerLoadingMore = ZeroTalkClientManager.stickerSearchLoadingMore.collectAsState().value
                 val stickerHasMore = ZeroTalkClientManager.stickerSearchHasMore.collectAsState().value
@@ -1601,11 +1660,6 @@ fun PrivateChatScreen(
                             notificationState.show(if (success) "已删除该消息" else (message ?: "删除消息失败"))
                         }
                         dismissContextMenu()
-                    },
-                    onForward = {
-                        val msg = anchor.message
-                        dismissContextMenu()
-                        forwardingMessage = msg
                     }
                 )
             }
@@ -1853,23 +1907,6 @@ fun PrivateChatScreen(
             }
         }
 
-        // ---- 11.8 消息多选转发抽屉 ----
-        forwardingMessage?.let { msg ->
-            AppleModalBottomSheet(
-                onDismissRequest = { forwardingMessage = null },
-                backdrop = chatBackdrop,
-                title = null,
-                leadingAction = SheetAction.None,
-                isDark = isDark
-            ) {
-                ForwardMessageSheet(
-                    message = msg,
-                    isDark = isDark,
-                    onDismiss = { forwardingMessage = null }
-                )
-            }
-        }
-
         // ---- 11.5 端到端加密房间解锁面板（未解锁时输入房间暗号）----
         UnlockRoomSheet(
             visible = showUnlockRoomSheet,
@@ -1987,16 +2024,9 @@ fun PrivateChatScreen(
             )
         }
 
-        // ---- 12. 沉浸式独立游戏对局页 ----
-        if (activeGameSession != null) {
-            GameSessionScreen(
-                clientManager = ZeroTalkClientManager,
-                onBack = {
-                    ZeroTalkClientManager.closeGameSession()
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+        // ---- 12. 游戏对局页 ----
+        // 对局页是全局覆盖层：由 ZeroTalkApp 统一以「往左入场」动画渲染，
+        // 聊天页里再渲染一次会与全局层叠成两个游戏页面（此前的问题），故此处不再渲染。
     }
 }
 

@@ -3,6 +3,7 @@ package top.lanxint.zerotalk.data.network
 import com.google.gson.JsonElement
 import com.google.gson.annotations.SerializedName
 import top.lanxint.zerotalk.data.model.GameSessionDetail
+import top.lanxint.zerotalk.data.model.GameChatMeta
 import top.lanxint.zerotalk.data.model.ChatGameInvite
 import top.lanxint.zerotalk.data.model.MbtiInfo
 
@@ -289,7 +290,14 @@ sealed class WsServerEvent {
         /** 发送者称号（官方消息行 `msg.title`）；未下发为 null */
         val title: String? = null,
         /** 发送者称号颜色 key（官方消息行 `msg.title_color`） */
-        val titleColor: String? = null
+        val titleColor: String? = null,
+        /**
+         * 对局聊天 meta（官方 `meta.source="game"` 的消息）
+         *
+         * 只有 `source=game` 且 `game_id>0` 且 `game_type` 在白名单内时才非空，
+         * 其余一律按普通消息处理（对齐官方 `Mt`）。
+         */
+        val meta: GameChatMeta? = null
     ) : WsServerEvent()
 
     /**
@@ -347,7 +355,7 @@ sealed class WsServerEvent {
     /** 实时未读总数（官网 `notification_unread`：`{unread:N}`），用于刷新会话未读 */
     data class NotificationUnread(val unread: Int) : WsServerEvent()
 
-    data class Typing(val active: Boolean) : WsServerEvent()
+    data class Typing(val active: Boolean, val roomId: String? = null) : WsServerEvent()
     data class MatchCancelled(val type: String) : WsServerEvent()
     data class MatchError(val msg: String) : WsServerEvent()
     data class UserLeft(val roomId: String?) : WsServerEvent()
@@ -371,6 +379,20 @@ sealed class WsServerEvent {
         val gameType: String,
         val message: String,
         val game: GameSessionDetail?
+    ) : WsServerEvent()
+
+    /**
+     * 对局聊天同步开关回推（官方 `game_sync_chat_update` / `game_sync_chat_error`）
+     *
+     * 服务端在客户端发送 `{"event":"game_sync_chat","game_id","enabled"}` 后回推最终状态；
+     * 失败时 `success=false`，`message` 为提示文案（如「公共房间不可开启同步」）。
+     */
+    data class GameSyncChatUpdate(
+        val gameId: Long,
+        val syncChatToRoom: Boolean,
+        val syncChatLocked: Boolean,
+        val success: Boolean,
+        val message: String?
     ) : WsServerEvent()
 
     /**
@@ -580,7 +602,14 @@ data class ChatMessageDto(
     /** 发送者称号（官方 UserTitleBadge 的 `title`）；未下发为 null */
     @SerializedName("title") val title: String? = null,
     /** 发送者称号颜色 key（官方 `title_color`，白名单外 UI 回落 blue） */
-    @SerializedName("title_color") val titleColor: String? = null
+    @SerializedName("title_color") val titleColor: String? = null,
+    /**
+     * 对局聊天 meta（官方 `meta`）
+     *
+     * 房间历史里同样可能包含对局内聊天消息：`sync_room=false` 的必须从房间列表剔除，
+     * 与实时帧同一套判定（[top.lanxint.zerotalk.data.model.GameChatMeta.shouldShowInRoom]）。
+     */
+    @SerializedName("meta") val meta: GameChatMeta? = null
 )
 
 /**

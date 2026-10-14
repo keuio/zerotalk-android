@@ -430,7 +430,9 @@ class ZeroTalkWebSocketClient(
                 "message" -> parseMessageEvent(root)
                 "typing" -> {
                     val active = root.get("active")?.asBoolean ?: false
-                    WsServerEvent.Typing(active)
+                    // WS 同一时刻只在一个房间，帧里通常不带 room_id；带了就按它归属，缺失由上层用当前房间兜底
+                    val typingRoomId = root.get("room_id")?.takeIf { !it.isJsonNull }?.asString
+                    WsServerEvent.Typing(active, typingRoomId)
                 }
                 "match_cancelled" -> {
                     val type = root.get("type")?.asString ?: "timeout"
@@ -481,6 +483,29 @@ class ZeroTalkWebSocketClient(
                 else -> when {
                     // 语音通话全量下行（voice_invite_sent / ringing / offer / answer / ice / …）
                     event.startsWith("voice_") -> parseVoiceCall(event.removePrefix("voice_"), root, text)
+                    // 对局聊天同步开关：必须在下面 `endsWith("_update")` / `endsWith("_error")`
+                    // 通配之前显式拦下，否则会被当成 game_sync_chat_update / _error 的「对局更新」，
+                    // 前者被静默丢弃、后者会在对局页弹出一条无关的错误红条。
+                    event == "game_sync_chat_update" || event == "game_sync_chat_error" -> {
+                        val gameObj = root.get("game")?.takeIf { it.isJsonObject }?.asJsonObject
+                        val gameId = root.get("game_id")?.takeIf { !it.isJsonNull }?.asLong
+                            ?: gameObj?.get("game_id")?.takeIf { !it.isJsonNull }?.asLong
+                            ?: gameObj?.get("id")?.takeIf { !it.isJsonNull }?.asLong
+                            ?: 0L
+                        val success = root.get("success")?.takeIf { !it.isJsonNull }?.asBoolean
+                            ?: (event != "game_sync_chat_error")
+                        WsServerEvent.GameSyncChatUpdate(
+                            gameId = gameId,
+                            syncChatToRoom = root.get("sync_chat_to_room")?.takeIf { !it.isJsonNull }?.asBoolean
+                                ?: gameObj?.get("sync_chat_to_room")?.takeIf { !it.isJsonNull }?.asBoolean
+                                ?: false,
+                            syncChatLocked = root.get("sync_chat_locked")?.takeIf { !it.isJsonNull }?.asBoolean
+                                ?: gameObj?.get("sync_chat_locked")?.takeIf { !it.isJsonNull }?.asBoolean
+                                ?: false,
+                            success = success,
+                            message = root.get("message")?.takeIf { !it.isJsonNull }?.asString
+                        )
+                    }
                     event.endsWith("_update") -> {
                         val gType = event.removeSuffix("_update")
                         val gameObj = root.get("game")?.takeIf { it.isJsonObject }
@@ -844,6 +869,7 @@ class ZeroTalkWebSocketClient(
      * @param mentionIds @ 提及的 uid 列表（去空去重后写入 `mention_ids`）
      * @param enc 端到端加密参数（官方 `enc`：`{v,alg,iv,kid,sid}`）；仅加密 text 消息需要
      * @param clientMessageId 端到端加密消息的客户端消息 id（参与消息 AAD）
+     * @param meta 消息 meta（对局聊天用：`{source:"game",game_id,game_type,invite_message_id}`）
      */
     fun sendMessage(
         content: String,
@@ -851,13 +877,15 @@ class ZeroTalkWebSocketClient(
         replyToId: Long? = null,
         mentionIds: List<String> = emptyList(),
         enc: MessageEncryptionDto? = null,
-        clientMessageId: String? = null
+        clientMessageId: String? = null,
+        meta: JsonObject? = null
     ): Boolean {
         val payload = JsonObject().apply {
             addProperty("event", "message")
             addProperty("type", type)
             addProperty("content", content)
             replyToId?.takeIf { it > 0L }?.let { addProperty("reply_to_id", it) }
+            meta?.let { add("meta", it) }
             enc?.let { cfg ->
                 add("enc", JsonObject().apply {
                     addProperty("v", cfg.version)
@@ -1012,6 +1040,21 @@ class ZeroTalkWebSocketClient(
         val payload = JsonObject().apply {
             addProperty("event", "${gameType}_join")
             addProperty("game_id", gameId)
+        }
+        return sendRawJson(payload.toString())
+    }
+
+    /**
+     * 设置「对局聊天同步到房间」开关
+     *
+     * 官方帧（`useGameSyncChat` / `GameSyncChatToggle`）：`{"event":"game_sync_chat","game_id":N,"enabled":true|false}`
+     * 服务端回推 `game_sync_chat_update` / `game_sync_chat_error` 给出最终状态。
+     */
+    fun sendGameSyncChat(gameId: Long, enabled: Boolean): Boolean {
+        val payload = JsonObject().apply {
+            addProperty("event", "game_sync_chat")
+            addProperty("game_id", gameId)
+            addProperty("enabled", enabled)
         }
         return sendRawJson(payload.toString())
     }

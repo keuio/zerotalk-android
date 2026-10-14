@@ -9,6 +9,7 @@ import java.io.RandomAccessFile
 import top.lanxint.zerotalk.data.log.AppDiagnostics
 import top.lanxint.zerotalk.data.log.DeviceEnvironment
 import top.lanxint.zerotalk.data.log.ZtLog
+import top.lanxint.zerotalk.data.network.AccountStore
 import top.lanxint.zerotalk.data.network.DeviceIdManager
 import top.lanxint.zerotalk.data.network.SessionStore
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
@@ -85,6 +86,8 @@ class ZeroTalkApplication : Application() {
 
         DeviceIdManager.init(filesDir)
         SessionStore.init(filesDir)
+        // 多账号列表（「我的 → 切换账号」）：与 SessionStore 同一套加密存储
+        AccountStore.init(filesDir)
         UiPreferencesStore.init(filesDir)
         // 会话自定义背景（uid -> 备注 映射不落盘，这里只恢复每会话背景的本地路径映射）
         ZeroTalkClientManager.initConversationWallpapers(filesDir)

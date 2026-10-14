@@ -2,6 +2,7 @@ package top.lanxint.zerotalk.data.network
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import top.lanxint.zerotalk.data.model.GameChatMeta
 
 /**
  * 解析服务端 `message_recalled` 事件（官网 `handleMessageRecall` 的入参）。
@@ -115,8 +116,56 @@ internal fun parseMessageEvent(root: JsonObject): WsServerEvent.Message {
         clientMessageId = str("client_message_id"),
         // 发送者称号（官方消息行 title / title_color）
         title = str("title"),
-        titleColor = str("title_color")
+        titleColor = str("title_color"),
+        // 对局聊天 meta（官方 Mt：source=game + game_id>0 + game_type 白名单）
+        meta = parseGameChatMeta(raw("meta"))
     )
+}
+
+/**
+ * 解析消息里的对局聊天 meta（官方 `Mt`）。
+ *
+ * 只有 `source=="game"` 且 `game_id>0` 且 `game_type` 在白名单内才算对局聊天消息，
+ * 其余（含字段缺失 / 脏载荷）一律返回 null，按普通房间消息处理。
+ */
+internal fun parseGameChatMeta(element: JsonElement?): GameChatMeta? {
+    val obj = element?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
+
+    fun str(key: String): String = try {
+        obj.get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString.orEmpty()
+    } catch (_: Exception) {
+        ""
+    }
+
+    val gameId = try {
+        obj.get("game_id")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asLong ?: 0L
+    } catch (_: Exception) {
+        0L
+    }
+
+    // sync_room 缺省（无字段 / null）必须是 null 而不是 false：官方按「缺省即同步」处理
+    val syncRoom = obj.get("sync_room")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.let {
+        try {
+            it.asBoolean
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    val inviteMessageId = try {
+        obj.get("invite_message_id")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asLong ?: 0L
+    } catch (_: Exception) {
+        0L
+    }
+
+    val meta = GameChatMeta(
+        source = str("source"),
+        gameId = gameId,
+        gameType = str("game_type"),
+        inviteMessageId = inviteMessageId,
+        syncRoom = syncRoom
+    )
+    return meta.takeIf { it.isGameChat }
 }
 
 /**

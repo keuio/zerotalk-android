@@ -247,6 +247,8 @@ fun ChatComposerBar(
     onStickerPanelExpandedChange: (Boolean) -> Unit = { expanded ->
         if (expanded != stickerPanelExpanded) onToggleStickerPanel()
     },
+    /** 表情包是否处于「已有关键词」的搜索态（由调用方从搜索状态传入；面板高度稳定性需要它） */
+    stickerSearchKeywordActive: Boolean = false,
     onStickerPick: ((Long, String) -> Unit)? = null,
     stickerPanelContent: (@Composable ColumnScope.() -> Unit)? = null
 ) {
@@ -335,19 +337,25 @@ fun ChatComposerBar(
 
     // 表情搜索框聚焦状态（搜索场景例外）
     val stickerSearchFocusedState = remember { mutableStateOf(false) }
-    val isSearchingKeyboardOpen = stickerSearchFocusedState.value && imeBottomDp > 0.dp
-    val searchExtra = if (isSearchingKeyboardOpen) 48.dp else 0.dp
+    // 搜索态面板高度：固定为「抽屉高度 + 搜索栏高度」这一**稳定值**，绝不跟随实时 ime。
+    // 旧实现用 imeBottomDp + 48dp 当面板高度，而 ime 在收放键盘时会逐帧变化（部分输入法直接跳到目标值），
+    // 于是「点搜索框收键盘 / 再点输入框弹键盘」都会让面板高度瞬间改变 —— 这就是搜索时的面板弹跳。
+    // 现在：搜索态高度只与键盘记忆高度有关，键盘开或关都是同一个高度，面板纹丝不动。
+    val searchExtra = 48.dp
+    val stickerSearchActive = stickerSearchFocusedState.value || stickerSearchKeywordActive
+    val searchModeActive = stickerSearchActive && stickerPanelExpanded && stickerPanelContent != null
+    val searchPanelHeight = drawerHeight + searchExtra
 
-    val panelOccupiedHeight = if (isSearchingKeyboardOpen && (panelVisible || isHandingOffToKeyboard)) {
-        imeBottomDp + searchExtra
+    val panelOccupiedHeight = if (searchModeActive) {
+        searchPanelHeight
     } else {
         currentPanelHeight
     }
 
     // 输入栏底部的真实间隙：max(面板高度, 键盘高度, 导航栏高度)
-    // 搜索唤起键盘时为 imeBottomDp + 搜索栏高度
-    val effectiveBottomGap = if (isSearchingKeyboardOpen) {
-        imeBottomDp + searchExtra
+    // 搜索态固定用稳定高度（等于键盘高度 + 搜索栏），输入栏不会随键盘收放上下跳动
+    val effectiveBottomGap = if (searchModeActive) {
+        searchPanelHeight
     } else {
         maxOf(panelOccupiedHeight, imeBottomDp, navBottomDp)
     }
@@ -439,8 +447,8 @@ fun ChatComposerBar(
                     .background(if (isDark) Color(0xFF1C1F28) else Color(0xFFF6F6F8), panelShape)
             }
 
-            val containerHeight = if (isSearchingKeyboardOpen) {
-                imeBottomDp + searchExtra
+            val containerHeight = if (searchModeActive) {
+                searchPanelHeight
             } else {
                 drawerHeight
             }

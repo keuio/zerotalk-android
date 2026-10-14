@@ -33,6 +33,7 @@ object UiPreferencesStore {
     private const val KEY_MATCH_CLEAN_STREAM = "match_clean_stream"
     private const val KEY_MATCH_PRIVACY_MODE = "match_privacy_mode"
     private const val KEY_ENCRYPTED_ROOM_IDS = "encrypted_room_ids"
+    private const val KEY_USAGE_NOTICE_ACCEPTED = "usage_notice_accepted"
 
     @Volatile
     private var storageDir: File? = null
@@ -86,6 +87,15 @@ object UiPreferencesStore {
     val hallNotifyAfterExit: StateFlow<Boolean> = _hallNotifyAfterExit.asStateFlow()
 
     /**
+     * 首次启动「使用说明与须知」是否已确认
+     *
+     * 设备级一次性标记（不随退出登录清除）：未确认时启动后会盖一层说明浮层，
+     * 用户点「我已阅读并知悉」后写入，之后不再打扰。
+     */
+    private val _usageNoticeAccepted = MutableStateFlow(false)
+    val usageNoticeAccepted: StateFlow<Boolean> = _usageNoticeAccepted.asStateFlow()
+
+    /**
      * 初始化本地持久化存储目录（如 context.filesDir）
      */
     fun init(filesDir: File) {
@@ -102,6 +112,8 @@ object UiPreferencesStore {
         _backgroundReceiveEnabled.value = cache[KEY_BACKGROUND_RECEIVE] != "0"
         // 缺省视为关闭（与官方一致）
         _hallNotifyAfterExit.value = cache[KEY_HALL_NOTIFY_AFTER_EXIT] == "1"
+        // 缺省视为未确认：首次启动会弹一次使用说明
+        _usageNoticeAccepted.value = cache[KEY_USAGE_NOTICE_ACCEPTED] == "1"
 
         encryptedRoomIds.clear()
         cache[KEY_ENCRYPTED_ROOM_IDS]?.split(',')
@@ -168,6 +180,17 @@ object UiPreferencesStore {
         if (_hallNotifyAfterExit.value == enabled) return
         _hallNotifyAfterExit.value = enabled
         cache[KEY_HALL_NOTIFY_AFTER_EXIT] = if (enabled) "1" else "0"
+        writeText(PREF_FILE, cache.entries.joinToString("\n") { "${it.key}=${it.value}" })
+    }
+
+    /**
+     * 写入「首次启动使用说明已确认」标记（一次性，值未变化时跳过落盘）
+     */
+    @Synchronized
+    fun setUsageNoticeAccepted() {
+        if (_usageNoticeAccepted.value) return
+        _usageNoticeAccepted.value = true
+        cache[KEY_USAGE_NOTICE_ACCEPTED] = "1"
         writeText(PREF_FILE, cache.entries.joinToString("\n") { "${it.key}=${it.value}" })
     }
 

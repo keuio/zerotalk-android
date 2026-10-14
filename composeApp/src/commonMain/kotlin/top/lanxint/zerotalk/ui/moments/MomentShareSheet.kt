@@ -78,7 +78,8 @@ private enum class ShareSheetStep {
  *
  * 核心特性：
  * 1. 复制链接：完全遵循官方前端格式生成 https://app.zerotalk.cn/app/moments/{id} 并复制至剪贴板；
- * 2. 分享到房间：前置安全可见性校验，展示会话房间列表，选定后自动构建官方卡片摘要并分发至对应房间；
+ * 2. 分享到房间：前置安全可见性校验，展示会话房间列表，**单选**一个房间或大厅后
+ *    自动构建官方卡片摘要并发送（不支持一次分享到多个房间）；
  * 3. 极致细腻的 Apple HIG 毛玻璃与圆角微动效卡片设计。
  *
  * 顶栏由本组件自行调用全站唯一的 `SheetTopBar` 绘制：两步流程的标题与返回动作随内部步骤切换，
@@ -172,26 +173,28 @@ fun MomentShareSheet(
             notificationState.show("动态分享数据无效")
             return
         }
-        var count = 0
-        selectedRoomIds.forEach { targetId ->
-            if (targetId == "hall") {
-                ZeroTalkClientManager.sendHallMessage(
-                    content = payload,
-                    mentionIds = emptyList(),
-                    messageType = MESSAGE_TYPE_MOMENT_SHARE
-                )
-                count++
-            } else {
-                ZeroTalkClientManager.sendRoomMessage(
-                    roomId = targetId,
-                    content = payload,
-                    messageType = MESSAGE_TYPE_MOMENT_SHARE
-                )
-                count++
-            }
+        // 单房间分享：面板已限制为单选，这里只会有 1 个目标
+        val targetId = selectedRoomIds.first()
+        if (targetId == "hall") {
+            ZeroTalkClientManager.sendHallMessage(
+                content = payload,
+                mentionIds = emptyList(),
+                messageType = MESSAGE_TYPE_MOMENT_SHARE
+            )
+        } else {
+            ZeroTalkClientManager.sendRoomMessage(
+                roomId = targetId,
+                content = payload,
+                messageType = MESSAGE_TYPE_MOMENT_SHARE
+            )
         }
-        notificationState.show(if (count > 1) "动态卡片已发送至 $count 个房间" else "动态卡片已发送")
+        notificationState.show("动态卡片已发送")
         onDismiss()
+    }
+
+    /** 单选房间：点已选中的房间取消选择，点其它房间直接改选（不再支持多选批量分享） */
+    fun selectRoom(roomId: String) {
+        selectedRoomIds = if (selectedRoomIds.contains(roomId)) emptySet() else setOf(roomId)
     }
 
     Column(
@@ -205,7 +208,7 @@ fun MomentShareSheet(
             modifier = Modifier.padding(bottom = 18.dp),
             title = when (currentStep) {
                 ShareSheetStep.OPTIONS -> "分享动态"
-                ShareSheetStep.SELECT_ROOM -> if (selectedRoomIds.isNotEmpty()) "选择房间 (${selectedRoomIds.size})" else "选择分享房间"
+                ShareSheetStep.SELECT_ROOM -> "选择分享房间"
             },
             leadingAction = when (currentStep) {
                 ShareSheetStep.OPTIONS -> if (isSubPage) {
@@ -316,13 +319,7 @@ fun MomentShareSheet(
                                     icon = Icons.Default.Public,
                                     isSelected = isHallSelected,
                                     isDark = isDark,
-                                    onClick = {
-                                        selectedRoomIds = if (isHallSelected) {
-                                            selectedRoomIds - "hall"
-                                        } else {
-                                            selectedRoomIds + "hall"
-                                        }
-                                    }
+                                    onClick = { selectRoom("hall") }
                                 )
                             }
 
@@ -341,13 +338,7 @@ fun MomentShareSheet(
                                     icon = Icons.AutoMirrored.Filled.Chat,
                                     isSelected = isSelected,
                                     isDark = isDark,
-                                    onClick = {
-                                        selectedRoomIds = if (isSelected) {
-                                            selectedRoomIds - conv.id
-                                        } else {
-                                            selectedRoomIds + conv.id
-                                        }
-                                    }
+                                    onClick = { selectRoom(conv.id) }
                                 )
                             }
                         }
@@ -370,7 +361,7 @@ fun MomentShareSheet(
                                 contentAlignment = Alignment.Center
                             ) {
                                 BasicText(
-                                    text = "确认分享到 ${selectedRoomIds.size} 个房间",
+                                    text = "确认分享到该房间",
                                     style = AppleHigTypography.body.copy(
                                         color = Color.White,
                                         fontWeight = FontWeight.SemiBold

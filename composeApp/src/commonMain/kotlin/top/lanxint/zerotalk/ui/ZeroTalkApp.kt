@@ -43,6 +43,7 @@ import top.lanxint.zerotalk.ui.voice.VoiceCallOverlay
 import top.lanxint.zerotalk.data.repository.ClientStatus
 import top.lanxint.zerotalk.data.repository.NotificationCenterStore
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
+import top.lanxint.zerotalk.data.network.AccountStore
 import top.lanxint.zerotalk.data.network.WsServerEvent
 import top.lanxint.zerotalk.data.settings.UiPreferencesStore
 import kotlinx.coroutines.delay
@@ -51,6 +52,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
+import top.lanxint.zerotalk.ui.components.FirstLaunchNoticeOverlay
 import top.lanxint.zerotalk.ui.components.ImageViewerProvider
 import top.lanxint.zerotalk.ui.components.NotificationProvider
 import top.lanxint.zerotalk.ui.components.SheetAction
@@ -78,6 +80,7 @@ import top.lanxint.zerotalk.ui.sheets.MbtiTest
 import top.lanxint.zerotalk.ui.sheets.ProfileNotificationCenter
 import top.lanxint.zerotalk.ui.sheets.ProfileSettingItem
 import top.lanxint.zerotalk.ui.sheets.ProfileSheetType
+import top.lanxint.zerotalk.ui.sheets.SheetAccountSwitcherContent
 import top.lanxint.zerotalk.ui.sheets.SheetBlockListContent
 import top.lanxint.zerotalk.ui.sheets.SheetCatchHistoryContent
 import top.lanxint.zerotalk.ui.sheets.SheetCatchMomentsContent
@@ -119,6 +122,8 @@ fun ZeroTalkApp() {
     }
     // 兼容渲染模式（设备级本地偏好）：开启后液态玻璃降级到 Android 13 以下的渲染能力
     var liquidGlassCompat by remember { mutableStateOf(UiPreferencesStore.liquidGlassCompatMode) }
+    // 首次启动使用说明是否已确认（设备级一次性标记，未确认时盖一层说明浮层）
+    val usageNoticeAccepted by UiPreferencesStore.usageNoticeAccepted.collectAsState()
     // 后台接收消息（保活前台服务）：设备级偏好，默认开启
     val backgroundReceiveEnabled by UiPreferencesStore.backgroundReceiveEnabled.collectAsState()
     // 渲染能力总闸是 KMPLiquidGlass 的全局状态，随开关即时下发（无需重启即生效）
@@ -180,7 +185,11 @@ fun ZeroTalkApp() {
             if (unread != null) {
                 val previous = previousUnread
                 if (previous != null && unread > previous) {
-                    notificationState.showMessageNotification(unread - previous, unread)
+                    // 停留在某个聊天页时不再弹「全局未读聚合」横幅：该会话的通知已由房间级通道按
+                    // roomId 抑制，聚合横幅无法区分房间，会在本页重复提示「收到 N 条新消息」
+                    if (!ZeroTalkClientManager.isViewingAnyRoom()) {
+                        notificationState.showMessageNotification(unread - previous, unread)
+                    }
                 }
                 previousUnread = unread
             }
@@ -213,13 +222,21 @@ fun ZeroTalkApp() {
     var isLoggingIn by remember { mutableStateOf(false) }
     var loginError by remember { mutableStateOf<String?>(null) }
 
+    // 多账号（切换账号面板）：本地保存过的账号列表与当前选中账号
+    val savedAccounts by AccountStore.accounts.collectAsState()
+    val activeAccountLoginName by AccountStore.activeLoginName.collectAsState()
+    var accountSwitching by remember { mutableStateOf(false) }
+
     // 消息列表与当前活跃单聊会话 (消息) - 直接观察 ZeroTalkClientManager 真实会话数据流
     val conversations by ZeroTalkClientManager.conversations.collectAsState()
     var activeChatConversation by remember { mutableStateOf<ConversationItem?>(null) }
 
-    // 同步「正在查看的会话」：进入聊天页设置、退出清空（供横幅抑制判定）
-    LaunchedEffect(activeChatConversation?.id) {
-        ZeroTalkClientManager.setViewingRoom(activeChatConversation?.id)
+    // 同步「正在查看的会话」：私聊/群聊会话优先，其次零语大厅（进入大厅同样要忽略该房间的通知）
+    val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsState()
+    LaunchedEffect(activeChatConversation?.id, inChatroom, hallRoomId) {
+        ZeroTalkClientManager.setViewingRoom(
+            activeChatConversation?.id ?: hallRoomId.takeIf { inChatroom && it.isNotBlank() }
+        )
     }
 
     // 系统通知点击：等会话列表就绪后直达对应会话
@@ -495,6 +512,11 @@ fun ZeroTalkApp() {
                             isLoggingIn = false
                             activeProfileSheet = ProfileSheetType.Login
                         },
+                        onSwitchAccount = {
+                            accountSwitching = false
+                            activeProfileSheet = ProfileSheetType.AccountSwitcher
+                        },
+                        savedAccountCount = savedAccounts.size,
                         onOpenSetting = { item ->
                             if (item == ProfileSettingItem.PRIVACY_SETTINGS) {
                                 privacySettings = ZeroTalkClientManager.privacySettings.value
@@ -816,6 +838,7 @@ fun ZeroTalkApp() {
                 is ProfileSheetType.EditProfile -> "修改资料"
                 is ProfileSheetType.LogoutConfirm -> "退出登录"
                 is ProfileSheetType.DeleteAccountConfirm -> "注销账号"
+                is ProfileSheetType.AccountSwitcher -> "切换账号"
                 is ProfileSheetType.SettingDetail -> currentProfileSheet.item.title
                 is MbtiTest -> "MBTI 人格测试"
                 is ProfileNotificationCenter -> "通知中心"
@@ -837,6 +860,9 @@ fun ZeroTalkApp() {
                     activeProfileSheet = null
                 }
                 is ProfileSheetType.SettingDetail -> SheetAction.Close {
+                    activeProfileSheet = null
+                }
+                is ProfileSheetType.AccountSwitcher -> SheetAction.Close {
                     activeProfileSheet = null
                 }
                 is MbtiTest -> SheetAction.Close {
@@ -861,6 +887,9 @@ fun ZeroTalkApp() {
                             onSuccess = {
                                 isLoggingIn = false
                                 loginPassword = ""
+                                // 登录表单也可能是「添加 / 切换账号」：成功后退出上一个账号的页面状态
+                                activeChatConversation = null
+                                inChatroom = false
                                 activeProfileSheet = null
                                 notificationState.show("登录成功，已连接零语云服务")
                             },
@@ -907,6 +936,9 @@ fun ZeroTalkApp() {
                         // 退出登录时清空通知中心状态，避免串号
                         NotificationCenterStore.clear()
                         userProfile = UserProfile.NO_ACCOUNT
+                        // 退出后不能再停留在聊天页 / 大厅（会话数据已清空）
+                        activeChatConversation = null
+                        inChatroom = false
                         activeProfileSheet = null
                         notificationState.show("已退出登录")
                     }
@@ -941,6 +973,8 @@ fun ZeroTalkApp() {
                 }
                 // MBTI 测评：操作按钮在内容里（重新测试 / 清除本次测试），右上角无需确认按钮
                 is MbtiTest -> SheetAction.None
+                // 切换账号：操作在列表里（点行即切换），右上角无需确认按钮
+                is ProfileSheetType.AccountSwitcher -> SheetAction.None
                 // 通知中心：顶部工具栏自带「全部已读」，右上角无需确认按钮
                 is ProfileNotificationCenter -> SheetAction.None
             }
@@ -992,6 +1026,43 @@ fun ZeroTalkApp() {
                         SheetDeleteAccountConfirmContent(
                             profile = userProfile,
                             isDark = isDark
+                        )
+                    }
+                    is ProfileSheetType.AccountSwitcher -> {
+                        SheetAccountSwitcherContent(
+                            accounts = savedAccounts,
+                            activeLoginName = activeAccountLoginName,
+                            switching = accountSwitching,
+                            isDark = isDark,
+                            onSwitch = { loginName ->
+                                if (!accountSwitching) {
+                                    accountSwitching = true
+                                    ZeroTalkClientManager.switchAccount(loginName) { success, error ->
+                                        accountSwitching = false
+                                        if (success) {
+                                            // 切号后清掉上一层页面状态，避免残留上一个账号的会话 / 房间界面
+                                            activeChatConversation = null
+                                            inChatroom = false
+                                            activeProfileSheet = null
+                                            notificationState.show("已切换账号")
+                                        } else {
+                                            notificationState.show(error ?: "切换账号失败")
+                                        }
+                                    }
+                                }
+                            },
+                            onDelete = { loginName ->
+                                AccountStore.remove(loginName)
+                                notificationState.show("已删除本地账号")
+                            },
+                            onAddAccount = {
+                                // 复用登录表单：登录成功后由 loginAndBootstrap 记入账号列表
+                                loginUsername = ""
+                                loginPassword = ""
+                                loginError = null
+                                isLoggingIn = false
+                                activeProfileSheet = ProfileSheetType.Login
+                            }
                         )
                     }
                     is ProfileSheetType.SettingDetail -> {
@@ -1224,6 +1295,15 @@ fun ZeroTalkApp() {
             onToggleMute = { ZeroTalkClientManager.voiceCall.toggleMute() },
             onToggleSpeaker = { ZeroTalkClientManager.voiceCall.toggleSpeaker() }
         )
+
+        // 首次启动「使用说明与须知」：声明开发归属 / 使用须知 / 数据归属，确认一次后不再打扰
+        if (!usageNoticeAccepted) {
+            FirstLaunchNoticeOverlay(
+                isDark = isDark,
+                onAccept = { UiPreferencesStore.setUsageNoticeAccepted() },
+                onExit = { platformActions.exitApp() }
+            )
+        }
     }
     }
     }

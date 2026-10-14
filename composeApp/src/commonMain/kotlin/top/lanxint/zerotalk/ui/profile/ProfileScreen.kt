@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SwitchAccount
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -57,6 +58,7 @@ import top.lanxint.zerotalk.ui.components.CapsuleGlassButton
 import top.lanxint.zerotalk.ui.components.GenderBadge
 import top.lanxint.zerotalk.ui.components.LiquidSegmentedControl
 import top.lanxint.zerotalk.ui.components.LiquidToggle
+import top.lanxint.zerotalk.ui.components.LocalImageViewer
 import top.lanxint.zerotalk.ui.components.UserAvatar
 import top.lanxint.zerotalk.ui.sheets.ProfileSettingItem
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
@@ -87,6 +89,10 @@ fun ProfileScreen(
     onEditProfile: () -> Unit,
     onLogout: () -> Unit,
     onLogin: (() -> Unit)? = null,
+    /** 打开「切换账号」面板 */
+    onSwitchAccount: () -> Unit = {},
+    /** 本机已保存的账号数量（用于入口副标题） */
+    savedAccountCount: Int = 0,
     onOpenSetting: (ProfileSettingItem) -> Unit,
     /** 打开「通知中心」面板 */
     onOpenNotificationCenter: () -> Unit,
@@ -99,6 +105,8 @@ fun ProfileScreen(
     val higColors = AppleHigColors.colors(isDark)
     val titleColor = higColors.label
     val subColor = higColors.secondaryLabel
+    // 全站唯一的全屏图片查看器：点「我的」头像可放大查看
+    val imageViewer = LocalImageViewer.current
 
     // 系统通知权限：进入「我的」时刷新一次（用户可能刚从系统设置页返回）
     var notificationsEnabled by remember { mutableStateOf(SystemNotificationBridge.isNotificationEnabled) }
@@ -136,6 +144,7 @@ fun ProfileScreen(
                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     // 头像：真实头像优先，无头像/加载失败时回落为渐变圆环 + 首字母
+                    // 点击可放大查看（走全站唯一的全屏图片查看器）
                     UserAvatar(
                         url = profile.avatarUrl,
                         name = if (profile.isLoggedIn) profile.name else "",
@@ -146,7 +155,12 @@ fun ProfileScreen(
                             Color(0xFFC084FC)
                         ),
                         fallbackTextStyle = AppleHigTypography.title2,
-                        fallbackIconSize = 27.dp
+                        fallbackIconSize = 27.dp,
+                        onClick = if (profile.avatarUrl.isNotBlank()) {
+                            { imageViewer.open(profile.avatarUrl) }
+                        } else {
+                            null
+                        }
                     )
 
                     // 昵称与标签
@@ -460,6 +474,16 @@ fun ProfileScreen(
             title = "账号与安全",
             isDark = isDark
         ) {
+            // 切换账号：本机保存过多个账号时可一键切换
+            AppleHigRow(
+                title = "切换账号",
+                subtitle = if (savedAccountCount > 0) "本机已保存 $savedAccountCount 个账号" else "登录过的账号会保存在本机，可一键切换",
+                icon = Icons.Default.SwitchAccount,
+                iconBgColor = Color(0xFF0EA5E9),
+                isDark = isDark,
+                onClick = onSwitchAccount
+            )
+            AppleHigDivider(isDark = isDark)
             AppleHigRow(
                 title = ProfileSettingItem.SECURITY_CENTER.title,
                 icon = ProfileSettingItem.SECURITY_CENTER.icon,

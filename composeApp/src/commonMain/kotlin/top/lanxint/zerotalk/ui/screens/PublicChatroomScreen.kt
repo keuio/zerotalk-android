@@ -147,7 +147,6 @@ import top.lanxint.zerotalk.ui.messages.looksLikeLocalWallpaperPath
 import top.lanxint.zerotalk.ui.messages.resolveLocalWallpaperFile
 import top.lanxint.zerotalk.ui.moments.MomentNeteasePickerSheet
 import top.lanxint.zerotalk.ui.navigation.rememberHasUserProfileLayers
-import top.lanxint.zerotalk.ui.sheets.ForwardMessageSheet
 import top.lanxint.zerotalk.ui.sheets.GamePickerSheet
 import top.lanxint.zerotalk.ui.sheets.MyGameSessionsSheet
 import top.lanxint.zerotalk.ui.utils.BackHandler
@@ -339,7 +338,11 @@ fun PublicChatroomScreen(
     // 长按菜单锚点（消息 + 气泡在 root 坐标系中的边界，用于放大预览与菜单避让）
     var menuAnchor by remember { mutableStateOf<HallMenuAnchor?>(null) }
     var isMenuShowing by remember { mutableStateOf(false) }
-    var forwardingMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    // 表情包搜索关键词：搜索态下面板高度锁定为固定值（不随键盘收放变化，避免面板弹跳）
+    val stickerSearchKeyword by ZeroTalkClientManager.stickerSearchKeyword.collectAsState()
+    val stickerSearchKeywordActive = stickerSearchKeyword.isNotBlank()
+    // 沉浸式游戏对局页（全局覆盖层）是否打开：打开时返回事件属于对局页，本页所有浮层让出返回
+    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsState()
     // 撤回已由 ZeroTalkClientManager.recallMessage 发事件 + 服务端 message_recalled 广播就地标记为已撤回，无需本地兜底
     val visibleMessages = hallMessages
 
@@ -358,38 +361,33 @@ fun PublicChatroomScreen(
     val hasProfileLayers = rememberHasUserProfileLayers()
 
     // 长按菜单浮层拦截（被资料页层级覆盖时让出返回）
-    BackHandler(enabled = !hasProfileLayers && menuAnchor != null) {
+    BackHandler(enabled = !hasProfileLayers && activeGameSession == null && menuAnchor != null) {
         dismissContextMenu()
     }
 
-    // 消息转发面板拦截
-    BackHandler(enabled = !hasProfileLayers && forwardingMessage != null) {
-        forwardingMessage = null
-    }
-
     // [+] 扩展抽屉 / 表情包面板 / 分享歌曲 / 游戏面板浮层拦截（优先于「退出大厅」）
-    BackHandler(enabled = !hasProfileLayers && (showComposerDrawer || showStickerPanel)) {
+    BackHandler(enabled = !hasProfileLayers && activeGameSession == null && (showComposerDrawer || showStickerPanel)) {
         showComposerDrawer = false
         showStickerPanel = false
     }
-    BackHandler(enabled = !hasProfileLayers && showMusicShareSheet) {
+    BackHandler(enabled = !hasProfileLayers && activeGameSession == null && showMusicShareSheet) {
         showMusicShareSheet = false
     }
-    BackHandler(enabled = !hasProfileLayers && showGamePickerSheet) {
+    BackHandler(enabled = !hasProfileLayers && activeGameSession == null && showGamePickerSheet) {
         showGamePickerSheet = false
     }
-    BackHandler(enabled = !hasProfileLayers && showMyGameSessionsSheet) {
+    BackHandler(enabled = !hasProfileLayers && activeGameSession == null && showMyGameSessionsSheet) {
         showMyGameSessionsSheet = false
     }
 
     // 详细资料页浮层拦截：先关资料页，再谈退出大厅（页面内下钻的资料层由资料页自己拦）
-    BackHandler(enabled = !hasProfileLayers && showHallInfo) {
+    BackHandler(enabled = !hasProfileLayers && activeGameSession == null && showHallInfo) {
         showHallInfo = false
     }
 
-    // 大厅主界面返回拦截：退出大厅回到首页（被资料页层级 / 浮层覆盖时让出返回）
+    // 大厅主界面返回拦截：退出大厅回到首页（被资料页层级 / 浮层 / 游戏对局页覆盖时让出返回）
     BackHandler(
-        enabled = !hasProfileLayers && !showHallInfo && menuAnchor == null && forwardingMessage == null &&
+        enabled = !hasProfileLayers && activeGameSession == null && !showHallInfo && menuAnchor == null &&
             !showComposerDrawer && !showStickerPanel && !showMusicShareSheet && !showGamePickerSheet && !showMyGameSessionsSheet
     ) {
         onBack()
@@ -1030,6 +1028,8 @@ fun PublicChatroomScreen(
                 showStickerPanel = expanded
                 if (expanded) showComposerDrawer = false
             },
+            // 搜索态高度稳定化的输入：面板在搜索时保持固定高度，不随键盘收放弹跳
+            stickerSearchKeywordActive = stickerSearchKeywordActive,
             onStickerPick = { assetId, _ ->
                 ZeroTalkClientManager.sendHallSticker(assetId)
             },
@@ -1039,7 +1039,6 @@ fun PublicChatroomScreen(
                 val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsState().value
                 val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsState().value
                 val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsState().value
-                val stickerSearchKeyword = ZeroTalkClientManager.stickerSearchKeyword.collectAsState().value
                 val stickerSearching = ZeroTalkClientManager.stickerSearching.collectAsState().value
                 val stickerLoadingMore = ZeroTalkClientManager.stickerSearchLoadingMore.collectAsState().value
                 val stickerHasMore = ZeroTalkClientManager.stickerSearchHasMore.collectAsState().value
@@ -1250,23 +1249,6 @@ fun PublicChatroomScreen(
             }
         }
 
-        // ---- 消息多选转发抽屉 ----
-        forwardingMessage?.let { msg ->
-            AppleModalBottomSheet(
-                onDismissRequest = { forwardingMessage = null },
-                backdrop = null,
-                title = null,
-                leadingAction = SheetAction.None,
-                isDark = isDark
-            ) {
-                ForwardMessageSheet(
-                    message = msg,
-                    isDark = isDark,
-                    onDismiss = { forwardingMessage = null }
-                )
-            }
-        }
-
         // ---- 长按上下文菜单（与私聊共用公共组件，毛玻璃菜单 + 气泡 1.1 倍放大预览）----
         menuAnchor?.let { anchor ->
             val target = anchor.message
@@ -1344,10 +1326,6 @@ fun PublicChatroomScreen(
                             notificationState.show(if (success) "已删除该消息" else (message ?: "删除消息失败"))
                         }
                         dismissContextMenu()
-                    },
-                    onForward = {
-                        dismissContextMenu()
-                        forwardingMessage = target
                     }
                 )
             }

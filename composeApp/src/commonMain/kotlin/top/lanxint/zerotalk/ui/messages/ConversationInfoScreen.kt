@@ -43,7 +43,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.firstOrNull
 import androidx.compose.material.icons.Icons
@@ -111,6 +112,7 @@ import top.lanxint.zerotalk.ui.components.FollowCapsuleButton
 import top.lanxint.zerotalk.ui.components.IosLiquidBackButton
 import top.lanxint.zerotalk.ui.components.LiquidSegmentedControl
 import top.lanxint.zerotalk.ui.components.LiquidToggle
+import top.lanxint.zerotalk.ui.components.LocalImageViewer
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
 import top.lanxint.zerotalk.ui.components.UserAvatar
 import top.lanxint.zerotalk.ui.components.UserTitleBadge
@@ -235,6 +237,10 @@ fun ConversationInfoScreen(
     var reportTarget by remember { mutableStateOf<MomentItem?>(null) }
     var reportSubmitting by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    // 滚动视口顶部在 root 坐标系中的 Y：动态定位需要把「子项相对父布局」的坐标换算成滚动内容坐标
+    var scrollViewportTopPx by remember { mutableStateOf(0f) }
+    // 全站唯一的全屏图片查看器：点资料页大头像可放大查看
+    val imageViewer = LocalImageViewer.current
 
     LaunchedEffect(conversation.id, requestUserId, requestUid, settingsOnly) {
         // 纯设置面板模式没有对端对象：不发起他人资料请求
@@ -352,6 +358,8 @@ fun ConversationInfoScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
+                // 记录滚动视口顶部：动态定位换算用（必须放在 verticalScroll 之前 = 视口本身）
+                .onGloballyPositioned { scrollViewportTopPx = it.positionInRoot().y }
                 .verticalScroll(scrollState),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -359,6 +367,7 @@ fun ConversationInfoScreen(
             Spacer(modifier = Modifier.height(58.dp))
 
             // 中心大尺寸圆形头像 (80dp)：真实头像优先，失败回落渐变首字母
+            // 点击可放大查看（全站唯一的全屏图片查看器）
             UserAvatar(
                 url = displayAvatar,
                 name = displayName,
@@ -369,7 +378,12 @@ fun ConversationInfoScreen(
                     fontSize = 30.6.sp,
                     fontWeight = FontWeight.SemiBold
                 ),
-                modifier = Modifier.border(1.5.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                modifier = Modifier.border(1.5.dp, Color.White.copy(alpha = 0.35f), CircleShape),
+                onClick = if (!displayAvatar.isNullOrBlank()) {
+                    { imageViewer.open(displayAvatar) }
+                } else {
+                    null
+                }
             )
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -567,6 +581,7 @@ fun ConversationInfoScreen(
                         state = effectiveProfileState,
                         isDark = isDark,
                         scrollState = scrollState,
+                        scrollViewportTopPx = { scrollViewportTopPx },
                         targetMomentId = targetMomentId,
                         currentMomentSort = momentsSort,
                         isAnonymous = isAnonymousPeer,
@@ -800,6 +815,8 @@ private fun ProfileTabContent(
     state: OtherUserProfileState?,
     isDark: Boolean,
     scrollState: ScrollState,
+    /** 滚动视口顶部在 root 坐标系中的 Y（动态定位换算用） */
+    scrollViewportTopPx: () -> Float,
     /** 点聊天里的动态卡片进来时携带：定位并高亮该动态 */
     targetMomentId: Long? = null,
     currentMomentSort: MomentsSort,
@@ -853,6 +870,7 @@ private fun ProfileTabContent(
                         isLoadingMore = state.isLoadingMore,
                         isDark = isDark,
                         scrollState = scrollState,
+                        scrollViewportTopPx = scrollViewportTopPx,
                         targetMomentId = targetMomentId,
                         currentSort = currentMomentSort,
                         onSortChange = onMomentSortChange,
@@ -1025,6 +1043,8 @@ private fun ProfileMomentsCard(
     isLoadingMore: Boolean,
     isDark: Boolean,
     scrollState: ScrollState,
+    /** 滚动视口顶部在 root 坐标系中的 Y（动态定位换算用） */
+    scrollViewportTopPx: () -> Float,
     targetMomentId: Long? = null,
     currentSort: MomentsSort,
     onSortChange: (MomentsSort) -> Unit,
@@ -1043,13 +1063,21 @@ private fun ProfileMomentsCard(
     val momentOffsets = remember { mutableStateMapOf<String, Float>() }
     var flashedMomentId by remember { mutableStateOf<String?>(null) }
     val flashAlpha = remember { Animatable(0f) }
+    // 顶部悬浮返回键 + 状态栏留白：定位后让目标动态落在顶部按钮下方，而不是被压住
+    val flashTopInsetPx = with(LocalDensity.current) { 72.dp.toPx() }
     LaunchedEffect(targetMomentId, moments.size) {
         val target = targetMomentId?.toString() ?: return@LaunchedEffect
         // 目标不在已加载的分页里时只进资料页，不做定位（与「原消息不在当前列表中」同思路）
         if (moments.none { it.id == target }) return@LaunchedEffect
-        val y = snapshotFlow { momentOffsets[target] }.filterNotNull().firstOrNull()
-            ?: return@LaunchedEffect
-        scrollState.animateScrollTo(y.toInt())
+        // momentOffsets 记录的是「相对自身父布局」的 Y，不能直接当滚动量用：
+        // 必须换算成滚动内容坐标 = 当前滚动量 + (目标在 root 中的 Y - 滚动视口在 root 中的 Y)。
+        // 旧实现直接拿 positionInParent 的 Y 滚动，少算了头像 / 签名等头部高度，
+        // 目标动态只会滚到屏幕下半部分（表现为「定位不准、动态在屏幕下方」）。
+        val targetScroll = snapshotFlow {
+            val yInRoot = momentOffsets[target] ?: return@snapshotFlow null
+            scrollState.value + (yInRoot - scrollViewportTopPx())
+        }.filterNotNull().firstOrNull() ?: return@LaunchedEffect
+        scrollState.animateScrollTo((targetScroll - flashTopInsetPx).toInt().coerceAtLeast(0))
         flashedMomentId = target
         flashAlpha.snapTo(0f)
         flashAlpha.animateTo(1f, tween(385))
@@ -1137,7 +1165,8 @@ private fun ProfileMomentsCard(
                         isDark = isDark,
                         modifier = Modifier
                             .onGloballyPositioned { coords ->
-                                momentOffsets[moment.id] = coords.positionInParent().y
+                                // 记录 root 坐标：与滚动视口顶部一起换算成滚动内容坐标（见上方定位逻辑）
+                                momentOffsets[moment.id] = coords.positionInRoot().y
                             }
                             .background(
                                 if (moment.id == flashedMomentId) {

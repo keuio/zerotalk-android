@@ -2308,6 +2308,36 @@ private fun SheetLoadingCard(isDark: Boolean) {
 }
 
 /**
+ * 「零语官方」与「第三方 App」区分说明条
+ *
+ * 用于「问题反馈 / 联系我们」等既有官方渠道、又有本 App 自有渠道的页面，
+ * 避免用户把第三方客户端当成官方出品、或把 App 问题提交到官方通道。
+ */
+@Composable
+private fun ThirdPartyNoticeCard(text: String, isDark: Boolean) {
+    val higColors = AppleHigColors.colors(isDark)
+    AppleHigFillCard(
+        isDark = isDark,
+        modifier = Modifier.fillMaxWidth(),
+        contentPaddingValues = PaddingValues(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(
+                imageVector = Icons.Default.Info,
+                contentDescription = null,
+                tint = higColors.tint,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            BasicText(
+                text = text,
+                style = AppleHigTypography.caption1.copy(color = higColors.secondaryLabel)
+            )
+        }
+    }
+}
+
+/**
  * 联系我们 Sheet 内容（对齐官网 ContactUsView）
  *
  * 顶部为官方交流群二维码（`group_name` + `group_qrcode`），下方为联系方式列表。
@@ -2369,6 +2399,14 @@ fun SheetContactUsContent(
             .verticalScroll(rememberScrollState())
             .padding(bottom = 20.dp)
     ) {
+        // 先讲清楚「哪些是官方、哪些是第三方 App」：上面的联系方式来自零语官方
+        ThirdPartyNoticeCard(
+            text = "本 App 是零语 / ZeroTalk 的第三方非官方客户端，与官方无关联。" +
+                "上方联系方式与群二维码来自零语官方；App 自身的缺陷与建议请用下方「联系App开发者」。",
+            isDark = isDark
+        )
+        Spacer(Modifier.height(14.dp))
+
         when {
             isLoading -> SheetLoadingCard(isDark = isDark)
 
@@ -2460,12 +2498,12 @@ fun SheetContactUsContent(
             }
         }
 
-        // App 专属：开发者联系邮箱（服务端 contact_config 未下发，客户端固定展示）
+        // App 专属：第三方开发者联系邮箱（服务端 contact_config 未下发，客户端固定展示）
         Spacer(Modifier.height(16.dp))
 
         AppleHigGroupedSection(
-            title = "开发者",
-            footer = "App 相关的问题与建议可发送至该邮箱；点击即可复制",
+            title = "第三方开发者（非官方）",
+            footer = "本 App 由第三方开发者独立开发与维护，与零语官方无关；App 相关的问题与建议可发送至该邮箱，点击即可复制",
             isDark = isDark
         ) {
             AppleHigRow(
@@ -2481,7 +2519,7 @@ fun SheetContactUsContent(
     }
 }
 
-/** 「App反馈」一键加入的官方暗语群聊（固定参数） */
+/** 「App反馈」一键加入的第三方开发者暗语群聊（固定参数） */
 private const val APP_FEEDBACK_ROOM_OWNER = "kelo"
 private const val APP_FEEDBACK_ROOM_NAME = "第三方App群"
 private const val APP_FEEDBACK_ROOM_PASSWORD = "1"
@@ -2492,7 +2530,7 @@ private const val APP_FEEDBACK_ROOM_PASSWORD = "1"
  * 上半部分为提交表单（类型 / 标题 / 详细内容），下半部分为「我的反馈」记录；
  * 提交成功后自动刷新记录列表。
  *
- * 顶部另有「App反馈」入口：一键加入官方暗语群聊（创建者 kelo / 房间 第三方App群 / 暗号 1），
+ * 顶部另有「App反馈」入口：一键加入第三方开发者创建的暗语群聊（创建者 kelo / 房间 第三方App群 / 暗号 1），
  * 走 [ZeroTalkClientManager.joinSecretRoom] 的 `POST /room/join`。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2630,7 +2668,15 @@ fun SheetFeedbackContent(
             .verticalScroll(rememberScrollState())
             .padding(bottom = 20.dp)
     ) {
-        // ---- App反馈：一键加入官方暗语群聊（创建者 kelo / 房间 第三方App群 / 暗号 1） ----
+        // 先讲清楚「哪些是官方、哪些是第三方 App」：反馈表单走官方通道，App 问题走 App 群
+        ThirdPartyNoticeCard(
+            text = "本 App 是零语 / ZeroTalk 的第三方非官方客户端，与官方无关联。" +
+                "下方反馈表单提交至零语官方反馈通道；App 自身的缺陷与建议请走「App反馈」群。",
+            isDark = isDark
+        )
+        Spacer(Modifier.height(14.dp))
+
+        // ---- App反馈：一键加入第三方开发者创建的暗语群聊（创建者 kelo / 房间 第三方App群 / 暗号 1） ----
         AppleHigFillCard(
             isDark = isDark,
             modifier = Modifier.fillMaxWidth(),
@@ -2646,7 +2692,7 @@ fun SheetFeedbackContent(
                     )
                 )
                 BasicText(
-                    text = "一键加入官方暗语群聊「$APP_FEEDBACK_ROOM_NAME」，直接在群里反馈问题",
+                    text = "一键加入第三方开发者创建的暗语群聊「$APP_FEEDBACK_ROOM_NAME」，直接在群里反馈本 App 的问题",
                     style = AppleHigTypography.caption1.copy(color = higColors.secondaryLabel)
                 )
             }

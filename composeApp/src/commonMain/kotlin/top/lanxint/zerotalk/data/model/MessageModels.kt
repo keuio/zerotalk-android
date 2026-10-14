@@ -347,7 +347,14 @@ data class ChatMessage(
     /** 表情包图片地址（image_url 直取，或按 asset_id 查本地列表得到；可能为空） */
     val stickerUrl: String = "",
     /** 表情包 asset_id（content 解析得到；无法解析为 0） */
-    val stickerAssetId: Long = 0L
+    val stickerAssetId: Long = 0L,
+    /**
+     * 对局聊天 meta（官方 `meta.source="game"`）
+     *
+     * 非空表示这条房间消息属于某局对局内聊天：对局面板据此归集，
+     * `sync_room=false` 时还要从房间消息列表里剔除（见 [GameChatMeta.shouldShowInRoom]）。
+     */
+    val gameMeta: GameChatMeta? = null
 )
 
 /**

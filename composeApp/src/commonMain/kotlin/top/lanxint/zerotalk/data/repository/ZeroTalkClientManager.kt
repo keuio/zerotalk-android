@@ -58,6 +58,7 @@ import top.lanxint.zerotalk.data.network.RoomMemberDto
 import top.lanxint.zerotalk.data.network.RoomMembersData
 import top.lanxint.zerotalk.data.network.SecurityDeviceDto
 import top.lanxint.zerotalk.data.network.SecurityLoginLogDto
+import top.lanxint.zerotalk.data.network.AccountStore
 import top.lanxint.zerotalk.data.network.SessionStore
 import top.lanxint.zerotalk.data.network.StickerListData
 import top.lanxint.zerotalk.data.network.StickerSearchItemDto
@@ -187,6 +188,112 @@ object ZeroTalkClientManager {
     val newMessageNotification: SharedFlow<IncomingMessageNotification> = _newMessageNotification
 
     private val _pendingOpenRoomId = MutableStateFlow<String?>(null)
+
+    // ==================== 「对方正在输入」 ====================
+
+    /**
+     * 正在输入的对端所在房间集合（1v1 会话）
+     *
+     * 对齐官网 `peerIsTyping`：只表示「对端在输入」，不含自己。
+     * 状态由服务端 `typing` 帧驱动，并在对端停止输入（`active=false`）、发来消息、
+     * 或超过 [PEER_TYPING_TIMEOUT_MS] 未再收到状态时自动清除（防对端异常断开后三点常驻）。
+     */
+    private val _peerTypingRooms = MutableStateFlow<Set<String>>(emptySet())
+    val peerTypingRooms: StateFlow<Set<String>> = _peerTypingRooms.asStateFlow()
+
+    /** 每个房间的「正在输入」超时任务（同一房间重复收到状态时重置计时） */
+    private val peerTypingTimeoutJobs = mutableMapOf<String, Job>()
+
+    /** 上报自己的输入状态时的节流：上次发送时刻与上次发送的 active */
+    private var lastTypingSentAtMs = 0L
+    private var lastTypingSentActive = false
+
+    /** 对端停止输入后，本地兜底自动隐藏的时长（用户确认口径） */
+    private val PEER_TYPING_TIMEOUT_MS = 6_000L
+
+    /** 自己输入状态的上报间隔（对齐官网节流思路，避免每次按键都发帧） */
+    private val TYPING_SEND_INTERVAL_MS = 2_000L
+
+    /** 某个 1v1 会话的对端是否正在输入 */
+    fun isPeerTyping(roomId: String?): Boolean =
+        !roomId.isNullOrBlank() && _peerTypingRooms.value.contains(roomId)
+
+    /**
+     * 是否为「1v1 会话」（私聊 / 匹配）
+     *
+     * 群聊、暗号房与零语大厅都不算 —— 与私聊页的 `isGroupRoom` 判定保持同一口径，
+     * 保证「显示」与「上报」两侧都不会在群聊里出现三点气泡。
+     */
+    private fun isOneToOneRoom(roomId: String?): Boolean = PeerTypingRules.isOneToOneRoom(
+        roomId = roomId,
+        hallRoomId = _hallRoomId.value,
+        isGroupRoom = _groupRooms.value[roomId] == true,
+        category = _conversations.value.firstOrNull { it.id == roomId }?.category
+    )
+
+    /**
+     * 处理服务端 `typing` 帧（对端输入状态）
+     *
+     * 帧里没有 room_id 时按「当前 WS 房间」归属（WS 同一时刻只在一个房间）。
+     */
+    private fun handlePeerTyping(event: WsServerEvent.Typing) {
+        val roomId = event.roomId?.takeIf { it.isNotBlank() }
+            ?: wsClient.currentRoomId?.takeIf { it.isNotBlank() }
+            ?: return
+        // 仅 1v1 会话展示「对方正在输入」（与官网 peerIsTyping 口径一致）
+        if (!isOneToOneRoom(roomId)) return
+        // 只跟踪「正在查看的会话」：不在该会话里时不留存状态，避免重新进入会话时看到过期的三点
+        if (roomId != viewingRoomId) return
+
+        peerTypingTimeoutJobs.remove(roomId)?.cancel()
+        if (event.active) {
+            _peerTypingRooms.value = _peerTypingRooms.value + roomId
+            peerTypingTimeoutJobs[roomId] = scope.launch {
+                delay(PEER_TYPING_TIMEOUT_MS)
+                _peerTypingRooms.value = _peerTypingRooms.value - roomId
+                peerTypingTimeoutJobs.remove(roomId)
+            }
+        } else {
+            _peerTypingRooms.value = _peerTypingRooms.value - roomId
+        }
+    }
+
+    /** 清除某个房间的「正在输入」状态（对端发来消息 / 离开房间 / 退出登录时调用） */
+    private fun clearPeerTyping(roomId: String?) {
+        val target = roomId?.takeIf { it.isNotBlank() } ?: return
+        peerTypingTimeoutJobs.remove(target)?.cancel()
+        if (_peerTypingRooms.value.contains(target)) {
+            _peerTypingRooms.value = _peerTypingRooms.value - target
+        }
+    }
+
+    /**
+     * 上报自己的输入状态（对齐官网 `typing` 帧：`{event:"typing", active}`）
+     *
+     * - 只在 1v1 会话里上报（大厅 / 群聊不发，避免打扰他人）；
+     * - 只在 WS 当前就在该房间时发，避免把状态发到别的房间；
+     * - `active=true` 按 [TYPING_SEND_INTERVAL_MS] 节流；`active=false` 仅在发过 true 之后补发一次。
+     */
+    fun sendTypingIndicator(active: Boolean) {
+        if (_loginData.value == null) return
+        val roomId = viewingRoomId?.takeIf { it.isNotBlank() } ?: return
+        if (!isOneToOneRoom(roomId)) return
+        if (wsClient.currentRoomId != roomId) return
+
+        val now = System.currentTimeMillis()
+        if (!PeerTypingRules.shouldSendTypingFrame(
+                active = active,
+                lastSentActive = lastTypingSentActive,
+                sinceLastSentMs = now - lastTypingSentAtMs,
+                intervalMs = TYPING_SEND_INTERVAL_MS
+            )
+        ) {
+            return
+        }
+        lastTypingSentAtMs = now
+        lastTypingSentActive = active
+        wsClient.sendTyping(active)
+    }
 
     /** 系统通知点击后请求直达的会话 id（由 UI 消费后置空） */
     val pendingOpenRoomId: StateFlow<String?> = _pendingOpenRoomId.asStateFlow()
@@ -1073,7 +1180,10 @@ object ZeroTalkClientManager {
      * 确保客户端连通（登录 + Bootstrap + WS）
      *
      * 账号密码由登录表单传入（工程内不保留任何默认账号）。
-     * 登录成功后会把账号密码写入本地，作为后续冷启动会话过期时的静默续登兜底。
+     * 登录成功后会把账号密码写入本地：既作为冷启动会话过期时的静默续登兜底，
+     * 也记入多账号列表（「我的 → 切换账号」可一键切回）。
+     *
+     * 提交的登录名与当前账号不同时按「切换账号」处理：先完整清理上一个账号的登录态再登录。
      */
     fun ensureConnected(
         username: String,
@@ -1081,9 +1191,13 @@ object ZeroTalkClientManager {
         onSuccess: (() -> Unit)? = null,
         onError: ((String) -> Unit)? = null
     ) {
+        val target = username.trim()
         // 只有 WS 真正认证通过（收到 auth_success）才算「已连接」；
-        // 否则继续走登录/重连，避免卡在「显示已连接却收发不了」的假连接状态
-        if (_status.value is ClientStatus.Connected &&
+        // 否则继续走登录/重连，避免卡在「显示已连接却收发不了」的假连接状态。
+        // 注意：只有**同一个登录名**才能直接短路 —— 否则「添加账号 / 切换账号」提交另一个账号时
+        // 会被这里当成「已连接」直接返回成功，账号根本没切过去。
+        if (_loginData.value?.loginName == target &&
+            _status.value is ClientStatus.Connected &&
             wsClient.connectionState.value == WsConnectionState.AUTHENTICATED
         ) {
             onSuccess?.invoke()
@@ -1091,14 +1205,21 @@ object ZeroTalkClientManager {
         }
         // 冷启动恢复会话进行中，忽略手动登录，避免并发登录
         if (_isRestoringSession.value) return
-        if (username.isBlank() || password.isBlank()) {
+        if (target.isBlank() || password.isBlank()) {
             onError?.invoke("请输入账号与密码")
             return
+        }
+        // 当前已登录**另一个账号**（登录表单里添加 / 切换账号）：
+        // 先完整清理上一个账号的会话、未读与端到端密钥，避免串号
+        if (_loginData.value != null) {
+            teardownSession()
+            SessionStore.clear()
+            AccountStore.setActive(null)
         }
 
         scope.launch {
             val result = loginAndBootstrap(
-                username = username,
+                username = target,
                 password = password,
                 rememberCredential = true
             )
@@ -1237,6 +1358,15 @@ object ZeroTalkClientManager {
 
             if (rememberCredential) {
                 SessionStore.saveCredential(username, password)
+                // 记入本地多账号列表：供「我的 → 切换账号」一键切回该账号
+                val savedProfile = _userProfile.value
+                AccountStore.save(
+                    loginName = username,
+                    password = password,
+                    nickname = savedProfile.name,
+                    avatarUrl = savedProfile.avatarUrl,
+                    userId = savedProfile.userId
+                )
             }
             return Result.success(Unit)
         } catch (e: Exception) {
@@ -1310,6 +1440,13 @@ object ZeroTalkClientManager {
                 mbti = user.mbtiInfo,
                 loginNameChange = user.loginNameChange
             )
+            // 同步多账号列表里的展示信息（昵称 / 头像可能在官网改过）
+            AccountStore.updateProfile(
+                loginName = user.loginName.ifBlank { fallbackLoginName },
+                nickname = user.username.ifBlank { fallbackUsername },
+                avatarUrl = resolvedAvatar,
+                userId = user.id.toString()
+            )
         }
 
         // 提取公共大厅 room_id
@@ -1337,16 +1474,70 @@ object ZeroTalkClientManager {
 
     /**
      * 退出登录并返回无账号初始状态
+     *
+     * 注意：**不会**清空本地多账号列表（[AccountStore]），否则「切换账号」就没法一键切回；
+     * 账号列表可以在「我的 → 切换账号」面板里逐个删除。
      */
     fun logout() {
+        teardownSession()
+        // 清除本地持久化登录态（会话 Cookie + 当前账号密码），确保退出后不会自动续登
+        SessionStore.clear()
+        AccountStore.setActive(null)
+    }
+
+    /**
+     * 切换账号：清掉当前登录态后，用本地保存的密码登录目标账号
+     *
+     * @param onResult success 与失败原因（失败时保留账号列表，用户可重试或改密码重登）
+     */
+    fun switchAccount(loginName: String, onResult: ((Boolean, String?) -> Unit)? = null) {
+        val account = AccountStore.find(loginName)
+        if (account == null) {
+            onResult?.invoke(false, "该账号未保存在本地")
+            return
+        }
+        // 已经是当前账号：只更新选中态，不做无谓的重登
+        if (_loginData.value?.loginName == account.loginName && _status.value is ClientStatus.Connected) {
+            AccountStore.setActive(account.loginName)
+            onResult?.invoke(true, null)
+            return
+        }
+        if (account.password.isBlank()) {
+            onResult?.invoke(false, "本地未保存该账号密码，请重新登录一次")
+            return
+        }
+
+        teardownSession()
+        SessionStore.clear()
+        AccountStore.setActive(account.loginName)
+        _isRestoringSession.value = true
+        scope.launch {
+            val result = loginAndBootstrap(
+                username = account.loginName,
+                password = account.password,
+                rememberCredential = true
+            )
+            _isRestoringSession.value = false
+            if (result.isSuccess) {
+                onResult?.invoke(true, null)
+            } else {
+                onResult?.invoke(false, result.exceptionOrNull()?.message ?: "切换账号失败")
+            }
+        }
+    }
+
+    /**
+     * 清空当前登录态（退出登录与切换账号共用）
+     *
+     * 只清内存状态与连接，不动本地账号列表；调用方自行决定是否 [SessionStore.clear]。
+     */
+    private fun teardownSession() {
         // 主动断开期间禁止看门狗自动重连
         suppressWsReconnect = true
         wsClient.disconnect()
         apiService.cookieJar.clear()
         // 结束进行中的语音通话并释放 WebRTC 资源
         voiceCall.release()
-        // 清除本地持久化登录态（会话 Cookie + 账号密码），确保退出后不会自动续登
-        SessionStore.clear()
         _isRestoringSession.value = false
         _status.value = ClientStatus.Idle
         _loginData.value = null
@@ -1384,6 +1575,14 @@ object ZeroTalkClientManager {
         _isFishHistoryLoading.value = false
         _isFishing.value = false
         fishHistoryCursor = null
+        // 对局页与对局聊天状态一并清空（换账号后不得残留上一个账号的对局）
+        closeGameSession()
+        // 「对方正在输入」状态与超时任务一并清空
+        peerTypingTimeoutJobs.values.forEach { it.cancel() }
+        peerTypingTimeoutJobs.clear()
+        _peerTypingRooms.value = emptySet()
+        lastTypingSentActive = false
+        lastTypingSentAtMs = 0L
         suppressWsReconnect = false
     }
 
@@ -1546,12 +1745,30 @@ object ZeroTalkClientManager {
     fun setViewingRoom(roomId: String?) {
         val next = roomId?.takeIf { it.isNotBlank() }
         val changed = next != viewingRoomId
+        if (changed) {
+            // 离开会话 / 切到别的会话：把自己残留的「正在输入」状态收掉，避免对方三点常驻
+            if (lastTypingSentActive) {
+                lastTypingSentActive = false
+                wsClient.sendTyping(false)
+            }
+            // 换房间时清掉上一个房间的对端输入状态展示
+            clearPeerTyping(viewingRoomId)
+        }
         viewingRoomId = next
         // 重新聚焦到某个会话（含从后台回来 / 从列表再次进入）时补拉断线期间漏掉的消息（官方 te）
         if (changed && next != null) {
             catchUpNewerMessages(next)
         }
     }
+
+    /**
+     * 当前是否停留在某个聊天页（私聊 / 群聊 / 零语大厅）
+     *
+     * 用于抑制「全局未读聚合」横幅：停留在聊天页时，该会话的通知已由房间级通道按 roomId 抑制；
+     * 聚合横幅无法区分房间，会在本页重复弹出「收到 N 条新消息」，因此此时不再弹聚合横幅
+     * （其它会话的房间级横幅照常弹出，不会漏通知）。
+     */
+    fun isViewingAnyRoom(): Boolean = viewingRoomId?.isNotBlank() == true
 
     /**
      * 横幅去重：同一条消息可能同时从 `chat_banner` 与 `message` 两个通道到达
@@ -1626,6 +1843,22 @@ object ZeroTalkClientManager {
     }
 
     /**
+     * 是否应当抑制某个房间的新消息通知（应用内横幅 / 系统通知）
+     *
+     * 口径：**前台 + 正在查看这个房间**才抑制（对齐官网），后台必须照常提醒。
+     * 大厅额外做一次兜底：进入大厅时服务端可能重写大厅 room_id，且事件里的 `room_id`
+     * 偶尔缺失（此时按当前 WS 房间兜底），因此只要「事件房间是大厅」且「正在看的就是大厅」
+     * 就一律抑制，避免在零语大厅里还被自己的大厅消息弹窗打扰。
+     */
+    private fun shouldSuppressRoomNotification(roomId: String?): Boolean {
+        if (!SystemNotificationBridge.isAppInForeground) return false
+        val viewing = viewingRoomId?.takeIf { it.isNotBlank() } ?: return false
+        val target = roomId?.takeIf { it.isNotBlank() } ?: return false
+        if (target == viewing) return true
+        return isHallRoom(target) && isHallRoom(viewing)
+    }
+
+    /**
      * 全站聊天横幅（官网 `chat_banner`）
      *
      * 对齐官网 `AppLayout` 的 `ws.on("chat_banner", payload => chatBanner.enqueueFromWs(payload, 当前房间))`：
@@ -1650,7 +1883,7 @@ object ZeroTalkClientManager {
         }
 
         // 2) 只有「前台 + 正在看这个房间」才抑制横幅；后台必须照常通知
-        if (SystemNotificationBridge.isAppInForeground && event.roomId == viewingRoomId) return
+        if (shouldSuppressRoomNotification(event.roomId)) return
 
         // 3) 应用内横幅；后台时由进程级收集器转投系统通知
         val isGroup = event.roomType != "dm" && event.roomType != "normal"
@@ -2016,7 +2249,7 @@ object ZeroTalkClientManager {
     }
 
     /**
-     * 发送已有 URL 的聊天图片（用于转发消息）
+     * 发送已有 URL 的聊天图片（不需要重新上传，直接按 URL 发送）
      */
     fun sendRoomImageByUrl(
         roomId: String,
@@ -2034,87 +2267,6 @@ object ZeroTalkClientManager {
                 onError = onError,
                 send = { wsClient.sendImageMessage(imageUrl) }
             )
-        }
-    }
-
-    /**
-     * 转发消息到指定房间或公共大厅
-     */
-    fun forwardMessage(
-        message: ChatMessage,
-        targetRoomId: String,
-        onError: ((String) -> Unit)? = null
-    ) {
-        if (message.isDeleted || message.isEncrypted) return
-        val isHall = targetRoomId == "hall"
-
-        when {
-            message.isMomentShare -> {
-                if (isHall) {
-                    sendHallMessage(
-                        content = message.content,
-                        mentionIds = emptyList(),
-                        messageType = MESSAGE_TYPE_MOMENT_SHARE
-                    )
-                } else {
-                    sendRoomMessage(
-                        roomId = targetRoomId,
-                        content = message.content,
-                        messageType = MESSAGE_TYPE_MOMENT_SHARE
-                    )
-                }
-            }
-            message.isMusicPlaylist -> {
-                if (isHall) {
-                    sendHallMessage(
-                        content = message.content,
-                        mentionIds = emptyList(),
-                        messageType = "music_playlist"
-                    )
-                } else {
-                    sendRoomMessage(
-                        roomId = targetRoomId,
-                        content = message.content,
-                        messageType = "music_playlist"
-                    )
-                }
-            }
-            message.isMusic && message.musicData != null -> {
-                if (isHall) {
-                    sendHallMessage(content = "[音乐] ${message.musicData.name} - ${message.musicData.artists}")
-                } else {
-                    sendRoomMusic(roomId = targetRoomId, music = message.musicData)
-                }
-            }
-            message.isSticker -> {
-                if (message.stickerAssetId > 0L) {
-                    if (isHall) {
-                        sendHallSticker(message.stickerAssetId)
-                    } else {
-                        sendSticker(roomId = targetRoomId, assetId = message.stickerAssetId)
-                    }
-                } else if (message.stickerUrl.isNotBlank()) {
-                    if (isHall) {
-                        sendHallMessage(content = message.stickerUrl)
-                    } else {
-                        sendRoomImageByUrl(roomId = targetRoomId, imageUrl = message.stickerUrl, onError = onError)
-                    }
-                }
-            }
-            message.isImage && message.imageUrl.isNotBlank() -> {
-                if (isHall) {
-                    sendHallMessage(content = message.imageUrl)
-                } else {
-                    sendRoomImageByUrl(roomId = targetRoomId, imageUrl = message.imageUrl, onError = onError)
-                }
-            }
-            else -> {
-                if (isHall) {
-                    sendHallMessage(content = message.content)
-                } else {
-                    sendRoomMessage(roomId = targetRoomId, content = message.content)
-                }
-            }
         }
     }
 
@@ -2479,6 +2631,23 @@ object ZeroTalkClientManager {
     private val _activeGameError = MutableStateFlow<String?>(null)
     val activeGameError: StateFlow<String?> = _activeGameError.asStateFlow()
 
+    /**
+     * 对局内聊天消息（仅当前对局）
+     *
+     * 官方对局聊天没有独立通道：消息就是房间消息 + `meta.source="game"`，
+     * 这里保存「本局历史 + 实时回推」中属于本局的那部分，供对局面板渲染。
+     */
+    private val _activeGameChatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val activeGameChatMessages: StateFlow<List<ChatMessage>> = _activeGameChatMessages.asStateFlow()
+
+    /** 对局聊天历史是否加载中 */
+    private val _gameChatLoading = MutableStateFlow(false)
+    val gameChatLoading: StateFlow<Boolean> = _gameChatLoading.asStateFlow()
+
+    /** 「对局聊天同步到房间」开关是否有请求在飞（期间 UI 禁用开关） */
+    private val _gameSyncChatPending = MutableStateFlow(false)
+    val gameSyncChatPending: StateFlow<Boolean> = _gameSyncChatPending.asStateFlow()
+
     val currentUid: String?
         get() = _loginData.value?.uid
 
@@ -2500,6 +2669,10 @@ object ZeroTalkClientManager {
         }
         _activeGameType.value = gameType
         _activeGameId.value = gameId
+        // 对局聊天：换局时清空上一局的消息与同步态，并拉取本局历史
+        _activeGameChatMessages.value = emptyList()
+        _gameSyncChatPending.value = false
+        loadGameChatHistory(gameId)
         gamePollJob?.cancel()
         gamePollJob = scope.launch {
             // 立即拉取一次对局详情
@@ -2563,6 +2736,119 @@ object ZeroTalkClientManager {
         _activeGameId.value = null
         _activeGameType.value = null
         _activeGameError.value = null
+        // 对局聊天随对局页一起收掉
+        _activeGameChatMessages.value = emptyList()
+        _gameChatLoading.value = false
+        _gameSyncChatPending.value = false
+    }
+
+    /**
+     * 拉取对局聊天历史（`GET /api/game/chat-history?game_id=&limit=`）
+     *
+     * 官方对局面板读的是房间 bootstrap / loadHistory 再按 meta 过滤，本客户端直接用
+     * 官方同样暴露的对局聊天历史接口，接口返回的就是房间消息行（含 meta），
+     * 因此这里统一走 [isGameChatFor] 过滤，保证与实时通道同一口径。
+     */
+    private fun loadGameChatHistory(gameId: Long) {
+        if (gameId <= 0L) return
+        _gameChatLoading.value = true
+        scope.launch {
+            val result = apiService.getGameChatHistory(gameId)
+            // 期间可能已经切到别的对局：过期结果直接丢弃
+            if (_activeGameId.value != gameId) return@launch
+            _gameChatLoading.value = false
+            result.onSuccess { history ->
+                val playerUids = _activeGameSession.value?.playerUids().orEmpty()
+                val myUid = _loginData.value?.uid
+                val fromApi = history.messages.map { item -> item.toChatMessage(myUid) }
+                // 兜底：房间 / 大厅历史里已经加载过的本局消息（官方对局面板读的就是房间历史）
+                val roomId = _activeGameSession.value?.roomId.orEmpty()
+                val fromRoom = when {
+                    roomId.isBlank() -> emptyList()
+                    isHallRoom(roomId) -> _hallMessages.value
+                    else -> _roomMessages.value[roomId].orEmpty()
+                }
+                val candidates = (fromApi + fromRoom)
+                    .filter { msg -> msg.isGameChatFor(gameId, playerUids) }
+                // 按 serverId 去重（先出现的优先），再补上「加载期间已经到达」的实时消息
+                val seen = mutableSetOf<Long>()
+                val deduped = candidates.filter { msg -> msg.serverId <= 0L || seen.add(msg.serverId) }
+                val liveOnly = _activeGameChatMessages.value.filter {
+                    it.serverId <= 0L || it.serverId !in seen
+                }
+                _activeGameChatMessages.value = deduped + liveOnly
+            }.onFailure { e ->
+                ZtLog.w("ZeroTalk", "[GAME] 拉取对局聊天历史失败 game=$gameId: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 把一条房间消息归集到「当前对局」的聊天面板
+     *
+     * 官方对局面板只收本局（`meta.game_id` 匹配）且发送者是双方的消息，观战者发言不展示。
+     */
+    private fun appendActiveGameChat(message: ChatMessage) {
+        val gameId = _activeGameId.value ?: return
+        val playerUids = _activeGameSession.value?.playerUids().orEmpty()
+        if (!message.isGameChatFor(gameId, playerUids)) return
+        _activeGameChatMessages.value = ChatMessageMerge.appendDeduped(_activeGameChatMessages.value, message)
+    }
+
+    /**
+     * 发送对局内聊天消息
+     *
+     * 官方帧：房间 `message` 帧 + `meta = {source:"game", game_id, game_type, invite_message_id}`。
+     * 不做本地乐观回显（与官方一致）：消息由服务端回推后再入库，避免自己发的消息出现两条。
+     *
+     * @param onError 发送前置校验失败时的提示（连接未就绪 / 未登录 / 对局未加载）
+     */
+    fun sendGameChatMessage(content: String, onError: ((String) -> Unit)? = null) {
+        val text = content.trim()
+        if (text.isEmpty()) return
+        val session = _activeGameSession.value
+        val gameId = _activeGameId.value ?: session?.id ?: 0L
+        val roomId = session?.roomId?.takeIf { it.isNotBlank() }
+        if (gameId <= 0L || roomId == null) {
+            onError?.invoke("对局信息未就绪，请稍后重试")
+            return
+        }
+        if (_loginData.value == null) {
+            onError?.invoke("请先登录后再发送消息")
+            return
+        }
+        if (!wsClient.isRoomReadyForSend(roomId)) {
+            onError?.invoke("连接未就绪，请稍后重试")
+            return
+        }
+        val gameType = session.gameType.ifBlank { _activeGameType.value.orEmpty() }
+        val meta = JsonObject().apply {
+            addProperty("source", GameChatMeta.GAME_CHAT_SOURCE)
+            addProperty("game_id", gameId)
+            addProperty("game_type", gameType)
+            // 邀请卡片的消息 id：官方由 `GET /api/game/<type>` 的 game.message_id 提供
+            if (session.messageId > 0L) addProperty("invite_message_id", session.messageId)
+        }
+        val sent = wsClient.sendMessage(content = text, type = "text", meta = meta)
+        if (!sent) onError?.invoke("发送失败，请稍后重试")
+    }
+
+    /**
+     * 设置「对局聊天同步到房间」开关（官方 `game_sync_chat`）
+     *
+     * 服务端回推 `game_sync_chat_update` 后才更新开关状态（见 [handleWsEvent]）。
+     */
+    fun setGameSyncChat(enabled: Boolean) {
+        val gameId = _activeGameId.value ?: return
+        if (_activeGameSession.value?.syncChatLocked == true) {
+            _activeGameError.value = "公共房间不允许同步聊天内容"
+            return
+        }
+        _gameSyncChatPending.value = true
+        if (!wsClient.sendGameSyncChat(gameId, enabled)) {
+            _gameSyncChatPending.value = false
+            _activeGameError.value = "连接未就绪，请稍后重试"
+        }
     }
 
     /**
@@ -5124,7 +5410,7 @@ object ZeroTalkClientManager {
                 }
 
                 // 4. 映射历史消息
-                val msgList = bootstrap.messages.map { dto -> mapChatMessageDto(dto, roomId) }
+                val msgList = mapRoomHistoryDtos(bootstrap.messages, roomId)
 
                 // 以服务端下发的房间类型判定「群聊」，比会话列表的 type 映射更可靠
                 // （暗号房此前依赖 category == CODE，若服务端 type 不是 private 就会漏判）
@@ -5190,7 +5476,7 @@ object ZeroTalkClientManager {
                 val res = apiService.getChatMessages(roomId = roomId, beforeId = beforeId, limit = pageLimit)
                 val data = res.getOrNull() ?: return@launch
 
-                val older = data.messages.map { dto -> mapChatMessageDto(dto, roomId) }
+                val older = mapRoomHistoryDtos(data.messages, roomId)
                 val incomingMin = ChatMessageMerge.minServerId(older)
                 val progressed = incomingMin != null && incomingMin < beforeId
                 if (older.isNotEmpty()) {
@@ -5247,7 +5533,7 @@ object ZeroTalkClientManager {
                         afterId = cursor,
                         limit = ChatNewerCatchUp.PAGE_SIZE
                     ).getOrNull() ?: break
-                    val newer = data.messages.map { dto -> mapChatMessageDto(dto, roomId) }
+                    val newer = mapRoomHistoryDtos(data.messages, roomId)
                     if (newer.isEmpty()) break
                     if (isHall && roomId == _hallRoomId.value) {
                         _hallMessages.value = ChatMessageMerge.merge(_hallMessages.value, newer)
@@ -5330,7 +5616,7 @@ object ZeroTalkClientManager {
         val existingList = _hallMessages.value
         val previousMinId = ChatMessageMerge.minServerId(existingList)
         val previousHasMore = _roomHasMoreHistory.value[roomId]
-        val history = dtos.map { dto -> mapChatMessageDto(dto, roomId) }
+        val history = mapRoomHistoryDtos(dtos, roomId)
         val incomingMin = ChatMessageMerge.minServerId(history)
         if (history.isNotEmpty()) {
             // 去重 + 排序合并（此前是「history 前插 + existing 后接」：
@@ -5391,6 +5677,15 @@ object ZeroTalkClientManager {
     )
 
     /**
+     * 房间历史 DTO 列表 -> UI 消息列表
+     *
+     * 顺带剔除「只属于对局内聊天」的消息（`meta.sync_room=false`）：
+     * 官方聊天页在消息入库前用 `zn` 做同一道过滤，否则关掉同步的对局聊天会漏进房间。
+     */
+    internal fun mapRoomHistoryDtos(dtos: List<ChatMessageDto>, roomId: String): List<ChatMessage> =
+        dtos.map { dto -> mapChatMessageDto(dto, roomId) }.filter { it.gameMeta.shouldShowInRoom() }
+
+    /**
      * 历史消息 DTO -> UI 消息模型
      */
     internal fun mapChatMessageDto(dto: ChatMessageDto, roomId: String): ChatMessage {
@@ -5431,7 +5726,7 @@ object ZeroTalkClientManager {
                 enc = enc?.takeIf { plainText == null },
                 clientMessageId = dto.clientMessageId
             )
-        )
+        ).copy(gameMeta = dto.meta?.takeIf { it.isGameChat })
     }
 
     /**
@@ -7276,8 +7571,23 @@ object ZeroTalkClientManager {
                         enc = realtimeEnc?.takeIf { realtimePlain == null },
                         clientMessageId = event.clientMessageId
                     )
-                )
+                ).copy(gameMeta = event.meta?.takeIf { it.isGameChat })
                 val preview = newMsg.previewText
+
+                // ---- 对局内聊天（官方 meta.source="game"）----
+                // 1) 归集到对局面板：只收本局 + 双方发送的消息
+                if (event.meta?.isGameChat == true) {
+                    appendActiveGameChat(newMsg)
+                }
+                // 2) `sync_room=false` 的消息只在对局面板可见：不进房间列表、不记未读、不弹通知
+                //    （官方聊天页在入库前用 `zn` 做同一道过滤，这里直接短路整段处理）
+                if (!event.meta.shouldShowInRoom()) {
+                    return
+                }
+
+                // 对端发来消息即代表输入结束：立刻收掉「正在输入」三点气泡
+                // （不必等对端的 active=false，也不用等 6 秒兜底超时）
+                if (!isMine) clearPeerTyping(targetRoom)
 
                 if (isHallRoom(targetRoom)) {
                     // 大厅消息：先与本地回显对账，避免自己发的消息出现两条
@@ -7304,18 +7614,10 @@ object ZeroTalkClientManager {
                         // 拍一拍也无本地回显，同样在这里入库
                         else -> ChatMessageMerge.appendDeduped(afterReconcile, newMsg)
                     }
-                    // 大厅非本人消息实时推到全局通知弹窗
-                    if (!isMine) {
-                        _newMessageNotification.tryEmit(
-                            IncomingMessageNotification(
-                                roomName = "零语大厅",
-                                senderName = senderName,
-                                content = preview,
-                                isGroup = true,
-                                roomId = _hallRoomId.value
-                            )
-                        )
-                    }
+                    // 注意：大厅**不在这里**单独弹横幅。
+                    // 本分支下方的通用通知块已覆盖大厅（roomName=「零语大厅」、isGroup=true），
+                    // 且带有「前台 + 正在看这个房间」的抑制与横幅去重；
+                    // 早前这里额外无条件弹一次，导致「正在大厅里看消息」也会弹窗（还会与通用块重复弹）。
                 } else if (targetRoom != null) {
                     // 单聊 / 暗号房消息
                     val currentList = _roomMessages.value[targetRoom] ?: emptyList()
@@ -7369,7 +7671,7 @@ object ZeroTalkClientManager {
                 // 服务端不一定对每条消息都发 chat_banner（实测进入房间后只有 message），
                 // 所以这里是必要通道；同一条消息已由 chat_banner 弹过则跳过，
                 // 且「前台 + 正在看这个房间」时同样抑制（对齐官网）。
-                val viewingThisRoom = SystemNotificationBridge.isAppInForeground && targetRoom == viewingRoomId
+                val viewingThisRoom = shouldSuppressRoomNotification(targetRoom)
                 if (!isMine && !alreadyBannered && !viewingThisRoom) {
                     val roomName = if (isHallRoom(targetRoom)) {
                         "零语大厅"
@@ -7425,10 +7727,29 @@ object ZeroTalkClientManager {
                     _activeGameSession.value = event.game
                 }
             }
+            // 对局聊天同步开关回推（官方 game_sync_chat_update / game_sync_chat_error）
+            is WsServerEvent.GameSyncChatUpdate -> {
+                _gameSyncChatPending.value = false
+                if (event.gameId <= 0L || _activeGameId.value == event.gameId) {
+                    if (!event.success) {
+                        _activeGameError.value = event.message ?: "设置失败"
+                    } else {
+                        _activeGameSession.value = _activeGameSession.value?.copy(
+                            syncChatToRoom = event.syncChatToRoom,
+                            syncChatLocked = event.syncChatLocked
+                        )
+                    }
+                }
+            }
+            is WsServerEvent.Typing -> {
+                handlePeerTyping(event)
+            }
             is WsServerEvent.UserLeft, is WsServerEvent.RoomClosed -> {
                 val targetRoomId = (event as? WsServerEvent.UserLeft)?.roomId
                     ?: (event as? WsServerEvent.RoomClosed)?.roomId
                     ?: wsClient.currentRoomId
+                // 对端离开房间：立刻收掉「正在输入」状态
+                clearPeerTyping(targetRoomId)
                 if (!targetRoomId.isNullOrBlank() && !isHallRoom(targetRoomId)) {
                     _roomPeers.value = _roomPeers.value - targetRoomId
                     _conversations.value = _conversations.value.map { conv ->
@@ -7481,10 +7802,12 @@ object ZeroTalkClientManager {
         val roomHits = roomFound
             ?.let { key -> _roomMessages.value[key]?.filter { it.serverId == messageId } }
             .orEmpty()
-        if (hallHits.isEmpty() && roomHits.isEmpty()) return
+        // 对局内聊天消息（sync_room=false）不在房间列表里，只在当前对局面板里，单独处理
+        val gameChatHits = _activeGameChatMessages.value.filter { it.serverId == messageId }
+        if (hallHits.isEmpty() && roomHits.isEmpty() && gameChatHits.isEmpty()) return
 
         // 命中消息是否已在本机标记过撤回：本地先处理 + 服务端广播两次到达时用于提示幂等
-        val alreadyDeleted = (hallHits + roomHits).all { it.isDeleted }
+        val alreadyDeleted = (hallHits + roomHits + gameChatHits).all { it.isDeleted }
         // 命中消息是否为其会话最后一条：撤回后会话列表摘要要同步改写
         val wasLastInRoom = roomFound != null &&
             _roomMessages.value[roomFound]?.lastOrNull()?.serverId == messageId
@@ -7496,6 +7819,9 @@ object ZeroTalkClientManager {
             _roomMessages.value = _roomMessages.value + (
                 roomFound to (_roomMessages.value[roomFound] ?: emptyList()).applyRecall(messageId)
                 )
+        }
+        if (gameChatHits.isNotEmpty()) {
+            _activeGameChatMessages.value = _activeGameChatMessages.value.applyRecall(messageId)
         }
         if (wasLastInRoom) {
             _conversations.value = _conversations.value.map { conv ->

@@ -127,6 +127,9 @@ sealed interface ProfileSheetType {
     /** 注销账号二次确认 (高危) */
     data object DeleteAccountConfirm : ProfileSheetType
 
+    /** 切换账号（本机多账号列表） */
+    data object AccountSwitcher : ProfileSheetType
+
     /** 各功能设置项详情面板 */
     data class SettingDetail(val item: ProfileSettingItem) : ProfileSheetType
 }

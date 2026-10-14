@@ -4,26 +4,36 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import top.lanxint.zerotalk.data.model.ChatMessage
 import top.lanxint.zerotalk.data.model.GameSessionDetail
 import top.lanxint.zerotalk.data.model.GameType
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
+import top.lanxint.zerotalk.ui.components.LocalNotificationState
 
 /**
  * 沉浸式独立游戏对局页
@@ -40,11 +50,40 @@ fun GameSessionScreen(
     val gameError by clientManager.activeGameError.collectAsState()
     val currentUserId = clientManager.currentUserId ?: ""
 
+    // ---- 对局内聊天（对齐官方 GameChatPanel / GameSyncChatToggle）----
+    val chatMessages by clientManager.activeGameChatMessages.collectAsState()
+    val chatLoading by clientManager.gameChatLoading.collectAsState()
+    val syncChatPending by clientManager.gameSyncChatPending.collectAsState()
+    val notificationState = LocalNotificationState.current
+    var showChatPanel by remember { mutableStateOf(false) }
+    var chatInput by remember { mutableStateOf("") }
+    // 未读角标：面板打开时视为已读
+    var chatReadCount by remember { mutableStateOf(0) }
+
     var showResignConfirm by remember { mutableStateOf(false) }
     var showCancelConfirm by remember { mutableStateOf(false) }
 
     val currentSession = session
     val resolvedType = gameType ?: currentSession?.gameType ?: ""
+
+    // 对局双方（含谁是卧底的玩家列表）：只有双方能发言，观战者只读
+    val isPlayer = currentSession?.let { s ->
+        s.whiteUid == currentUserId || s.blackUid == currentUserId || s.redUid == currentUserId ||
+            s.players.any { it.uid.isNotBlank() && it.uid == currentUserId }
+    } ?: false
+    val statusValue = currentSession?.status.orEmpty()
+    val canSendChat = isPlayer && (statusValue == "waiting" || statusValue == "playing")
+    val unreadChatCount = (chatMessages.size - chatReadCount).coerceAtLeast(0)
+
+    // 面板打开（或面板内新增消息）时把已读位置推到最新
+    LaunchedEffect(showChatPanel, chatMessages.size) {
+        if (showChatPanel) chatReadCount = chatMessages.size
+    }
+
+    // 进入新对局（历史加载完成）时把已读位置对齐到历史末尾：历史消息不算未读
+    LaunchedEffect(currentSession?.id, chatLoading) {
+        if (!chatLoading) chatReadCount = chatMessages.size
+    }
 
     Scaffold(
         topBar = {
@@ -81,15 +120,28 @@ fun GameSessionScreen(
                 actions = {
                     if (currentSession != null) {
                         val isCreator = currentSession.creatorUid == currentUserId
-                        val isPlayer = currentSession.whiteUid == currentUserId ||
+                        val sessionIsPlayer = currentSession.whiteUid == currentUserId ||
                                 currentSession.blackUid == currentUserId ||
-                                currentSession.redUid == currentUserId
+                                currentSession.redUid == currentUserId ||
+                                currentSession.players.any { it.uid.isNotBlank() && it.uid == currentUserId }
+
+                        // 对局聊天同步开关：官方只在「双方 + 等待/对局中」时渲染，观战者与已结束都不显示
+                        if (sessionIsPlayer &&
+                            (currentSession.status == "waiting" || currentSession.status == "playing")
+                        ) {
+                            GameSyncChatToggle(
+                                locked = currentSession.syncChatLocked,
+                                enabled = currentSession.syncChatToRoom,
+                                pending = syncChatPending,
+                                onToggle = { clientManager.setGameSyncChat(it) }
+                            )
+                        }
 
                         if (currentSession.status == "waiting" && isCreator) {
                             TextButton(onClick = { showCancelConfirm = true }) {
                                 Text("取消邀请", color = MaterialTheme.colorScheme.error)
                             }
-                        } else if (currentSession.status == "playing" && isPlayer && resolvedType != GameType.UNDERCOVER) {
+                        } else if (currentSession.status == "playing" && sessionIsPlayer && resolvedType != GameType.UNDERCOVER) {
                             TextButton(onClick = { showResignConfirm = true }) {
                                 Text("认输", color = MaterialTheme.colorScheme.error)
                             }
@@ -100,6 +152,27 @@ fun GameSessionScreen(
                     containerColor = MaterialTheme.colorScheme.surface
                 )
             )
+        },
+        floatingActionButton = {
+            // 打开对局聊天（官方 .game-chat__fab + 未读角标）
+            if (currentSession != null) {
+                FloatingActionButton(
+                    onClick = { showChatPanel = true },
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Box(contentAlignment = Alignment.TopEnd) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Chat,
+                            contentDescription = "打开对局聊天"
+                        )
+                        if (unreadChatCount > 0) {
+                            Badge(containerColor = MaterialTheme.colorScheme.error) {
+                                Text(if (unreadChatCount > 99) "99+" else unreadChatCount.toString())
+                            }
+                        }
+                    }
+                }
+            }
         },
         modifier = modifier
     ) { innerPadding ->
@@ -344,6 +417,282 @@ fun GameSessionScreen(
             }
         )
     }
+
+    // 对局内聊天面板（官方 .game-chat 浮层：头部标题 + 消息列表 + 输入区）
+    if (showChatPanel) {
+        ModalBottomSheet(
+            onDismissRequest = { showChatPanel = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            GameChatPanel(
+                messages = chatMessages,
+                loading = chatLoading,
+                canSend = canSendChat,
+                input = chatInput,
+                onInputChange = { chatInput = it },
+                onSend = {
+                    val text = chatInput
+                    chatInput = ""
+                    clientManager.sendGameChatMessage(text) { err -> notificationState.show(err) }
+                },
+                onClose = { showChatPanel = false }
+            )
+        }
+    }
+}
+
+/**
+ * 「同步对局聊天内容至房间」开关（官方 `GameSyncChatToggle`）
+ *
+ * - 锁定（公共房间）时只展示文案、不渲染开关滑块；
+ * - 请求在飞（pending）时禁用点击，避免连点。
+ */
+@Composable
+private fun GameSyncChatToggle(
+    locked: Boolean,
+    enabled: Boolean,
+    pending: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    if (locked) {
+        Text(
+            text = "公共房间不允许同步聊天内容",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = 8.dp)
+        )
+        return
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(end = 4.dp)
+    ) {
+        Text(
+            text = "同步到房间",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.width(2.dp))
+        Switch(
+            checked = enabled,
+            onCheckedChange = { if (!pending) onToggle(it) },
+            enabled = !pending,
+            modifier = Modifier.scale(0.7f)
+        )
+    }
+}
+
+/**
+ * 对局聊天面板内容（对齐官方 `GameChatPanel`）
+ *
+ * - 头部：标题「对局聊天」+ 副标题（双方：「仅对局双方可见于此面板」/ 观战：「仅浏览本局聊天」）；
+ * - 列表：昵称 + 时间 + 内容（表情包渲染图片、语音显示时长，其余为文本），无头像；
+ * - 空态：「暂无对局内消息」；加载中：「加载消息中…」；
+ * - 输入区：观战者只读（「观战中 · 不可发言」），双方可发送（占位「对局内聊天...」）。
+ */
+@Composable
+private fun GameChatPanel(
+    messages: List<ChatMessage>,
+    loading: Boolean,
+    canSend: Boolean,
+    input: String,
+    onInputChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onClose: () -> Unit
+) {
+    val listState = rememberLazyListState()
+    // 打开面板与收到新消息都滚到底部（官方 $ = scrollTop = scrollHeight）
+    LaunchedEffect(messages.size, loading) {
+        if (messages.isNotEmpty()) {
+            runCatching { listState.animateScrollToItem(messages.lastIndex) }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 260.dp, max = 440.dp)
+    ) {
+        // 头部
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "对局聊天",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (canSend) "仅对局双方可见于此面板" else "仅浏览本局聊天",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, contentDescription = "关闭")
+            }
+        }
+
+        HorizontalDivider()
+
+        // 消息列表
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            when {
+                loading && messages.isEmpty() -> GameChatStatus("加载消息中…")
+                messages.isEmpty() -> GameChatStatus("暂无对局内消息")
+                else -> LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(messages, key = { it.id }) { message ->
+                        GameChatRow(message)
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider()
+
+        // 输入区 / 观战只读提示
+        if (canSend) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = onInputChange,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("对局内聊天...") },
+                    maxLines = 3,
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = onSend,
+                    enabled = input.isNotBlank()
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "发送",
+                        tint = if (input.isNotBlank()) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "观战中 · 不可发言",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/** 面板内的居中状态文案 */
+@Composable
+private fun GameChatStatus(text: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * 单条对局聊天消息（官方 `.game-chat__row`：昵称 + HH:mm + 气泡，无头像）
+ */
+@Composable
+private fun GameChatRow(message: ChatMessage) {
+    val isMine = message.isMine
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalAlignment = if (isMine) Alignment.End else Alignment.Start
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = message.senderName.ifBlank { if (isMine) "我" else "匿名用户" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = message.timestamp,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.height(3.dp))
+        Surface(
+            color = if (isMine) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            when {
+                message.isDeleted -> Text(
+                    text = "该消息已被撤回",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                message.isSticker && message.stickerUrl.isNotBlank() -> AsyncNetworkImage(
+                    url = message.stickerUrl,
+                    contentDescription = "表情包",
+                    modifier = Modifier
+                        .padding(4.dp)
+                        .size(72.dp),
+                    contentScale = ContentScale.Fit,
+                    backgroundColor = Color.Transparent
+                )
+                message.isSticker -> GameChatBubbleText("[表情包]")
+                message.isVoice && message.audioUrl.isBlank() -> GameChatBubbleText("语音已过期")
+                message.isVoice -> GameChatBubbleText("[语音] ${message.voiceDurationSec}″")
+                else -> GameChatBubbleText(message.content)
+            }
+        }
+    }
+}
+
+/** 气泡内文本 */
+@Composable
+private fun GameChatBubbleText(text: String) {
+    Text(
+        text = text,
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        style = MaterialTheme.typography.bodyMedium
+    )
 }
 
 /**

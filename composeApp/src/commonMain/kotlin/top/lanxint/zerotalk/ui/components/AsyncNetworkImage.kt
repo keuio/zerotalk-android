@@ -2,6 +2,8 @@ package top.lanxint.zerotalk.ui.components
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
@@ -252,13 +254,26 @@ fun UserAvatar(
     shape: Shape = CircleShape,
     gradient: List<Color> = IosContactAvatarGradient,
     fallbackTextStyle: TextStyle = AppleHigTypography.headline,
-    fallbackIconSize: Dp = 22.dp
+    fallbackIconSize: Dp = 22.dp,
+    /** 点击头像回调（如「点击放大查看」）；为 null 时头像不可点，保持原有交互 */
+    onClick: (() -> Unit)? = null
 ) {
     Box(
         modifier = modifier
             .size(size)
             .clip(shape)
-            .background(Brush.linearGradient(gradient)),
+            .background(Brush.linearGradient(gradient))
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick
+                    )
+                } else {
+                    Modifier
+                }
+            ),
         contentAlignment = Alignment.Center
     ) {
         val initial = name.trim().take(1).uppercase()
