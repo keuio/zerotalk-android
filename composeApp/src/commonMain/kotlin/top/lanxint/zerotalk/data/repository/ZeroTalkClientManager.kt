@@ -4111,11 +4111,10 @@ object ZeroTalkClientManager {
         otherUserMomentsScoreCursor = null
         val state = _otherUserProfile.value ?: return
         if (state.profile == null) return
-        // 清空旧排序的动态，避免「最热」结果里混着「最新」的旧数据
-        _otherUserProfile.value = state.copy(
-            isLoadingMore = false,
-            profile = state.profile.copy(moments = emptyList(), hasMoreMoments = false)
-        )
+        // 注意：**不能**在这里把 moments 清空。
+        // 资料页是整页 verticalScroll，动态列表被清空会让内容高度骤降，
+        // 滚动量被夹到 0 —— 表现就是「切换最新/最热后被强制跳到页面顶部」（1.6.0 实测复现）。
+        // 新排序的数据到达后由 refreshOtherUserProfile 整体替换，不会出现新旧混排。
         refreshOtherUserProfile()
     }
 

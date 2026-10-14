@@ -63,6 +63,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -102,7 +104,9 @@ import androidx.compose.ui.draw.drawWithContent
 import com.kashif_e.backdrop.backdrops.layerBackdrop
 import com.kashif_e.backdrop.backdrops.rememberLayerBackdrop
 import com.kashif_e.backdrop.Backdrop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jetbrains.compose.resources.painterResource
 
 /**
@@ -169,25 +173,42 @@ fun MomentsScreen(
         ZeroTalkClientManager.fetchMomentsByCategory(category = cat, sort = currentSort)
     }
 
-    // 记录切换排序前的滚动位置并在数据刷新后恢复（避免切换最新/最热时页面置顶）
-    var pendingRestoreScroll by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    LaunchedEffect(featuredList, followingList, mineList) {
-        val target = pendingRestoreScroll ?: return@LaunchedEffect
-        val currentListState = when (pagerState.currentPage) {
+    // 切换「最新 / 最热」时的位置锚点
+    //
+    // 只靠「记录 index → 数据到了再 scrollToItem」是不够的（1.6.0 的做法实测仍会被顶回顶部）：
+    // LazyColumn 在列表内容被替换时，会拿「原首条可见项的 key」去新列表里找它的新下标，
+    // 而那条动态在最热榜里往往恰好是第 1 条 → 首条被对齐到下标 0，页面就被顶到顶部。
+    // 这里做两件事一起兜住：
+    //   1. 列表项 key 带上排序（见下方 LazyColumn 的 key），换排序时旧 key 一律查不到，
+    //      LazyColumn 只能沿用原下标，不会按 key 重锚定；
+    //   2. 等新排序的数据真正到达、并让 LazyColumn 先用新列表测完一帧之后，再把位置钉回锚点，
+    //      覆盖任何测量阶段的重锚定。
+    var sortAnchor by remember { mutableStateOf<SortAnchor?>(null) }
+    LaunchedEffect(sortAnchor) {
+        val anchor = sortAnchor ?: return@LaunchedEffect
+        // 等该分类的列表实例变化（= 新排序的数据到达）；最多等 5 秒，避免请求失败后锚点长期滞留
+        val arrived = withTimeoutOrNull(5_000L) {
+            snapshotFlow {
+                when (anchor.page) {
+                    0 -> featuredList
+                    1 -> followingList
+                    else -> mineList
+                }
+            }.first { it !== anchor.sourceList }
+        }
+        sortAnchor = null
+        if (arrived == null || arrived.isEmpty()) return@LaunchedEffect
+        val listState = when (anchor.page) {
             0 -> featuredListState
             1 -> followingListState
             else -> mineListState
         }
-        val listSize = when (pagerState.currentPage) {
-            0 -> featuredList.size
-            1 -> followingList.size
-            else -> mineList.size
-        }
-        if (listSize > 0) {
-            val clampedIndex = target.first.coerceAtMost(listSize - 1)
-            currentListState.scrollToItem(clampedIndex, target.second)
-            pendingRestoreScroll = null
-        }
+        // 等一帧：让 LazyColumn 先用新列表完成一次测量，下一帧再钉位置，避免被测量阶段覆盖
+        withFrameNanos { }
+        listState.scrollToItem(
+            anchor.index.coerceAtMost(arrived.size - 1),
+            anchor.offset
+        )
     }
 
     // 顶部悬浮控制栏总高 = 状态栏 + 上下各 8dp + 胶囊 38dp，再留 16dp 呼吸留白：
@@ -242,7 +263,10 @@ fun MomentsScreen(
                     ) {
                         items(
                             items = list,
-                            key = { it.id },
+                            // key 带上排序：切换最新/最热时旧 key 在新列表里查不到，
+                            // LazyColumn 不会「按原首条可见项在新排序里的下标」重锚定，
+                            // 从而保住当前滚动位置（否则那条动态若是热榜第 1 条就会被顶到顶部）
+                            key = { item -> "${currentSort.name}:${item.id}" },
                             contentType = { "moment_card" }
                         ) { item ->
                             MomentCard(
@@ -376,9 +400,17 @@ fun MomentsScreen(
                             1 -> followingListState
                             else -> mineListState
                         }
-                        pendingRestoreScroll = Pair(
-                            currentListState.firstVisibleItemIndex,
-                            currentListState.firstVisibleItemScrollOffset
+                        val sourceList = when (pagerState.currentPage) {
+                            0 -> featuredList
+                            1 -> followingList
+                            else -> mineList
+                        }
+                        // 记下当前首条可见项与偏移：新排序数据到达后钉回同一位置
+                        sortAnchor = SortAnchor(
+                            page = pagerState.currentPage,
+                            index = currentListState.firstVisibleItemIndex,
+                            offset = currentListState.firstVisibleItemScrollOffset,
+                            sourceList = sourceList
                         )
                         currentSort = newSort
                         val cat = categories[pagerState.currentPage]
@@ -528,6 +560,21 @@ internal fun MomentsSortCapsule(
         }
     }
 }
+
+/**
+ * 切换「最新 / 最热」时记录的位置锚点
+ *
+ * @param page 分页下标（0 精选 / 1 关注 / 2 我的）
+ * @param index 切换前首条可见项下标
+ * @param offset 切换前首条可见项的滚动偏移
+ * @param sourceList 记录锚点时的列表实例：只有该实例被换掉（新排序数据到达）才执行还原
+ */
+private data class SortAnchor(
+    val page: Int,
+    val index: Int,
+    val offset: Int,
+    val sourceList: List<MomentItem>
+)
 
 /**
  * 动态列表单张卡片组件

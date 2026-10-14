@@ -52,8 +52,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+
 
 /**
  * 全局图片全屏查看器状态控制器
@@ -130,13 +129,10 @@ fun FullScreenImageViewer(
 ) {
     if (images.isEmpty()) return
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = true
-        )
+    // 用 FullScreenDialog（decorFitsSystemWindows=false）：内容真正铺满整屏，
+    // 延伸到顶部状态栏与底部导航栏之下；普通 Dialog 会被系统栏切掉上下两条。
+    FullScreenDialog(
+        onDismissRequest = onDismiss
     ) {
         Box(
             modifier = Modifier
@@ -163,12 +159,13 @@ fun FullScreenImageViewer(
             }
 
             // 顶部页码指示器 (多图时展示)
+            // 沉浸式下系统栏已隐藏（statusBarsPadding 为 0），这里用固定留白保证不贴屏幕边缘
             if (images.size > 1) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .statusBarsPadding()
-                        .padding(top = 18.dp)
+                        .padding(top = 20.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(Color.Black.copy(alpha = 0.55f))
                         .border(0.5.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
@@ -185,12 +182,12 @@ fun FullScreenImageViewer(
                 }
             }
 
-            // 右上角半透明关闭按钮
+            // 右上角半透明关闭按钮（沉浸式下同样用固定留白避免贴边）
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
-                    .padding(top = 14.dp, end = 16.dp)
+                    .padding(top = 18.dp, end = 16.dp)
                     .size(36.dp)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.20f))

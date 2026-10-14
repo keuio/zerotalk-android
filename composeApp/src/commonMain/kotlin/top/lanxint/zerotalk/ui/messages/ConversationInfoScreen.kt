@@ -42,11 +42,14 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
@@ -833,6 +836,24 @@ private fun ProfileTabContent(
     val higColors = AppleHigColors.colors(isDark)
     val profile = state?.profile
 
+    // 切换「最新 / 最热」时保住整页滚动位置
+    //
+    // 资料页是整页 verticalScroll，动态列表一变（内容高度骤降）滚动量就会被夹到 0，
+    // 表现就是「切换排序后被强制跳到页面顶部」。这里记下切换前的滚动量与当时的列表实例，
+    // 等新排序的数据真正到达后再滚回去（最多等 5 秒，避免请求失败后锚点滞留）。
+    var pendingMomentScroll by remember { mutableStateOf<Pair<Int, List<MomentItem>?>?>(null) }
+    LaunchedEffect(pendingMomentScroll) {
+        val pending = pendingMomentScroll ?: return@LaunchedEffect
+        val arrived = withTimeoutOrNull(5_000L) {
+            snapshotFlow { profile?.moments }.first { it !== pending.second }
+        }
+        pendingMomentScroll = null
+        if (arrived.isNullOrEmpty()) return@LaunchedEffect
+        // 等一帧：让新列表先完成一次测量，避免还原后又被夹回顶部
+        withFrameNanos { }
+        scrollState.scrollTo(pending.first)
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -873,7 +894,11 @@ private fun ProfileTabContent(
                         scrollViewportTopPx = scrollViewportTopPx,
                         targetMomentId = targetMomentId,
                         currentSort = currentMomentSort,
-                        onSortChange = onMomentSortChange,
+                        onSortChange = { sort ->
+                            // 记下切换前的整页滚动量与当时的列表实例，新排序数据到达后滚回同一位置
+                            pendingMomentScroll = scrollState.value to profile.moments
+                            onMomentSortChange(sort)
+                        },
                         onToggleLike = onToggleMomentLike,
                         onComment = onOpenMomentComments,
                         onShare = onShareMoment,
