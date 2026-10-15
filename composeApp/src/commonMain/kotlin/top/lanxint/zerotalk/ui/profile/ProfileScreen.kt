@@ -98,8 +98,6 @@ fun ProfileScreen(
     onLogin: (() -> Unit)? = null,
     /** 打开「切换账号」面板 */
     onSwitchAccount: () -> Unit = {},
-    /** 本机已保存的账号数量（用于入口副标题） */
-    savedAccountCount: Int = 0,
     onOpenSetting: (ProfileSettingItem) -> Unit,
     /** 打开「通知中心」面板 */
     onOpenNotificationCenter: () -> Unit,
@@ -278,10 +276,10 @@ fun ProfileScreen(
                     color = higColors.separator.copy(alpha = if (isDark) 0.35f else 0.20f)
                 )
 
-                // 下半部分：3 个紧凑操作胶囊按钮
+                // 下半部分：4 个紧凑操作胶囊按钮
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     // 退出登录 / 登录账号
                     val isLogged = profile.isLoggedIn
@@ -313,6 +311,35 @@ fun ProfileScreen(
                                 text = if (isLogged) "退出登录" else "登录账号",
                                 style = AppleHigTypography.footnote.copy(
                                     color = if (isLogged) higColors.systemRed else higColors.tint,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+
+                    // 切换账号
+                    CapsuleGlassButton(
+                        onClick = onSwitchAccount,
+                        backdrop = backdrop,
+                        isDark = isDark,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(30.6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SwitchAccount,
+                                contentDescription = "切换账号",
+                                tint = titleColor,
+                                modifier = Modifier.size(12.6.dp)
+                            )
+                            BasicText(
+                                text = "切换账号",
+                                style = AppleHigTypography.footnote.copy(
+                                    color = titleColor,
                                     fontWeight = FontWeight.Medium
                                 )
                             )
@@ -523,10 +550,9 @@ fun ProfileScreen(
             title = "账号与安全",
             isDark = isDark
         ) {
-            // 切换账号：本机保存过多个账号时可一键切换
+            // 切换账号
             AppleHigRow(
                 title = "切换账号",
-                subtitle = if (savedAccountCount > 0) "本机已保存 $savedAccountCount 个账号" else "登录过的账号会保存在本机，可一键切换",
                 icon = Icons.Default.SwitchAccount,
                 iconBgColor = Color(0xFF0EA5E9),
                 isDark = isDark,

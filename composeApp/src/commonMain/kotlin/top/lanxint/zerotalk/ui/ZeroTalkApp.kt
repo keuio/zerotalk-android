@@ -544,7 +544,6 @@ fun ZeroTalkApp() {
                             accountSwitching = false
                             activeProfileSheet = ProfileSheetType.AccountSwitcher
                         },
-                        savedAccountCount = savedAccounts.size,
                         onOpenSetting = { item ->
                             if (item == ProfileSettingItem.PRIVACY_SETTINGS) {
                                 privacySettings = ZeroTalkClientManager.privacySettings.value
