@@ -12,6 +12,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -29,19 +31,19 @@ import androidx.compose.ui.unit.dp
  * 「对方正在输入」三点气泡（私聊 / 匹配等 1v1 会话）
  *
  * 对齐官网 `PeerTypingBanner` 的语义（`peerIsTyping` = 对端正在输入），
- * 但按需求把表现形式做成**对方侧气泡 + 中间三个点**：
- * 1. 气泡与对方普通气泡同形同色（左下尖尾 + 深灰烟熏 `0xB32C2C2E` + 0.5dp 高光描边）；
+ * 表现形式为**对方侧气泡 + 中间三个动态点**：
+ * 1. 气泡与对方普通文字气泡完全同形同高同色：
+ *    - 尖尾形状：MessageBubbleTailShape(isOutgoing = false, cornerRadius = 20.dp, tailHeight = 6.5.dp)；
+ *    - 烟熏深灰底色：0xB32C2C2E + 0.5dp 高光描边；
+ *    - 高度对齐：正常单行文本气泡高度（top 8dp + 单行 lineHeight 22dp + 底部尖尾 14.5dp = 44.5dp）；
  * 2. 三个点依次浮现 / 消失（波浪式），循环播放；
  * 3. 气泡本身的出现 / 消失由调用方用 `AnimatedVisibility` 做淡入淡出。
- *
- * 注意：这里是**纯展示**组件，是否显示由 `ZeroTalkClientManager.peerTypingRooms` 决定，
- * 超时隐藏也在仓库层完成（对端停止输入 6 秒后自动清除）。
  */
 @Composable
 fun PeerTypingBubble(
     modifier: Modifier = Modifier
 ) {
-    // 对方气泡形态：左下尖尾（与 BubbleContentBox 的私聊对方气泡一致）
+    // 对方气泡形态：左下尖尾（与 BubbleContentBox 的私聊对方带尾气泡完全一致）
     val shape = remember { MessageBubbleTailShape(isOutgoing = false, cornerRadius = 20.dp, tailHeight = 6.5.dp) }
 
     Box(
@@ -49,20 +51,22 @@ fun PeerTypingBubble(
             .clip(shape)
             .background(Color(0xB32C2C2E))
             .border(0.5.dp, Color(0x22FFFFFF), shape)
-            // 尾巴占 6.5dp，气泡底部内边距相应加大，三点在视觉上居中于气泡主体
-            .padding(start = 14.dp, end = 14.dp, top = 11.dp, bottom = 17.5.dp),
+            .defaultMinSize(minWidth = 64.dp, minHeight = 44.5.dp)
+            // 尾巴占 6.5dp，底部 14.5dp = 8dp 视觉内边距 + 6.5dp 尖尾高，与单行气泡 (top 8dp, bottom 14.5dp) 严格一致
+            .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 14.5.dp),
         contentAlignment = Alignment.Center
     ) {
         TypingDots()
     }
 }
 
-/** 三个点：依次浮现消失（波浪式），单点周期 420ms、相邻点错开 180ms */
+/** 三个点：依次浮现消失（波浪式），单点周期 420ms、相邻点错开 180ms，高度对齐单行文本 22dp */
 @Composable
 private fun TypingDots(color: Color = Color(0xE6FFFFFF)) {
     val transition = rememberInfiniteTransition(label = "PeerTypingDots")
     Row(
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        modifier = Modifier.height(22.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         repeat(3) { index ->
@@ -78,11 +82,11 @@ private fun TypingDots(color: Color = Color(0xE6FFFFFF)) {
             )
             Box(
                 modifier = Modifier
-                    .size(7.dp)
+                    .size(8.dp)
                     .graphicsLayer {
-                        // 浮现消失：透明度 0.25 → 1，同时轻微上浮，形成波浪观感
-                        alpha = 0.25f + 0.75f * progress
-                        translationY = -1.5.dp.toPx() * progress
+                        // 浮现消失：透明度 0.3 → 1，同时轻微上浮，形成波浪观感
+                        alpha = 0.3f + 0.7f * progress
+                        translationY = -2.dp.toPx() * progress
                     }
                     .background(color, CircleShape)
             )

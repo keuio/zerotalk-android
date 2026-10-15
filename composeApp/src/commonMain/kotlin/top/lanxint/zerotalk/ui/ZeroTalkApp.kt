@@ -127,6 +127,8 @@ fun ZeroTalkApp() {
     val usageNoticeAccepted by UiPreferencesStore.usageNoticeAccepted.collectAsStateWithLifecycle()
     // 后台接收消息（保活前台服务）：设备级偏好，默认开启
     val backgroundReceiveEnabled by UiPreferencesStore.backgroundReceiveEnabled.collectAsStateWithLifecycle()
+    // 回车发送消息：设备级偏好，默认关闭
+    val sendOnEnterEnabled by UiPreferencesStore.sendOnEnterEnabled.collectAsStateWithLifecycle()
     // 渲染能力总闸是 KMPLiquidGlass 的全局状态，随开关即时下发（无需重启即生效）
     SideEffect { applyLiquidGlassCompatMode(liquidGlassCompat) }
     var selectedTab by remember { mutableStateOf(ZeroTalkTab.HOME) }
@@ -503,6 +505,20 @@ fun ZeroTalkApp() {
                         },
                         backgroundReceiveEnabled = backgroundReceiveEnabled,
                         onBackgroundReceiveChange = { UiPreferencesStore.setBackgroundReceiveEnabled(it) },
+                        sendOnEnterEnabled = sendOnEnterEnabled,
+                        onSendOnEnterChange = { UiPreferencesStore.setSendOnEnterEnabled(it) },
+                        onOpenMyMoments = {
+                            if (userProfile.isLoggedIn) {
+                                ZeroTalkClientManager.openOtherUserProfile(
+                                    userId = userProfile.userId.takeIf { it != "--" },
+                                    uid = ZeroTalkClientManager.currentUid,
+                                    name = userProfile.name,
+                                    avatarUrl = userProfile.avatarUrl
+                                )
+                            } else {
+                                notificationState.show("请先登录账号")
+                            }
+                        },
                         onRefreshAvatar = {
                             notificationState.show("正在刷新头像...")
                             ZeroTalkClientManager.refreshAvatar { success, msg ->

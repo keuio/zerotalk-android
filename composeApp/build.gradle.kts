@@ -136,11 +136,13 @@ android {
 }
 
 // Compose 编译器报告：输出每个 composable 的 restartable / skippable 情况与参数稳定性。
-// 不可跳过的 composable 会在父级每次重组时一并重跑，是定位「重组放大」最直接的依据。
-// 产物：composeApp/build/compose_compiler/（*.txt / *.csv / *.json）
-composeCompiler {
-    reportsDestination = layout.buildDirectory.dir("compose_compiler")
-    metricsDestination = layout.buildDirectory.dir("compose_compiler")
+// Windows 下直接开启会导致 JsonBuilderKt.write 生成含非法字符路径报 "Invalid file path" 异常。
+// 默认关闭，仅在显式传入 -PcomposeCompilerMetrics=true 时启用。
+if (project.findProperty("composeCompilerMetrics") == "true") {
+    composeCompiler {
+        reportsDestination = layout.buildDirectory.dir("compose_compiler")
+        metricsDestination = layout.buildDirectory.dir("compose_compiler")
+    }
 }
 
 baselineProfile {

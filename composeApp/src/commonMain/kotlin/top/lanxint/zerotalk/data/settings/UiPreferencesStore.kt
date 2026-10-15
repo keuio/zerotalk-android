@@ -34,6 +34,7 @@ object UiPreferencesStore {
     private const val KEY_MATCH_PRIVACY_MODE = "match_privacy_mode"
     private const val KEY_ENCRYPTED_ROOM_IDS = "encrypted_room_ids"
     private const val KEY_USAGE_NOTICE_ACCEPTED = "usage_notice_accepted"
+    private const val KEY_SEND_ON_ENTER = "send_on_enter"
 
     @Volatile
     private var storageDir: File? = null
@@ -96,6 +97,13 @@ object UiPreferencesStore {
     val usageNoticeAccepted: StateFlow<Boolean> = _usageNoticeAccepted.asStateFlow()
 
     /**
+     * 回车发送消息
+     * 默认关闭（保持回车换行习惯）。
+     */
+    private val _sendOnEnterEnabled = MutableStateFlow(false)
+    val sendOnEnterEnabled: StateFlow<Boolean> = _sendOnEnterEnabled.asStateFlow()
+
+    /**
      * 初始化本地持久化存储目录（如 context.filesDir）
      */
     fun init(filesDir: File) {
@@ -114,6 +122,8 @@ object UiPreferencesStore {
         _hallNotifyAfterExit.value = cache[KEY_HALL_NOTIFY_AFTER_EXIT] == "1"
         // 缺省视为未确认：首次启动会弹一次使用说明
         _usageNoticeAccepted.value = cache[KEY_USAGE_NOTICE_ACCEPTED] == "1"
+        // 缺省视为关闭
+        _sendOnEnterEnabled.value = cache[KEY_SEND_ON_ENTER] == "1"
 
         encryptedRoomIds.clear()
         cache[KEY_ENCRYPTED_ROOM_IDS]?.split(',')
@@ -191,6 +201,17 @@ object UiPreferencesStore {
         if (_usageNoticeAccepted.value) return
         _usageNoticeAccepted.value = true
         cache[KEY_USAGE_NOTICE_ACCEPTED] = "1"
+        writeText(PREF_FILE, cache.entries.joinToString("\n") { "${it.key}=${it.value}" })
+    }
+
+    /**
+     * 写入「回车发送消息」开关（值未变化时跳过落盘）
+     */
+    @Synchronized
+    fun setSendOnEnterEnabled(enabled: Boolean) {
+        if (_sendOnEnterEnabled.value == enabled) return
+        _sendOnEnterEnabled.value = enabled
+        cache[KEY_SEND_ON_ENTER] = if (enabled) "1" else "0"
         writeText(PREF_FILE, cache.entries.joinToString("\n") { "${it.key}=${it.value}" })
     }
 

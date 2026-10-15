@@ -25,6 +25,8 @@ internal object LocalEchoMerge {
      * @param echo 被对账命中的本地乐观回显
      */
     fun merge(server: ChatMessage, echo: ChatMessage): ChatMessage = server.copy(
+        // 显示时间：本机发出的消息以发送时刻本地格式化的时间戳为准，避免服务端时区/时钟差异导致气泡时间突跳
+        timestamp = echo.timestamp.takeIf { it.isNotBlank() } ?: server.timestamp,
         // 引用回复：服务端当前不回传这些字段，沿用本地回显（quotedIsMine 服务端从不回传，回显优先）
         quotedText = server.quotedText ?: echo.quotedText,
         quotedIsMine = echo.quotedIsMine ?: server.quotedIsMine,

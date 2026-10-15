@@ -247,25 +247,47 @@ object ZeroTalkClientManager {
      * 帧里没有 room_id 时按「当前 WS 房间」归属（WS 同一时刻只在一个房间）。
      */
     private fun handlePeerTyping(event: WsServerEvent.Typing) {
-        val roomId = event.roomId?.takeIf { it.isNotBlank() }
+        val myUid = _loginData.value?.uid.orEmpty()
+        val myUserId = _loginData.value?.userId?.toString().orEmpty()
+        if (!event.fromUid.isNullOrBlank() && (event.fromUid == myUid || event.fromUid == myUserId)) {
+            // 排除自己发出的输入广播回显
+            return
+        }
+
+        // 目标房间解析：
+        // 1. 若帧内带有效房间 ID，优先使用；
+        // 2. 若帧内未带房间 ID：优先归属当前正查看的房间（viewingRoomId），其次兜底 WS 当前房间
+        val targetRoom = event.roomId?.takeIf { it.isNotBlank() }
+            ?: viewingRoomId?.takeIf { it.isNotBlank() }
             ?: wsClient.currentRoomId?.takeIf { it.isNotBlank() }
             ?: return
-        // 仅 1v1 会话展示「对方正在输入」（与官网 peerIsTyping 口径一致）
-        if (!isOneToOneRoom(roomId)) return
-        // 只跟踪「正在查看的会话」：不在该会话里时不留存状态，避免重新进入会话时看到过期的三点
-        if (roomId != viewingRoomId) return
 
-        peerTypingTimeoutJobs.remove(roomId)?.cancel()
+        // 仅 1v1 会话展示「对方正在输入」（与官网 peerIsTyping 口径一致）
+        if (!isOneToOneRoom(targetRoom)) return
+
+        // 若用户当前正在查看某个房间，做容错别名归一化（如前后空格、大小写或前缀）
+        val viewing = viewingRoomId
+        val roomToUpdate = if (!viewing.isNullOrBlank() && (
+            targetRoom.equals(viewing, ignoreCase = true) ||
+            targetRoom.endsWith(viewing) || viewing.endsWith(targetRoom)
+        )) {
+            viewing
+        } else {
+            targetRoom
+        }
+
+        peerTypingTimeoutJobs.remove(roomToUpdate)?.cancel()
         if (event.active) {
-            _peerTypingRooms.value = _peerTypingRooms.value + roomId
-            peerTypingTimeoutJobs[roomId] = scope.launch {
+            _peerTypingRooms.value = _peerTypingRooms.value + roomToUpdate
+            peerTypingTimeoutJobs[roomToUpdate] = scope.launch {
                 delay(PEER_TYPING_TIMEOUT_MS)
-                _peerTypingRooms.value = _peerTypingRooms.value - roomId
-                peerTypingTimeoutJobs.remove(roomId)
+                _peerTypingRooms.value = _peerTypingRooms.value - roomToUpdate
+                peerTypingTimeoutJobs.remove(roomToUpdate)
             }
         } else {
-            _peerTypingRooms.value = _peerTypingRooms.value - roomId
+            _peerTypingRooms.value = _peerTypingRooms.value - roomToUpdate
         }
+        ZtLog.d("ZeroTalk", "[Typing] peer typing updated: room=$roomToUpdate active=${event.active} viewing=$viewingRoomId")
     }
 
     /** 清除某个房间的「正在输入」状态（对端发来消息 / 离开房间 / 退出登录时调用） */
@@ -484,19 +506,30 @@ object ZeroTalkClientManager {
         event: WsServerEvent.Message,
         eventMs: Long
     ): ChatMessage? {
+        val now = System.currentTimeMillis()
+        // 本地乐观回显：serverId == 0L 且 isMine
+        // 候选池按「本地实际经过时间」过滤，绝不依赖服务端 eventMs 与本地时钟对比，
+        // 彻底杜绝服务端 UTC 与本地 GMT+8 等时区时差导致的对账硬失败
         val pendingEchoes = list.filter {
             it.serverId == 0L && it.isMine &&
-                (eventMs <= 0L || kotlin.math.abs(eventMs - it.timestampMs) <= ECHO_FALLBACK_WINDOW_MS)
+                (now - it.timestampMs <= ECHO_FALLBACK_WINDOW_MS)
         }
         if (pendingEchoes.isEmpty()) return null
 
-        // 首选：时间窗内按内容/类型精确匹配
+        // 1. 首选：clientMessageId 精确对账（端到端加密与官方唯一凭据）
+        val eventClientId = event.clientMessageId?.trim().orEmpty()
+        if (eventClientId.isNotEmpty()) {
+            pendingEchoes.firstOrNull { it.clientMessageId.isNotBlank() && it.clientMessageId == eventClientId }
+                ?.let { return it }
+        }
+
+        // 2. 次选：时间窗内按内容/类型精确匹配（以本地经过时间判定）
         pendingEchoes.firstOrNull { item ->
-            (eventMs - item.timestampMs) in -ECHO_MATCH_WINDOW_MS..ECHO_MATCH_WINDOW_MS &&
+            (now - item.timestampMs) <= ECHO_MATCH_WINDOW_MS &&
                 isSameEchoKind(item, event)
         }?.let { return it }
 
-        // 兜底：同类 + FIFO（骰子点数由服务端摇出、设备与服务端时钟偏差等必然失配的场景）
+        // 3. 兜底：同类 + FIFO（骰子点数由服务端摇出、或者网络抖动延迟到达的场景）
         return pendingEchoes.firstOrNull { isSameEchoKind(it, event) }
     }
 
@@ -7512,13 +7545,13 @@ object ZeroTalkClientManager {
                     )
                 }
                 val isMine = isMessageFromMe(event.fromUid, event.username, event.isSelf)
-                val timeStr = event.createdAt?.takeLast(8)?.take(5) ?: SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                val eventMs = parseTimestampMs(event.createdAt)
+                val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(eventMs))
                 val targetRoom = event.roomId ?: wsClient.currentRoomId
-                ZtLog.d("ZeroTalk", "[MSG] type=${event.type} room=$targetRoom isMine=$isMine")
+                ZtLog.d("ZeroTalk", "[MSG] type=${event.type} room=$targetRoom isMine=$isMine time=$timeStr")
                 // 同一条消息可能同时来自 chat_banner 与 message：用 message_id 去重，避免双弹/双记未读
                 val msgKey = event.messageId?.takeIf { it > 0 }?.let { "m_$it" }.orEmpty()
                 val alreadyBannered = !isMine && msgKey.isNotBlank() && !markBannerSeen(msgKey)
-                val eventMs = parseTimestampMs(event.createdAt)
 
                 // 累积成员资料：群聊消息并非每条都带昵称/头像/性别
                 rememberMember(event.fromUid, event.username, event.gender, event.avatarUrl)
@@ -7897,9 +7930,36 @@ object ZeroTalkClientManager {
 
     private fun parseTimestampMs(dateStr: String?): Long {
         if (dateStr.isNullOrBlank()) return System.currentTimeMillis()
+        val trimmed = dateStr.trim()
         return try {
-            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).parse(dateStr)?.time
-                ?: System.currentTimeMillis()
+            if (trimmed.contains("T") || trimmed.endsWith("Z", ignoreCase = true)) {
+                val clean = trimmed.replace("T", " ").removeSuffix("Z")
+                val pattern = if (clean.contains(".")) "yyyy-MM-dd HH:mm:ss.SSS" else "yyyy-MM-dd HH:mm:ss"
+                val sdf = SimpleDateFormat(pattern, Locale.US).apply {
+                    timeZone = java.util.TimeZone.getTimeZone("UTC")
+                }
+                sdf.parse(clean.substringBefore(".").let { if (clean.contains(".")) clean else "$it.000" })?.time
+                    ?: System.currentTimeMillis()
+            } else {
+                val pattern = "yyyy-MM-dd HH:mm:ss"
+                val sdfUtc = SimpleDateFormat(pattern, Locale.US).apply {
+                    timeZone = java.util.TimeZone.getTimeZone("UTC")
+                }
+                val utcTime = sdfUtc.parse(trimmed)?.time
+                val sdfLocal = SimpleDateFormat(pattern, Locale.getDefault())
+                val localTime = sdfLocal.parse(trimmed)?.time
+                if (utcTime != null && localTime != null) {
+                    val now = System.currentTimeMillis()
+                    // 自动选择与当前系统时间更近的解析（当服务端以 UTC 格式下发 created_at 时，utcTime 偏差在数秒内，而 localTime 偏差达 8 小时）
+                    if (kotlin.math.abs(now - utcTime) < kotlin.math.abs(now - localTime)) {
+                        utcTime
+                    } else {
+                        localTime
+                    }
+                } else {
+                    utcTime ?: localTime ?: System.currentTimeMillis()
+                }
+            }
         } catch (_: Exception) {
             System.currentTimeMillis()
         }

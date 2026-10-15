@@ -545,7 +545,10 @@ fun PrivateChatScreen(
     val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsStateWithLifecycle()
     // 「对方正在输入」：仅 1v1 会话展示（群聊 / 大厅不展示，与官网 peerIsTyping 口径一致）
     val peerTypingRooms by ZeroTalkClientManager.peerTypingRooms.collectAsStateWithLifecycle()
-    val peerIsTyping = !isGroupRoom && peerTypingRooms.contains(conversation.id)
+    val peerIsTyping = !isGroupRoom && (
+        peerTypingRooms.contains(conversation.id) ||
+        peerTypingRooms.any { it.equals(conversation.id, ignoreCase = true) }
+    )
     var showConversationInfo by remember(conversation.id) { mutableStateOf(false) }
     // 点动态卡片评论数打开的动态（复用动态主界面的评论抽屉）
     var momentCardComment by remember(conversation.id) { mutableStateOf<MomentItem?>(null) }
@@ -693,14 +696,15 @@ fun PrivateChatScreen(
             }
     }
 
-    // 「对方正在输入」三点气泡：仅在用户本就贴近底部时滚到底部（正在翻历史时不抢滚动）
+    // 「对方正在输入」三点气泡：自动滚到底部展现
     LaunchedEffect(peerIsTyping) {
-        if (!peerIsTyping || messageList.isEmpty()) return@LaunchedEffect
+        if (!peerIsTyping) return@LaunchedEffect
         val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         val totalItems = headerCount + messageList.size
-        if (lastVisibleIndex >= totalItems - 4) {
-            delay(30)
-            // 末尾「正在输入」项的下标 = 头部项数 + 消息条数；滚到它后由底部留白把气泡顶到可见位置
+        if (messageList.isEmpty() || lastVisibleIndex >= totalItems - 4) {
+            delay(40)
+            listState.animateScrollToItem(totalItems)
+            delay(160)
             listState.animateScrollToItem(totalItems)
         }
     }
@@ -1201,7 +1205,7 @@ fun PrivateChatScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 6.dp),
+                                .padding(top = 6.dp, bottom = 6.dp),
                             contentAlignment = Alignment.CenterStart
                         ) {
                             PeerTypingBubble()
@@ -1217,6 +1221,7 @@ fun PrivateChatScreen(
         IosChatNavBar(
             onBack = onBack,
             title = conversation.targetName,
+            subtitle = if (peerIsTyping) "对方正在输入..." else null,
             isDark = isDark,
             isWhiteBackground = isWhiteBackground,
             surfaceColor = buttonSurfaceColor,

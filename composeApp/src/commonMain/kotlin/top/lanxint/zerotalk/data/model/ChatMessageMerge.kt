@@ -102,8 +102,16 @@ internal object ChatMessageMerge {
      */
     fun appendDeduped(list: List<ChatMessage>, message: ChatMessage): List<ChatMessage> {
         if (message.serverId <= 0L) return list + message
-        val withoutDuplicate = list.filterNot { it.serverId == message.serverId }
-        return if (withoutDuplicate.size == list.size) list + message else withoutDuplicate + message
+        // 双重防御：若这是一条我发出的服务端消息（isMine），检查列表中是否有同类待核销的本地回显（serverId == 0L），
+        // 并在追加前移除它，防止因任何时间差或对账异常导致本地回显与服务端回推共存（消息重复）
+        val baseList = if (message.isMine) {
+            val echo = list.firstOrNull { it.serverId == 0L && it.isMine && EchoMatcher.isSameKind(it, message) }
+            if (echo != null) list.filterNot { it.id == echo.id } else list
+        } else {
+            list
+        }
+        val withoutDuplicate = baseList.filterNot { it.serverId == message.serverId }
+        return if (withoutDuplicate.size == baseList.size) baseList + message else withoutDuplicate + message
     }
 
     /** 服务端 id 最大值（对齐官方 `Xn`）：仅统计 id > 0，无则 null */

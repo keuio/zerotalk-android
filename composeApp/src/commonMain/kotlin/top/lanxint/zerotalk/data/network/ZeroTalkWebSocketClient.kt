@@ -352,6 +352,9 @@ class ZeroTalkWebSocketClient(
         try {
             val root = JsonParser.parseString(text).asJsonObject
             val event = root.get("event")?.asString ?: return
+            if (event != "pong") {
+                ZtLog.d("ZeroTalk", "[WS-IN] event=$event raw=${text.take(200)}")
+            }
 
             val parsedEvent: WsServerEvent = when (event) {
                 "auth_success" -> {
@@ -431,11 +434,42 @@ class ZeroTalkWebSocketClient(
                 // 字段解析抽到 WsServerEventParsing.parseMessageEvent（含 is_deleted 透传），
                 // 便于单元测试覆盖字段名与容错
                 "message" -> parseMessageEvent(root)
-                "typing" -> {
-                    val active = root.get("active")?.asBoolean ?: false
-                    // WS 同一时刻只在一个房间，帧里通常不带 room_id；带了就按它归属，缺失由上层用当前房间兜底
-                    val typingRoomId = root.get("room_id")?.takeIf { !it.isJsonNull }?.asString
-                    WsServerEvent.Typing(active, typingRoomId)
+                "typing", "peer_typing", "user_typing", "typing_status" -> {
+                    val dataObj = root.getAsJsonObject("data")
+                    val activeElem = root.get("active") ?: dataObj?.get("active")
+                        ?: root.get("is_typing") ?: dataObj?.get("is_typing")
+                        ?: root.get("typing") ?: dataObj?.get("typing")
+                        ?: root.get("status") ?: dataObj?.get("status")
+                    val active = when {
+                        // 对齐官网 R.active !== false：服务端下发 peer_typing 事件本身即代表输入中，字段缺失时视同 true
+                        activeElem == null || activeElem.isJsonNull -> true
+                        activeElem.isJsonPrimitive -> {
+                            val prim = activeElem.asJsonPrimitive
+                            when {
+                                prim.isBoolean -> prim.asBoolean
+                                prim.isNumber -> prim.asInt != 0
+                                prim.isString -> {
+                                    val s = prim.asString.trim()
+                                    !s.equals("false", ignoreCase = true) && s != "0"
+                                }
+                                else -> true
+                            }
+                        }
+                        else -> true
+                    }
+                    val typingRoomId = (root.get("room_id") ?: dataObj?.get("room_id")
+                        ?: root.get("roomId") ?: dataObj?.get("roomId")
+                        ?: root.get("room") ?: dataObj?.get("room"))
+                        ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim()
+                    val fromUid = (root.get("from_uid") ?: dataObj?.get("from_uid")
+                        ?: root.get("uid") ?: dataObj?.get("uid")
+                        ?: root.get("user_id") ?: dataObj?.get("user_id")
+                        ?: root.get("userId") ?: dataObj?.get("userId")
+                        ?: root.get("from_user") ?: dataObj?.get("from_user"))
+                        ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim()
+
+                    ZtLog.d("ZeroTalk", "[WS] parsed typing frame: active=$active, room=$typingRoomId, from=$fromUid")
+                    WsServerEvent.Typing(active, typingRoomId, fromUid)
                 }
                 "match_cancelled" -> {
                     val type = root.get("type")?.asString ?: "timeout"

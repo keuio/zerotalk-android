@@ -1,6 +1,7 @@
 package top.lanxint.zerotalk.ui.profile
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
@@ -85,6 +87,11 @@ fun ProfileScreen(
     /** 后台接收消息（保活前台服务） */
     backgroundReceiveEnabled: Boolean,
     onBackgroundReceiveChange: (Boolean) -> Unit,
+    /** 回车发送消息 */
+    sendOnEnterEnabled: Boolean = false,
+    onSendOnEnterChange: (Boolean) -> Unit = {},
+    /** 点击顶部信息卡片跳转自身动态 */
+    onOpenMyMoments: () -> Unit = {},
     onRefreshAvatar: () -> Unit,
     onEditProfile: () -> Unit,
     onLogout: () -> Unit,
@@ -137,11 +144,16 @@ fun ProfileScreen(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 上半部分：头像 + 姓名 + 身份胶囊
+                // 上半部分：头像 + 姓名 + 身份胶囊 + 个人动态入口
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(
+                            onClick = onOpenMyMoments
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     // 头像：真实头像优先，无头像/加载失败时回落为渐变圆环 + 首字母
                     // 点击可放大查看（走全站唯一的全屏图片查看器）
@@ -218,7 +230,7 @@ fun ProfileScreen(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(100.dp))
                                         .background(Color(0xFF0284C7).copy(alpha = 0.12f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     BasicText(
                                         text = "QQ:${profile.qq}",
@@ -236,6 +248,27 @@ fun ProfileScreen(
                             text = profile.bio,
                             style = AppleHigTypography.footnote.copy(color = subColor),
                             maxLines = 1
+                        )
+                    }
+
+                    // 右上角指示：动态 ❯
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.padding(start = 2.dp)
+                    ) {
+                        BasicText(
+                            text = "动态",
+                            style = AppleHigTypography.footnote.copy(
+                                color = subColor,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                            contentDescription = "查看个人主页动态",
+                            tint = higColors.tertiaryLabel,
+                            modifier = Modifier.size(11.dp)
                         )
                     }
                 }
@@ -447,6 +480,22 @@ fun ProfileScreen(
                     LiquidToggle(
                         selected = { backgroundReceiveEnabled },
                         onSelect = onBackgroundReceiveChange,
+                        isDark = isDark
+                    )
+                }
+            )
+
+            AppleHigDivider(isDark = isDark, insetStart = 16.dp)
+
+            AppleHigRow(
+                title = "回车键发送消息",
+                icon = Icons.AutoMirrored.Filled.Send,
+                iconBgColor = Color(0xFF007AFF),
+                isDark = isDark,
+                accessory = AppleHigRowAccessory.Custom {
+                    LiquidToggle(
+                        selected = { sendOnEnterEnabled },
+                        onSelect = onSendOnEnterChange,
                         isDark = isDark
                     )
                 }

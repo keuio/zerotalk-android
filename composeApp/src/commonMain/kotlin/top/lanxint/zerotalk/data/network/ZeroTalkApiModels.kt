@@ -355,7 +355,11 @@ sealed class WsServerEvent {
     /** 实时未读总数（官网 `notification_unread`：`{unread:N}`），用于刷新会话未读 */
     data class NotificationUnread(val unread: Int) : WsServerEvent()
 
-    data class Typing(val active: Boolean, val roomId: String? = null) : WsServerEvent()
+    data class Typing(
+        val active: Boolean,
+        val roomId: String? = null,
+        val fromUid: String? = null
+    ) : WsServerEvent()
     data class MatchCancelled(val type: String) : WsServerEvent()
     data class MatchError(val msg: String) : WsServerEvent()
     data class UserLeft(val roomId: String?) : WsServerEvent()

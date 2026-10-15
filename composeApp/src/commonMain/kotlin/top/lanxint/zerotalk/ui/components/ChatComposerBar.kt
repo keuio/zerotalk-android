@@ -47,6 +47,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import top.lanxint.zerotalk.data.settings.UiPreferencesStore
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -261,6 +266,7 @@ fun ChatComposerBar(
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val sendOnEnterEnabled by UiPreferencesStore.sendOnEnterEnabled.collectAsStateWithLifecycle()
 
     val panelVisible = (stickerPanelExpanded && stickerPanelContent != null) || drawerExpanded
 
@@ -620,6 +626,16 @@ fun ChatComposerBar(
                                         lineHeight = 21.sp
                                     ),
                                     cursorBrush = SolidColor(Color(0xFF007AFF)),
+                                    keyboardOptions = KeyboardOptions(
+                                        imeAction = if (sendOnEnterEnabled) ImeAction.Send else ImeAction.Default
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onSend = {
+                                            if (inputText.value.trim().isNotEmpty()) {
+                                                onSend()
+                                            }
+                                        }
+                                    ),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .focusRequester(inputFocusRequester)
