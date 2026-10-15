@@ -153,7 +153,9 @@ fun MyGameSessionsSheet(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(sessions) { session ->
+                    // key 用服务端对局 id（MyGameSessionItem.id，即 gameId），唯一且稳定；
+                    // 缺 key 时列表刷新会让卡片状态错位到别的对局上
+                    items(sessions, key = { it.id }) { session ->
                         val gameName = GameType.getDisplayName(session.gameType)
                         val isPlaying = session.status == "playing"
                         val isWaiting = session.status == "waiting"

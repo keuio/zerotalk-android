@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import top.lanxint.zerotalk.data.model.ChatMessage
 import top.lanxint.zerotalk.data.model.GameSessionDetail
 import top.lanxint.zerotalk.data.model.GameType
@@ -45,15 +46,15 @@ fun GameSessionScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val session by clientManager.activeGameSession.collectAsState()
-    val gameType by clientManager.activeGameType.collectAsState()
-    val gameError by clientManager.activeGameError.collectAsState()
+    val session by clientManager.activeGameSession.collectAsStateWithLifecycle()
+    val gameType by clientManager.activeGameType.collectAsStateWithLifecycle()
+    val gameError by clientManager.activeGameError.collectAsStateWithLifecycle()
     val currentUserId = clientManager.currentUserId ?: ""
 
     // ---- 对局内聊天（对齐官方 GameChatPanel / GameSyncChatToggle）----
-    val chatMessages by clientManager.activeGameChatMessages.collectAsState()
-    val chatLoading by clientManager.gameChatLoading.collectAsState()
-    val syncChatPending by clientManager.gameSyncChatPending.collectAsState()
+    val chatMessages by clientManager.activeGameChatMessages.collectAsStateWithLifecycle()
+    val chatLoading by clientManager.gameChatLoading.collectAsStateWithLifecycle()
+    val syncChatPending by clientManager.gameSyncChatPending.collectAsStateWithLifecycle()
     val notificationState = LocalNotificationState.current
     var showChatPanel by remember { mutableStateOf(false) }
     var chatInput by remember { mutableStateOf("") }

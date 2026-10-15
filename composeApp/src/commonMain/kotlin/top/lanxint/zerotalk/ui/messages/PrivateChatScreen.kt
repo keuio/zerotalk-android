@@ -120,7 +120,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import top.lanxint.zerotalk.data.model.ChatMessage
 import top.lanxint.zerotalk.data.model.MomentItem
 import top.lanxint.zerotalk.data.model.MomentShareCardData
@@ -165,7 +165,6 @@ import com.kashif_e.backdrop.backdrops.rememberCanvasBackdrop
 import com.kashif_e.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 import kotlin.random.Random
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.material3.CircularProgressIndicator
 import top.lanxint.zerotalk.data.model.MessageCategory
@@ -177,6 +176,7 @@ import top.lanxint.zerotalk.data.model.resolveQuotedText
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.NetworkImageLoader
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import java.io.File
 import kotlinx.coroutines.flow.first
@@ -237,7 +237,7 @@ fun PrivateChatScreen(
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
 
-    val allConversations by ZeroTalkClientManager.conversations.collectAsState()
+    val allConversations by ZeroTalkClientManager.conversations.collectAsStateWithLifecycle()
     val otherUnreadCount = remember(allConversations, conversation.id) {
         allConversations
             .filter { it.id != conversation.id }
@@ -255,33 +255,35 @@ fun PrivateChatScreen(
         mutableStateOf<List<ChatMessage>>(emptyList())
     }
 
-    val roomMessagesMap by ZeroTalkClientManager.roomMessages.collectAsState()
-    val liveMessages = roomMessagesMap[conversation.id] ?: emptyList()
+    // 刻意不再在这里派生 `liveMessages = roomMessagesMap[conversation.id]`：
+    // 派生动作发生在组合期，会让「每收到一条新消息 → 整个页面失效重组」。
+    // 需要消息的地方改为在各自作用域内延迟读取（见下方 snapshotFlow 与点击回调）。
+    val roomMessagesMap by ZeroTalkClientManager.roomMessages.collectAsStateWithLifecycle()
 
     // 历史分页状态（上拉到顶继续上拉时拉取更早消息）
-    val hasMoreHistoryMap by ZeroTalkClientManager.roomHasMoreHistory.collectAsState()
-    val historyLoadingMap by ZeroTalkClientManager.roomHistoryLoading.collectAsState()
+    val hasMoreHistoryMap by ZeroTalkClientManager.roomHasMoreHistory.collectAsStateWithLifecycle()
+    val historyLoadingMap by ZeroTalkClientManager.roomHistoryLoading.collectAsStateWithLifecycle()
     val hasMoreHistory = hasMoreHistoryMap[conversation.id] == true
     val isLoadingHistory = historyLoadingMap[conversation.id] == true
 
     // 群聊判定：优先后端下发的房间类型，其次回落到会话分类（暗号）
-    val groupRoomsMap by ZeroTalkClientManager.groupRooms.collectAsState()
+    val groupRoomsMap by ZeroTalkClientManager.groupRooms.collectAsStateWithLifecycle()
     val isGroupRoom = groupRoomsMap[conversation.id] == true ||
         conversation.category == MessageCategory.CODE
 
     // 房管权限（viewer_can_delete_message）：可删除本房他人消息
-    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
+    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsStateWithLifecycle()
     val canModerateDeleteMessage = roomBootstrapMap[conversation.id]?.viewerCanDeleteMessage == true
 
     // ---- 端到端加密：未解锁时引导输入房间暗号（官网 UnlockRoomModal）----
-    val roomEncryptionMap by ZeroTalkClientManager.roomEncryption.collectAsState()
-    val encryptionUnlockRequest by ZeroTalkClientManager.encryptionUnlockRequest.collectAsState()
-    val encryptionUnlocking by ZeroTalkClientManager.encryptionUnlocking.collectAsState()
-    val encryptionUnlockError by ZeroTalkClientManager.encryptionUnlockError.collectAsState()
-    val encryptionResettingPassword by ZeroTalkClientManager.encryptionResettingPassword.collectAsState()
-    val encryptionContactingCreator by ZeroTalkClientManager.encryptionContactingCreator.collectAsState()
-    val roomMembersMap by ZeroTalkClientManager.roomMembers.collectAsState()
-    val roomMembersLoadingMap by ZeroTalkClientManager.roomMembersLoading.collectAsState()
+    val roomEncryptionMap by ZeroTalkClientManager.roomEncryption.collectAsStateWithLifecycle()
+    val encryptionUnlockRequest by ZeroTalkClientManager.encryptionUnlockRequest.collectAsStateWithLifecycle()
+    val encryptionUnlocking by ZeroTalkClientManager.encryptionUnlocking.collectAsStateWithLifecycle()
+    val encryptionUnlockError by ZeroTalkClientManager.encryptionUnlockError.collectAsStateWithLifecycle()
+    val encryptionResettingPassword by ZeroTalkClientManager.encryptionResettingPassword.collectAsStateWithLifecycle()
+    val encryptionContactingCreator by ZeroTalkClientManager.encryptionContactingCreator.collectAsStateWithLifecycle()
+    val roomMembersMap by ZeroTalkClientManager.roomMembers.collectAsStateWithLifecycle()
+    val roomMembersLoadingMap by ZeroTalkClientManager.roomMembersLoading.collectAsStateWithLifecycle()
     val roomBootstrap = roomBootstrapMap[conversation.id]
     val roomMembersList = roomMembersMap[conversation.id].orEmpty()
     val creatorUid = roomBootstrap?.room?.createdByUid?.takeIf { it.isNotBlank() }
@@ -339,9 +341,9 @@ fun PrivateChatScreen(
     }
 
     // ---- 首聊「对方信息卡片」（对齐官网 PeerProfileCard，私聊 / 匹配房间展示）----
-    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsState()
-    val peerProfileState by ZeroTalkClientManager.otherUserProfile.collectAsState()
-    val myCleanStreamEnabled by ZeroTalkClientManager.myCleanStreamMode.collectAsState()
+    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsStateWithLifecycle()
+    val peerProfileState by ZeroTalkClientManager.otherUserProfile.collectAsStateWithLifecycle()
+    val myCleanStreamEnabled by ZeroTalkClientManager.myCleanStreamMode.collectAsStateWithLifecycle()
     val peerProfile = peerProfileState?.profile
     val peerUid = conversation.targetUid.ifBlank { roomPeers[conversation.id]?.uid.orEmpty() }
     val peerUserId = conversation.targetUserId
@@ -368,30 +370,43 @@ fun PrivateChatScreen(
     // 实时同步：以管理器中的顺序为准（上拉分页会在列表头部插入更早的消息）。
     // 只保留「管理器尚未回传、且由屏幕侧本地独占生成」的消息（id 以 m_ 或 sys_ 开头），
     // 避免把管理器的旧回显或屏幕侧冗余文本回显复活为重复条目。
-    LaunchedEffect(liveMessages) {
-        if (liveMessages.isNotEmpty()) {
-            val liveIds = liveMessages.map { it.id }.toSet()
-            val tailMs = liveMessages.last().timestampMs
-            val pendingLocal = messageList.filter {
-                it.id !in liveIds &&
-                    it.timestampMs >= tailMs &&
-                    (it.id.startsWith("m_") || it.id.startsWith("sys_"))
+    //
+    // 用 snapshotFlow 而不是 `LaunchedEffect(liveMessages)`：后者会把消息映射当作
+    // effect key，从而在组合期读取它 —— 每收到一条新消息都会让整个页面（1800+ 行）
+    // 失效重组。snapshotFlow 的读取发生在协程内部，属于延迟读取：新消息只唤醒本
+    // effect，页面其余部分不参与重组。
+    LaunchedEffect(conversation.id) {
+        snapshotFlow { roomMessagesMap[conversation.id].orEmpty() }
+            .collect { liveMessages ->
+                if (liveMessages.isEmpty()) return@collect
+                val liveIds = liveMessages.map { it.id }.toSet()
+                val tailMs = liveMessages.last().timestampMs
+                val pendingLocal = messageList.filter {
+                    it.id !in liveIds &&
+                        it.timestampMs >= tailMs &&
+                        (it.id.startsWith("m_") || it.id.startsWith("sys_"))
+                }
+                messageList = liveMessages + pendingLocal
             }
-            messageList = liveMessages + pendingLocal
-        }
     }
 
     val initialDraft = remember(conversation.id) {
         ZeroTalkClientManager.getChatDraft(conversation.id)
     }
-    var inputText by remember(conversation.id) { mutableStateOf(initialDraft) }
-    val currentInputText by rememberUpdatedState(inputText)
+    // 保留 MutableState 引用：ChatComposerBar 改为接收 State<String>，
+    // 把文本读取下沉到输入栏内部，这样每次按键只失效输入栏，
+    // 而不是让本函数（1800+ 行）整体重新组合。
+    val inputTextState = remember(conversation.id) { mutableStateOf(initialDraft) }
+    var inputText by inputTextState
 
     DisposableEffect(conversation.id) {
         onDispose {
-            val trimmed = currentInputText.trim()
+            // 直接读 State.value。原先用 rememberUpdatedState(inputText) 会在组合期间
+            // 读取 inputText，按键仍会让整个函数失效，等于抵消了上面的下沉。
+            val text = inputTextState.value
+            val trimmed = text.trim()
             if (trimmed.isNotEmpty()) {
-                ZeroTalkClientManager.saveChatDraft(conversation.id, currentInputText)
+                ZeroTalkClientManager.saveChatDraft(conversation.id, text)
             } else {
                 ZeroTalkClientManager.clearChatDraft(conversation.id)
             }
@@ -487,7 +502,7 @@ fun PrivateChatScreen(
 
     // 背景取值解析：本地文件绝对路径（离线可显示）优先，其次远程 URL，最后素雅纯色。
     // 管理器里的映射先写原始 URL、下载完成后再替换成本地路径，这里订阅它保持一致。
-    val wallpaperMap by ZeroTalkClientManager.conversationWallpapers.collectAsState()
+    val wallpaperMap by ZeroTalkClientManager.conversationWallpapers.collectAsStateWithLifecycle()
     val wallpaperValue = currentWallpaperKey?.trim().orEmpty()
     val localWallpaperFile = remember(wallpaperValue) { resolveLocalWallpaperFile(wallpaperValue) }
     var localWallpaperBitmap by remember(localWallpaperFile) { mutableStateOf<ImageBitmap?>(null) }
@@ -501,7 +516,7 @@ fun PrivateChatScreen(
             (value.startsWith("http://") || value.startsWith("https://"))
     }
     // 本会话背景在管理器里发生变化（如下载完成：远程 URL -> 本地路径）时同步回本地状态
-    val globalWallpaper by ZeroTalkClientManager.globalWallpaper.collectAsState()
+    val globalWallpaper by ZeroTalkClientManager.globalWallpaper.collectAsStateWithLifecycle()
     LaunchedEffect(conversation.id, wallpaperMap, globalWallpaper) {
         // 已解析值：会话级覆盖 → 全局默认 → 会话自带壁纸
         val mapped = ZeroTalkClientManager.conversationWallpaper(conversation.id)
@@ -519,7 +534,7 @@ fun PrivateChatScreen(
     var stickerDeleting by remember { mutableStateOf(false) }
     var stickerAdding by remember { mutableStateOf(false) }
     // 表情包搜索关键词：搜索态下面板高度锁定为固定值（不随键盘收放变化，避免面板弹跳）
-    val stickerSearchKeyword by ZeroTalkClientManager.stickerSearchKeyword.collectAsState()
+    val stickerSearchKeyword by ZeroTalkClientManager.stickerSearchKeyword.collectAsStateWithLifecycle()
     val stickerSearchKeywordActive = stickerSearchKeyword.isNotBlank()
     var showMusicShareSheet by remember { mutableStateOf(false) }
     var showRoomMusicSheet by remember { mutableStateOf(false) }
@@ -527,9 +542,9 @@ fun PrivateChatScreen(
     // 群聊语音通话成员选择器
     var showVoiceCallPicker by remember { mutableStateOf(false) }
     var showMyGameSessionsSheet by remember { mutableStateOf(false) }
-    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsState()
+    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsStateWithLifecycle()
     // 「对方正在输入」：仅 1v1 会话展示（群聊 / 大厅不展示，与官网 peerIsTyping 口径一致）
-    val peerTypingRooms by ZeroTalkClientManager.peerTypingRooms.collectAsState()
+    val peerTypingRooms by ZeroTalkClientManager.peerTypingRooms.collectAsStateWithLifecycle()
     val peerIsTyping = !isGroupRoom && peerTypingRooms.contains(conversation.id)
     var showConversationInfo by remember(conversation.id) { mutableStateOf(false) }
     // 点动态卡片评论数打开的动态（复用动态主界面的评论抽屉）
@@ -643,27 +658,39 @@ fun PrivateChatScreen(
     // 顶部前插历史时不滚动，避免与上拉分页互相打架导致页面错乱。
     var anchoredTailId by remember(conversation.id) { mutableStateOf<String?>(null) }
     val headerCount = 1 + (if (showPeerCard) 1 else 0)
-    LaunchedEffect(messageList, showPeerCard, isLoadingHistory) {
-        if (messageList.isEmpty()) return@LaunchedEffect
-        val tailId = messageList.last().id
-        val isInitial = anchoredTailId == null
-        // LazyColumn 首项 "history_loading_indicator" 是无条件声明的（非加载态只是空内容），
-        // 因此头部项数恒为 1 + (peer 卡片 ? 1 : 0)；旧写法在非加载态少算 1，只是被 coerceAtLeast 掩盖。
-        val targetIndex = (headerCount + messageList.size - 1).coerceAtLeast(0)
-        if (isInitial || anchoredTailId != tailId) {
-            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val totalItems = headerCount + messageList.size
-            val nearBottom = lastVisibleIndex >= totalItems - 4
-            if (isInitial || nearBottom) {
-                listState.scrollToItem(targetIndex)
-                if (isInitial) {
-                    // 首帧布局测量（尤其是顶部首聊卡片高度）后做二次精准校准，确保稳定停留在最新消息底部
-                    delay(80)
-                    listState.scrollToItem(targetIndex)
+    // 用 snapshotFlow + collectLatest 取代 `LaunchedEffect(messageList, ...)`：
+    //
+    // 后者把 messageList 当 effect key，会在组合期读取它 —— 每收到一条新消息都会让
+    // 整个页面（1800+ 行）失效重组。snapshotFlow 的读取发生在协程内部，属于延迟读取。
+    //
+    // 语义等价性：collectLatest 在新值到达时取消上一段执行，与 LaunchedEffect 因 key
+    // 变化而取消重启的行为一致；Triple 的三个分量各自是 State 读取，变化时机与原 key
+    // 完全相同。headerCount 改为在块内重算，避免闭包捕获到旧值。
+    LaunchedEffect(conversation.id) {
+        snapshotFlow { Triple(messageList, showPeerCard, isLoadingHistory) }
+            .collectLatest { (msgs, _, _) ->
+                if (msgs.isEmpty()) return@collectLatest
+                val header = 1 + (if (showPeerCard) 1 else 0)
+                val tailId = msgs.last().id
+                val isInitial = anchoredTailId == null
+                // LazyColumn 首项 "history_loading_indicator" 是无条件声明的（非加载态只是空内容），
+                // 因此头部项数恒为 1 + (peer 卡片 ? 1 : 0)；旧写法在非加载态少算 1，只是被 coerceAtLeast 掩盖。
+                val targetIndex = (header + msgs.size - 1).coerceAtLeast(0)
+                if (isInitial || anchoredTailId != tailId) {
+                    val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                    val totalItems = header + msgs.size
+                    val nearBottom = lastVisibleIndex >= totalItems - 4
+                    if (isInitial || nearBottom) {
+                        listState.scrollToItem(targetIndex)
+                        if (isInitial) {
+                            // 首帧布局测量（尤其是顶部首聊卡片高度）后做二次精准校准，确保稳定停留在最新消息底部
+                            delay(80)
+                            listState.scrollToItem(targetIndex)
+                        }
+                    }
+                    anchoredTailId = tailId
                 }
             }
-            anchoredTailId = tailId
-        }
     }
 
     // 「对方正在输入」三点气泡：仅在用户本就贴近底部时滚到底部（正在翻历史时不抢滚动）
@@ -679,32 +706,34 @@ fun PrivateChatScreen(
     }
 
     // 上拉到顶后继续上拉 -> 请求更早的历史消息，并在插入后补偿滚动位置避免跳动
-    val currentHasMore by rememberUpdatedState(hasMoreHistory)
-    val currentLoadingHistory by rememberUpdatedState(isLoadingHistory)
-    val currentMessageList by rememberUpdatedState(messageList)
-    val currentHeaderCount by rememberUpdatedState(headerCount)
-    val currentAnchoredTailId by rememberUpdatedState(anchoredTailId)
+    //
+    // 原实现用 5 个 rememberUpdatedState 给 snapshotFlow「保鲜」，但其中
+    // messageList / anchoredTailId 本身就是 State，流内直接读取即为最新值 ——
+    // 包一层反而在组合期读取了它们（messageList 每来一条新消息都会变，是热点）。
+    // 其余几个同样改为在流内读取各自的源头 State，语义不变且保持实时。
     LaunchedEffect(conversation.id) {
         snapshotFlow {
-            val nearTop = listState.firstVisibleItemIndex <= currentHeaderCount + 2
-            val ready = currentAnchoredTailId != null &&
-                currentHasMore &&
-                !currentLoadingHistory &&
-                currentMessageList.isNotEmpty()
-            if (nearTop && ready) currentMessageList.first().id else null
+            val header = 1 + (if (showPeerCard) 1 else 0)
+            val nearTop = listState.firstVisibleItemIndex <= header + 2
+            val ready = anchoredTailId != null &&
+                hasMoreHistoryMap[conversation.id] == true &&
+                historyLoadingMap[conversation.id] != true &&
+                messageList.isNotEmpty()
+            if (nearTop && ready) messageList.first().id else null
         }
             .distinctUntilChanged()
             .collect { topMsgId ->
                 if (topMsgId != null) {
-                    val before = currentMessageList.size
+                    val before = messageList.size
                     ZeroTalkClientManager.loadOlderMessages(conversation.id)
                     val newSize = withTimeoutOrNull(6000L) {
-                        snapshotFlow { currentMessageList.size }.first { it > before }
+                        snapshotFlow { messageList.size }.first { it > before }
                     }
                     if (newSize != null && newSize > before) {
                         val added = newSize - before
-                        if (listState.firstVisibleItemIndex < currentHeaderCount) {
-                            listState.scrollToItem(currentHeaderCount + added, 0)
+                        val header = 1 + (if (showPeerCard) 1 else 0)
+                        if (listState.firstVisibleItemIndex < header) {
+                            listState.scrollToItem(header + added, 0)
                         }
                     }
                 }
@@ -858,6 +887,18 @@ fun PrivateChatScreen(
 
             // 淡化蒙版在昵称胶囊下方 30dp 处开始 (statusBarTop + 97dp + 30dp = statusBarTop + 127dp)
             val maskFadeEndY = with(density) { (statusBarTop + 127.dp).toPx() }
+
+            // 只计算一次「最后一条我方有效消息」的 id，供列表项判断是否画气泡尖尾。
+            //
+            // 原实现在每个列表项里都 `messageList.filter{...}.lastOrNull()`：
+            // 那是 O(n) × 可见项数，而且每次都新建一个中间列表；列表越长、滚动越
+            // 频繁开销越大。提到 LazyColumn 之外后是 O(n) 一次，并用 lastOrNull{}
+            // 省掉中间列表分配。
+            // 注意必须放在这里：LazyColumn 的 content 是 LazyListScope DSL，
+            // 不是 composable 作用域，在那里调用 remember 无法编译。
+            val lastMineMessageId = remember(messageList) {
+                messageList.lastOrNull { it.isMine && !it.isSystem && !it.isVoiceCall && !it.isDeleted }?.id
+            }
 
             // 消息气泡列表流（完全延伸到底部，内容穿透滑过悬浮输入栏与加号）
             LazyColumn(
@@ -1058,7 +1099,7 @@ fun PrivateChatScreen(
                         } else {
                             // ---- 真实对话气泡 (私聊：iMessage 小尖尾；群聊：普通圆气泡无尾巴) ----
                             val isLastMineMessage = msg.isMine && !msg.isDeleted &&
-                                    msg.id == messageList.filter { it.isMine && !it.isSystem && !it.isVoiceCall && !it.isDeleted }.lastOrNull()?.id
+                                    msg.id == lastMineMessageId
 
                             // 群聊（暗号房）统一使用正常的圆气泡，不携带尖尾；
                             // 私聊仍依据 iMessage 原生规则计算尾巴（连续我方或对方均仅最底部一条带尾巴）
@@ -1236,6 +1277,12 @@ fun PrivateChatScreen(
 
         // 私聊 / 群聊统一的聊天记录搜索栏
         if (showMessageSearch) {
+            // 命中数只算一次：原先直接在 BasicText 里对整个 messageList 做 O(n·m) 扫描，
+            // 还把 isNotBlank() 放进谓词里逐元素判断，每次重组都要重跑一遍。
+            val searchMatchCount = remember(messageList, messageSearchQuery) {
+                if (messageSearchQuery.isBlank()) 0
+                else messageList.count { it.content.contains(messageSearchQuery, ignoreCase = true) }
+            }
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -1260,14 +1307,14 @@ fun PrivateChatScreen(
                         inner()
                     }
                 )
-                BasicText("${messageList.count { it.content.contains(messageSearchQuery, ignoreCase = true) && messageSearchQuery.isNotBlank() }}", style = TextStyle(color = controlContentColor.copy(alpha = 0.65f), fontSize = 12.sp))
+                BasicText("$searchMatchCount", style = TextStyle(color = controlContentColor.copy(alpha = 0.65f), fontSize = 12.sp))
             }
         }
 
         // ---- 2.1 房间公告横幅条（对齐官方 public-announcement-bar）----
         // 仅群聊（暗号房间）且公告非空、且用户未主动关闭当前版本公告时展示
         val roomAnnouncement = (roomBootstrap?.announcement ?: roomBootstrap?.room?.announcement)?.trim().orEmpty()
-        val dismissedAnnouncementsMap by ZeroTalkClientManager.dismissedRoomAnnouncements.collectAsState()
+        val dismissedAnnouncementsMap by ZeroTalkClientManager.dismissedRoomAnnouncements.collectAsStateWithLifecycle()
         val isAnnouncementDismissed = dismissedAnnouncementsMap[conversation.id] == roomAnnouncement
 
         if (isGroupRoom && roomAnnouncement.isNotEmpty() && !isAnnouncementDismissed && !showMessageSearch) {
@@ -1295,7 +1342,7 @@ fun PrivateChatScreen(
                 // 加号面板与表情包面板互斥：打开加号面板时收起表情包面板
                 if (opened) showStickerPanel = false
             },
-            inputText = inputText,
+            inputText = inputTextState,
             onInputTextChange = { newText ->
                 inputText = newText
                 // 上报自己的输入状态：有内容 → active=true（仓库层按 2 秒节流）；清空 → active=false
@@ -1398,8 +1445,10 @@ fun PrivateChatScreen(
                     // ② 私聊需双方互发文字后才能发起
                     // 注：to_user_id 可空，服务端会按房间推导对端（官网同样只在已知时携带）
                     val toUserId = conversation.targetUserId.toLongOrNull()?.takeIf { it > 0 }
-                    val hasBothSidesText = liveMessages.any { it.isMine } &&
-                        liveMessages.any { !it.isMine }
+                    // 延迟读取：本段在点击时才执行，不参与组合期读取
+                    val roomMessages = roomMessagesMap[conversation.id].orEmpty()
+                    val hasBothSidesText = roomMessages.any { it.isMine } &&
+                        roomMessages.any { !it.isMine }
                     when {
                         isGroupRoom -> showVoiceCallPicker = true
                         !hasBothSidesText ->
@@ -1435,14 +1484,14 @@ fun PrivateChatScreen(
                 ZeroTalkClientManager.sendSticker(conversation.id, assetId)
             },
             stickerPanelContent = {
-                val stickerList = ZeroTalkClientManager.stickerList.collectAsState().value
-                val stickerLoading = ZeroTalkClientManager.stickerListLoading.collectAsState().value
-                val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsState().value
-                val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsState().value
-                val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsState().value
-                val stickerSearching = ZeroTalkClientManager.stickerSearching.collectAsState().value
-                val stickerLoadingMore = ZeroTalkClientManager.stickerSearchLoadingMore.collectAsState().value
-                val stickerHasMore = ZeroTalkClientManager.stickerSearchHasMore.collectAsState().value
+                val stickerList = ZeroTalkClientManager.stickerList.collectAsStateWithLifecycle().value
+                val stickerLoading = ZeroTalkClientManager.stickerListLoading.collectAsStateWithLifecycle().value
+                val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsStateWithLifecycle().value
+                val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsStateWithLifecycle().value
+                val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsStateWithLifecycle().value
+                val stickerSearching = ZeroTalkClientManager.stickerSearching.collectAsStateWithLifecycle().value
+                val stickerLoadingMore = ZeroTalkClientManager.stickerSearchLoadingMore.collectAsStateWithLifecycle().value
+                val stickerHasMore = ZeroTalkClientManager.stickerSearchHasMore.collectAsStateWithLifecycle().value
 
                 LaunchedEffect(Unit) {
                     ZeroTalkClientManager.refreshStickerList()
@@ -2069,7 +2118,7 @@ private fun BubbleMessageItem(
 ) {
     val isMine = message.isMine
     // 本地 uid -> 备注 映射（collectAsState 订阅：备注保存 / 清空后气泡上的发言人名字立即刷新）
-    val uidRemarks by ZeroTalkClientManager.uidRemarks.collectAsState()
+    val uidRemarks by ZeroTalkClientManager.uidRemarks.collectAsStateWithLifecycle()
     var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
 
     BoxWithConstraints(

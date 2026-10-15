@@ -20,6 +20,8 @@ dependencyResolutionManagement {
 
 rootProject.name = "ZeroTalk"
 include(":composeApp")
+// Baseline Profile 生成模块（com.android.test）：只在开发机/CI 上跑，不进发布包
+include(":baselineprofile")
 
 includeBuild("libs/KMPLiquidGlass") {
     dependencySubstitution {

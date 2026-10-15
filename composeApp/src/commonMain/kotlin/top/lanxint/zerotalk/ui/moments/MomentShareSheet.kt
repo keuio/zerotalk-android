@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.gson.JsonArray
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
@@ -99,8 +99,8 @@ fun MomentShareSheet(
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
     val clipboardManager = LocalClipboardManager.current
-    val conversations by ZeroTalkClientManager.conversations.collectAsState()
-    val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsState()
+    val conversations by ZeroTalkClientManager.conversations.collectAsStateWithLifecycle()
+    val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsStateWithLifecycle()
 
     var currentStep by remember { mutableStateOf(ShareSheetStep.OPTIONS) }
     var selectedRoomIds by remember { mutableStateOf(emptySet<String>()) }

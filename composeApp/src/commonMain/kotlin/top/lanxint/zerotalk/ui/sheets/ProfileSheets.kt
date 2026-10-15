@@ -36,7 +36,7 @@ import top.lanxint.zerotalk.data.network.AvatarUploadDto
 import top.lanxint.zerotalk.ui.utils.rememberPhotoPickerLauncher
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -1236,7 +1236,7 @@ fun SheetBlockListContent(
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val titleColor = higColors.label
-    val blockList by ZeroTalkClientManager.blockList.collectAsState()
+    val blockList by ZeroTalkClientManager.blockList.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         ZeroTalkClientManager.fetchBlockList()
@@ -1358,10 +1358,10 @@ fun SheetMyReportsContent(
     isDark: Boolean
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val reportList by ZeroTalkClientManager.reportList.collectAsState()
-    val reportTotal by ZeroTalkClientManager.reportTotal.collectAsState()
-    val hasMore by ZeroTalkClientManager.reportHasMore.collectAsState()
-    val loadingMore by ZeroTalkClientManager.reportLoadingMore.collectAsState()
+    val reportList by ZeroTalkClientManager.reportList.collectAsStateWithLifecycle()
+    val reportTotal by ZeroTalkClientManager.reportTotal.collectAsStateWithLifecycle()
+    val hasMore by ZeroTalkClientManager.reportHasMore.collectAsStateWithLifecycle()
+    val loadingMore by ZeroTalkClientManager.reportLoadingMore.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var isLoading by remember { mutableStateOf(true) }

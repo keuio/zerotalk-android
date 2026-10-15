@@ -40,7 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -121,15 +121,15 @@ fun SecretRoomInfoScreen(
 ) {
     val colors = AppleHigColors.colors(isDark)
 
-    val bootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
+    val bootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsStateWithLifecycle()
     val bootstrap: ChatBootstrapData? = bootstrapMap[conversation.id]
 
     // 成员与「禁止加入」名单以服务端接口为准（bootstrap.members 仅作兜底）
-    val membersMap by ZeroTalkClientManager.roomMembers.collectAsState()
-    val memberTotalMap by ZeroTalkClientManager.roomMemberTotal.collectAsState()
-    val membersLoadingMap by ZeroTalkClientManager.roomMembersLoading.collectAsState()
-    val bansMap by ZeroTalkClientManager.roomJoinBans.collectAsState()
-    val bansLoadingMap by ZeroTalkClientManager.roomJoinBansLoading.collectAsState()
+    val membersMap by ZeroTalkClientManager.roomMembers.collectAsStateWithLifecycle()
+    val memberTotalMap by ZeroTalkClientManager.roomMemberTotal.collectAsStateWithLifecycle()
+    val membersLoadingMap by ZeroTalkClientManager.roomMembersLoading.collectAsStateWithLifecycle()
+    val bansMap by ZeroTalkClientManager.roomJoinBans.collectAsStateWithLifecycle()
+    val bansLoadingMap by ZeroTalkClientManager.roomJoinBansLoading.collectAsStateWithLifecycle()
 
     fun mapMember(dto: BootstrapMemberDto): RoomMemberUi {
         val role = dto.role.orEmpty().lowercase()

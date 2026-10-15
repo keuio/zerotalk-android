@@ -32,7 +32,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -71,9 +71,9 @@ fun SheetCatchHistoryContent(
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
 
-    val records by ZeroTalkClientManager.fishHistory.collectAsState()
-    val hasMore by ZeroTalkClientManager.fishHistoryHasMore.collectAsState()
-    val isLoading by ZeroTalkClientManager.isFishHistoryLoading.collectAsState()
+    val records by ZeroTalkClientManager.fishHistory.collectAsStateWithLifecycle()
+    val hasMore by ZeroTalkClientManager.fishHistoryHasMore.collectAsStateWithLifecycle()
+    val isLoading by ZeroTalkClientManager.isFishHistoryLoading.collectAsStateWithLifecycle()
     var commentsMoment by remember { mutableStateOf<MomentItem?>(null) }
     var shareMoment by remember { mutableStateOf<MomentItem?>(null) }
     // 举报动态目标与提交中标记

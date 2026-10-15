@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -48,12 +48,12 @@ fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     // 监听全站在线人数与自身所在位置
-    val onlineUsers by ZeroTalkClientManager.onlineUsersCount.collectAsState()
-    val userProfile by ZeroTalkClientManager.userProfile.collectAsState()
-    val bootstrapData by ZeroTalkClientManager.bootstrapData.collectAsState()
-    val loginData by ZeroTalkClientManager.loginData.collectAsState()
+    val onlineUsers by ZeroTalkClientManager.onlineUsersCount.collectAsStateWithLifecycle()
+    val userProfile by ZeroTalkClientManager.userProfile.collectAsStateWithLifecycle()
+    val bootstrapData by ZeroTalkClientManager.bootstrapData.collectAsStateWithLifecycle()
+    val loginData by ZeroTalkClientManager.loginData.collectAsStateWithLifecycle()
     // 语音通话被限制的信号：驱动匹配卡片回退到「聊天匹配」
-    val voiceBannedTick by ZeroTalkClientManager.voiceBannedTick.collectAsState()
+    val voiceBannedTick by ZeroTalkClientManager.voiceBannedTick.collectAsStateWithLifecycle()
 
     val myLocation = userProfile.location.ifBlank {
         bootstrapData?.user?.location.orEmpty()

@@ -2,6 +2,7 @@ package top.lanxint.zerotalk.data.network
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
@@ -24,10 +25,16 @@ object DeviceIdManager {
      * 初始化本地持久化存储目录（如 context.filesDir）
      * 采用后台异步预热，避免冷启动在主线程阻塞磁盘 I/O
      */
+    /**
+     * 后台预热专用 scope（单例 + SupervisorJob，理由同 [AccountStore.preloadScope]）。
+     * 原实现每次 init() 新建一个无法取消的裸 scope。
+     */
+    private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     fun init(filesDir: File) {
         storageDir = filesDir
-        CoroutineScope(Dispatchers.IO).launch {
-            loadFromStorage()
+        preloadScope.launch {
+            runCatching { loadFromStorage() }
         }
     }
 

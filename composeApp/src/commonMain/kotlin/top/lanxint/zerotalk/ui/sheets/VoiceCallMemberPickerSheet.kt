@@ -18,7 +18,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,8 +47,8 @@ fun VoiceCallMemberPickerSheet(
     onDismiss: () -> Unit
 ) {
     val colors = AppleHigColors.colors(isDark)
-    val membersMap by ZeroTalkClientManager.roomMembers.collectAsState()
-    val loadingMap by ZeroTalkClientManager.roomMembersLoading.collectAsState()
+    val membersMap by ZeroTalkClientManager.roomMembers.collectAsStateWithLifecycle()
+    val loadingMap by ZeroTalkClientManager.roomMembersLoading.collectAsStateWithLifecycle()
 
     LaunchedEffect(roomId) {
         ZeroTalkClientManager.loadRoomMembers(roomId)

@@ -40,7 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -150,13 +150,13 @@ fun SheetSecurityCenterContent(
     onLoggedOut: () -> Unit
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val devices by ZeroTalkClientManager.securityDevices.collectAsState()
-    val devicesLoading by ZeroTalkClientManager.securityDevicesLoading.collectAsState()
-    val logs by ZeroTalkClientManager.securityLoginLogs.collectAsState()
-    val logsTotal by ZeroTalkClientManager.securityLoginTotal.collectAsState()
-    val logsTableReady by ZeroTalkClientManager.securityLoginTableReady.collectAsState()
-    val logsLoading by ZeroTalkClientManager.securityLoginLoading.collectAsState()
-    val eventType by ZeroTalkClientManager.securityLoginEventType.collectAsState()
+    val devices by ZeroTalkClientManager.securityDevices.collectAsStateWithLifecycle()
+    val devicesLoading by ZeroTalkClientManager.securityDevicesLoading.collectAsStateWithLifecycle()
+    val logs by ZeroTalkClientManager.securityLoginLogs.collectAsStateWithLifecycle()
+    val logsTotal by ZeroTalkClientManager.securityLoginTotal.collectAsStateWithLifecycle()
+    val logsTableReady by ZeroTalkClientManager.securityLoginTableReady.collectAsStateWithLifecycle()
+    val logsLoading by ZeroTalkClientManager.securityLoginLoading.collectAsStateWithLifecycle()
+    val eventType by ZeroTalkClientManager.securityLoginEventType.collectAsStateWithLifecycle()
 
     var selectedTab by remember { mutableStateOf(0) }
     var pendingRevoke by remember { mutableStateOf<SecurityDeviceDto?>(null) }
@@ -1166,8 +1166,8 @@ fun SheetPenaltyReliefContent(
     onShowMessage: (String) -> Unit
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val bootstrap by ZeroTalkClientManager.penaltyBootstrap.collectAsState()
-    val loading by ZeroTalkClientManager.penaltyLoading.collectAsState()
+    val bootstrap by ZeroTalkClientManager.penaltyBootstrap.collectAsStateWithLifecycle()
+    val loading by ZeroTalkClientManager.penaltyLoading.collectAsStateWithLifecycle()
 
     var selectedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var evidenceUrls by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -1701,8 +1701,8 @@ fun SheetNeteaseBindContent(
     onShowMessage: (String) -> Unit
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val binding by ZeroTalkClientManager.neteaseBinding.collectAsState()
-    val loading by ZeroTalkClientManager.neteaseLoading.collectAsState()
+    val binding by ZeroTalkClientManager.neteaseBinding.collectAsStateWithLifecycle()
+    val loading by ZeroTalkClientManager.neteaseLoading.collectAsStateWithLifecycle()
 
     var selectedTab by remember { mutableStateOf(0) }
     /** 已绑定时是否展开「更换账号」抽屉 */
@@ -3153,7 +3153,7 @@ fun SheetDonateContent(
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val clipboard = LocalClipboardManager.current
-    val loginData by ZeroTalkClientManager.loginData.collectAsState()
+    val loginData by ZeroTalkClientManager.loginData.collectAsStateWithLifecycle()
 
     var isLoading by remember { mutableStateOf(true) }
     var errorText by remember { mutableStateOf<String?>(null) }

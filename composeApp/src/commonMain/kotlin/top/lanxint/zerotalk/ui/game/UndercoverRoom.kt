@@ -238,7 +238,9 @@ private fun PlayersSeatGrid(
                 .padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(players) { p ->
+            // key 用玩家主身份 uid；服务端缺 uid 的座位（见 GameSessionDetail.playerUids()
+            // 对空 uid 的过滤）回退 userId，避免 key 重复导致 LazyColumn 崩溃。
+            items(players, key = { it.uid.ifBlank { it.userId.toString() } }) { p ->
                 val isMe = p.uid == currentUserId
                 Row(
                     modifier = Modifier

@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,6 +92,9 @@ actual fun rememberAudioFilePickerLauncher(
                         onAudioSelected(result)
                     }
                 }
+            } catch (e: CancellationException) {
+                // 协程取消必须向上传播，否则结构化并发失效（协程无法真正停止）
+                throw e
             } catch (e: Exception) {
                 // 读取失败时不崩溃
             }

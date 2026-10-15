@@ -25,7 +25,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -72,7 +72,7 @@ fun MatchingCard(
 ) {
     var selectedModeIndex by remember { mutableIntStateOf(0) }
     val isVoice = selectedModeIndex == 1
-    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsState()
+    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsStateWithLifecycle()
     val isMatching = matchStatus is MatchStatus.Matching
 
     // 语音通话被限制：自动切回文字聊天匹配

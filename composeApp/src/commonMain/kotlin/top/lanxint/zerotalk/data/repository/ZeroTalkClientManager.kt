@@ -91,8 +91,10 @@ import top.lanxint.zerotalk.data.voice.VoiceCallConfig
 import top.lanxint.zerotalk.data.voice.VoiceCallController
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -150,7 +152,15 @@ data class RoomEncryptionState(
  * 零语全局核心调度与数据中枢 (单例)
  */
 object ZeroTalkClientManager {
-    private val scope = CoroutineScope(Dispatchers.Default)
+    /**
+     * 全局调度 scope（本对象、[wsClient]、[voiceCall] 共享同一实例）。
+     *
+     * 必须挂 [SupervisorJob]：普通 Job 下任一子协程抛出未捕获异常都会取消整个
+     * scope，此后所有 launch 静默失效（WS 事件循环、语音信令、后台刷新全部停摆），
+     * 而 UI 仍在运行，表现为「消息不再更新、需重启 App」。SupervisorJob 让子协程
+     * 失败互相隔离。
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val apiService = ZeroTalkApiService()
     val wsClient = ZeroTalkWebSocketClient(apiService.client, scope)
@@ -1369,6 +1379,9 @@ object ZeroTalkClientManager {
                 )
             }
             return Result.success(Unit)
+        } catch (e: CancellationException) {
+            // 协程取消必须向上传播，不能被当成登录失败吞掉
+            throw e
         } catch (e: Exception) {
             return fail(e.message ?: "网络连接异常")
         }
@@ -2004,6 +2017,9 @@ object ZeroTalkClientManager {
             wsClient.connect(userId, wsToken)
             delay(300)
             true
+        } catch (e: CancellationException) {
+            // 协程取消必须向上传播：吞掉它会让结构化并发失效（协程无法真正停止）
+            throw e
         } catch (_: Exception) {
             false
         }

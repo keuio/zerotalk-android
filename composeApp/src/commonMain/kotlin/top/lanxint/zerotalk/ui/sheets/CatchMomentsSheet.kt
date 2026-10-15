@@ -29,7 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,8 +68,8 @@ fun SheetCatchMomentsContent(
     val notificationState = LocalNotificationState.current
 
     // 捞到的动态与捞取状态（POST /moment/fish，全局调度管理器持有）
-    val fishedMoment by ZeroTalkClientManager.fishedMoment.collectAsState()
-    val isFishing by ZeroTalkClientManager.isFishing.collectAsState()
+    val fishedMoment by ZeroTalkClientManager.fishedMoment.collectAsStateWithLifecycle()
+    val isFishing by ZeroTalkClientManager.isFishing.collectAsStateWithLifecycle()
 
     var commentMomentTarget by remember { mutableStateOf<MomentItem?>(null) }
     var shareMomentTarget by remember { mutableStateOf<MomentItem?>(null) }

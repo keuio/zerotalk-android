@@ -2,6 +2,7 @@ package top.lanxint.zerotalk.data.network
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import top.lanxint.zerotalk.data.security.SECURE_STORE_PREFIX
 import top.lanxint.zerotalk.data.security.SecureStore
@@ -38,13 +39,21 @@ object SessionStore {
      * 初始化本地持久化存储目录（如 context.filesDir）
      * 采用后台异步预加载，避免在主线程阻塞磁盘 I/O
      */
+    /**
+     * 后台预加载专用 scope（单例 + SupervisorJob，理由同 [AccountStore.preloadScope]）。
+     * 原实现每次 init() 新建一个无法取消的裸 scope，且 readSecure() 抛出时无人接管。
+     */
+    private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     fun init(filesDir: File) {
         storageDir = filesDir
-        CoroutineScope(Dispatchers.IO).launch {
-            if (cachedCookieJson == null) {
-                // 必须走 readSecure：否则会把历史明文直接灌进缓存，loadCookies 命中缓存后
-                // 永远不会触发「明文 → 密文」的原地升级
-                cachedCookieJson = readSecure(COOKIE_FILE)
+        preloadScope.launch {
+            runCatching {
+                if (cachedCookieJson == null) {
+                    // 必须走 readSecure：否则会把历史明文直接灌进缓存，loadCookies 命中缓存后
+                    // 永远不会触发「明文 → 密文」的原地升级
+                    cachedCookieJson = readSecure(COOKIE_FILE)
+                }
             }
         }
     }

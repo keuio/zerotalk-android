@@ -45,7 +45,7 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -326,8 +326,8 @@ private fun MatchedCard(
     isDark: Boolean,
     onEnterRoom: (roomId: String, partner: WsServerEvent.UserJoined?) -> Unit
 ) {
-    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsState()
-    val roomBootstraps by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
+    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsStateWithLifecycle()
+    val roomBootstraps by ZeroTalkClientManager.roomBootstrapMap.collectAsStateWithLifecycle()
     val effectivePartner = partner ?: roomPeers[roomId] ?: roomBootstraps[roomId]?.peerUser?.let { peer ->
         WsServerEvent.UserJoined(
             uid = peer.uid,

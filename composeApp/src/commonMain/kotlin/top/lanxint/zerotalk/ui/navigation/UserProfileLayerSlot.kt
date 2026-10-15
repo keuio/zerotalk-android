@@ -1,7 +1,7 @@
 package top.lanxint.zerotalk.ui.navigation
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,7 +39,7 @@ fun rememberUserProfileLayerSlot(
     host: UserProfileLayerHost,
     owner: Any? = null
 ): UserProfileLayerSlot {
-    val layers by ZeroTalkClientManager.userProfileLayers.collectAsState()
+    val layers by ZeroTalkClientManager.userProfileLayers.collectAsStateWithLifecycle()
     val current = layers.lastOrNull { it.host == host && (owner == null || it.owner === owner) }
 
     // 记录最后一次非空层：出栈后 AnimatedVisibility 仍在播退场动画，需要它继续渲染内容
@@ -59,6 +59,6 @@ fun rememberUserProfileLayerSlot(
 /** 当前是否存在任何资料页层（被覆盖的页面据此让出返回事件） */
 @Composable
 fun rememberHasUserProfileLayers(): Boolean {
-    val layers by ZeroTalkClientManager.userProfileLayers.collectAsState()
+    val layers by ZeroTalkClientManager.userProfileLayers.collectAsStateWithLifecycle()
     return layers.isNotEmpty()
 }

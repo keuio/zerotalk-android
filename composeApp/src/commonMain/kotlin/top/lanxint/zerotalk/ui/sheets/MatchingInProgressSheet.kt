@@ -36,7 +36,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.draw.rotate
 import top.lanxint.zerotalk.data.network.WsServerEvent
@@ -55,7 +55,7 @@ fun SheetMatchingInProgressContent(
     val titleColor = higColors.label
     val subColor = higColors.secondaryLabel
 
-    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsState()
+    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsStateWithLifecycle()
 
     // 旋转动效
     val infiniteTransition = rememberInfiniteTransition(label = "MatchRotate")

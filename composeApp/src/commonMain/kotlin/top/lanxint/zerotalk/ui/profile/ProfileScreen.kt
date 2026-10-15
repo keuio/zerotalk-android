@@ -32,7 +32,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -113,7 +113,7 @@ fun ProfileScreen(
     LaunchedEffect(Unit) { notificationsEnabled = SystemNotificationBridge.isNotificationEnabled }
 
     // 通知中心未读数：与面板共用同一份 store 状态（进入「我的」时刷新一次）
-    val notificationState by NotificationCenterStore.state.collectAsState()
+    val notificationState by NotificationCenterStore.state.collectAsStateWithLifecycle()
     val notificationUnreadCount = notificationState.unreadCount
     LaunchedEffect(Unit) { NotificationCenterStore.refreshUnread() }
 

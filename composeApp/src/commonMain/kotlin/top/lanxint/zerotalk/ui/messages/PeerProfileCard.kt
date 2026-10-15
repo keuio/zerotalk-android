@@ -28,7 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.unit.dp
 import top.lanxint.zerotalk.data.model.ConversationItem
 import top.lanxint.zerotalk.data.model.OtherUserProfile
@@ -74,7 +74,7 @@ fun PeerProfileCard(
     conversation: ConversationItem? = null,
     isAnonymous: Boolean = false
 ) {
-    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
+    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsStateWithLifecycle()
     val isAnonymousPeer = isAnonymous ||
         conversation?.targetName == "匿名用户" ||
         (conversation != null && roomBootstrapMap[conversation.id]?.peerUser?.privacyMode == true) ||

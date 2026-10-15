@@ -57,7 +57,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import top.lanxint.zerotalk.ui.components.LocalImageViewer
 import top.lanxint.zerotalk.ui.components.NetworkImageLoader
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import top.lanxint.zerotalk.data.model.MomentItem
 import top.lanxint.zerotalk.data.model.normalizeUserTitle
 import top.lanxint.zerotalk.data.network.MomentsCategory
@@ -142,9 +142,9 @@ fun MomentsScreen(
     val mineListState = rememberLazyListState()
 
     // 动态列表状态
-    val featuredList by ZeroTalkClientManager.momentsFeatured.collectAsState()
-    val followingList by ZeroTalkClientManager.momentsFollowing.collectAsState()
-    val mineList by ZeroTalkClientManager.momentsMine.collectAsState()
+    val featuredList by ZeroTalkClientManager.momentsFeatured.collectAsStateWithLifecycle()
+    val followingList by ZeroTalkClientManager.momentsFollowing.collectAsStateWithLifecycle()
+    val mineList by ZeroTalkClientManager.momentsMine.collectAsStateWithLifecycle()
 
     var currentSort by remember { mutableStateOf(MomentsSort.LATEST) }
     var isRefreshing by remember { mutableStateOf(false) }

@@ -66,7 +66,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -186,12 +186,12 @@ fun ConversationInfoScreen(
     // 详情页专属全屏磨砂玻璃背景 Backdrop（供顶部返回按键采样）
     val infoScreenBackdrop = rememberLayerBackdrop()
 
-    val globalProfileState by ZeroTalkClientManager.otherUserProfile.collectAsState()
-    val globalFollowListState by ZeroTalkClientManager.otherUserFollowList.collectAsState()
-    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsState()
-    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
+    val globalProfileState by ZeroTalkClientManager.otherUserProfile.collectAsStateWithLifecycle()
+    val globalFollowListState by ZeroTalkClientManager.otherUserFollowList.collectAsStateWithLifecycle()
+    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsStateWithLifecycle()
+    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsStateWithLifecycle()
     // 主页动态排序（最新 / 最热），与动态主界面共用 MomentsSort
-    val momentsSort by ZeroTalkClientManager.otherUserMomentsSort.collectAsState()
+    val momentsSort by ZeroTalkClientManager.otherUserMomentsSort.collectAsStateWithLifecycle()
 
     // 会话项可能还没带上对端 uid（房间列表未刷新 / 匹配房刚建立），用 WS 房间成员资料兜底
     val requestUserId = conversation.targetUserId
@@ -1875,8 +1875,8 @@ internal fun ChatSettingsTabContent(
     var isUploading by remember { mutableStateOf(false) }
     // 待应用背景：选完图 / 选完纯色后，询问生效范围（仅当前会话 / 作为默认背景）
     var pendingWallpaper by remember { mutableStateOf<WallpaperPending?>(null) }
-    val wallpaperMapState by ZeroTalkClientManager.conversationWallpapers.collectAsState()
-    val globalWallpaper by ZeroTalkClientManager.globalWallpaper.collectAsState()
+    val wallpaperMapState by ZeroTalkClientManager.conversationWallpapers.collectAsStateWithLifecycle()
+    val globalWallpaper by ZeroTalkClientManager.globalWallpaper.collectAsStateWithLifecycle()
     val hasWallpaperOverride = wallpaperMapState.containsKey(conversation.id)
     // 远程图下载成功后会落盘为本地文件，因此这里 http(s) 与本地路径都要认
     val customWallpaperUrl = currentWallpaperKey?.takeIf {

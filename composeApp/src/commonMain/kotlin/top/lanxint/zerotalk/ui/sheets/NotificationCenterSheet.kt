@@ -35,7 +35,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -81,7 +81,7 @@ fun SheetNotificationCenterContent(
     isDark: Boolean
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val state by NotificationCenterStore.state.collectAsState()
+    val state by NotificationCenterStore.state.collectAsStateWithLifecycle()
 
     // 打开面板即拉第一页并刷新未读数（官方 mount 行为）
     LaunchedEffect(Unit) { NotificationCenterStore.open() }

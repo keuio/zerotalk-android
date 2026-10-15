@@ -52,7 +52,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -181,15 +181,15 @@ fun PublicChatroomScreen(
     val titleColor = if (isDark) Color(0xFFF1F5F9) else Color(0xFF0F172A)
     val subtitleColor = if (isDark) Color(0xFF8B949E) else Color(0xFF64748B)
 
-    val hallMessages by ZeroTalkClientManager.hallMessages.collectAsState()
-    val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsState()
-    val hasMoreHistoryMap by ZeroTalkClientManager.roomHasMoreHistory.collectAsState()
-    val historyLoadingMap by ZeroTalkClientManager.roomHistoryLoading.collectAsState()
+    val hallMessages by ZeroTalkClientManager.hallMessages.collectAsStateWithLifecycle()
+    val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsStateWithLifecycle()
+    val hasMoreHistoryMap by ZeroTalkClientManager.roomHasMoreHistory.collectAsStateWithLifecycle()
+    val historyLoadingMap by ZeroTalkClientManager.roomHistoryLoading.collectAsStateWithLifecycle()
     val hasMoreHistory = hasMoreHistoryMap[hallRoomId] == true
     val isLoadingHistory = historyLoadingMap[hallRoomId] == true
     // 房管权限（viewer_can_delete_message）：可删除大厅他人消息
     // 注：大厅历史目前未写入 roomBootstrapMap（见汇报），接线后即可生效
-    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsState()
+    val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsStateWithLifecycle()
     val canModerateDeleteHallMessage = roomBootstrapMap[hallRoomId]?.viewerCanDeleteMessage == true
 
     // 大厅不是真实会话项（不写入 _conversations）：这里只合成一个用于「详细资料页」的会话对象，
@@ -210,8 +210,8 @@ fun PublicChatroomScreen(
     }
 
     // 大厅背景：与私聊共用管理器（key = hallRoomId），在资料页里设置后立刻生效
-    val wallpaperMap by ZeroTalkClientManager.conversationWallpapers.collectAsState()
-    val globalWallpaper by ZeroTalkClientManager.globalWallpaper.collectAsState()
+    val wallpaperMap by ZeroTalkClientManager.conversationWallpapers.collectAsStateWithLifecycle()
+    val globalWallpaper by ZeroTalkClientManager.globalWallpaper.collectAsStateWithLifecycle()
     val hallWallpaperValue = remember(hallRoomId, wallpaperMap, globalWallpaper) {
         ZeroTalkClientManager.conversationWallpaper(hallRoomId)
     }
@@ -246,14 +246,18 @@ fun PublicChatroomScreen(
     val initialDraft = remember(hallRoomId) {
         ZeroTalkClientManager.getChatDraft(hallRoomId)
     }
-    var inputText by remember(hallRoomId) { mutableStateOf(initialDraft) }
-    val currentInputText by rememberUpdatedState(inputText)
+    // 同 PrivateChatScreen：把文本读取下沉进 ChatComposerBar，
+    // 避免每次按键让本函数（1200+ 行）整体重新组合
+    val inputTextState = remember(hallRoomId) { mutableStateOf(initialDraft) }
+    var inputText by inputTextState
 
     DisposableEffect(hallRoomId) {
         onDispose {
-            val trimmed = currentInputText.trim()
+            // 直接读 State.value（理由同 PrivateChatScreen）
+            val text = inputTextState.value
+            val trimmed = text.trim()
             if (trimmed.isNotEmpty()) {
-                ZeroTalkClientManager.saveChatDraft(hallRoomId, currentInputText)
+                ZeroTalkClientManager.saveChatDraft(hallRoomId, text)
             } else {
                 ZeroTalkClientManager.clearChatDraft(hallRoomId)
             }
@@ -275,7 +279,7 @@ fun PublicChatroomScreen(
     // 顶栏昵称 / 头像胶囊 → 详细资料页（内含聊天背景设置）
     var showHallInfo by remember { mutableStateOf(false) }
     // 退出大厅后继续接收通知（设备级偏好，放在大厅设置页里，与私聊「隐藏提醒」同位置）
-    val hallNotifyAfterExit by UiPreferencesStore.hallNotifyAfterExit.collectAsState()
+    val hallNotifyAfterExit by UiPreferencesStore.hallNotifyAfterExit.collectAsStateWithLifecycle()
     // 点动态卡片评论数打开的动态（复用动态主界面的评论抽屉）
     var momentCardComment by remember { mutableStateOf<MomentItem?>(null) }
     // 悬浮输入栏顶部在 Root 中的像素坐标（据此计算消息列表的动态底部避让）
@@ -339,10 +343,10 @@ fun PublicChatroomScreen(
     var menuAnchor by remember { mutableStateOf<HallMenuAnchor?>(null) }
     var isMenuShowing by remember { mutableStateOf(false) }
     // 表情包搜索关键词：搜索态下面板高度锁定为固定值（不随键盘收放变化，避免面板弹跳）
-    val stickerSearchKeyword by ZeroTalkClientManager.stickerSearchKeyword.collectAsState()
+    val stickerSearchKeyword by ZeroTalkClientManager.stickerSearchKeyword.collectAsStateWithLifecycle()
     val stickerSearchKeywordActive = stickerSearchKeyword.isNotBlank()
     // 沉浸式游戏对局页（全局覆盖层）是否打开：打开时返回事件属于对局页，本页所有浮层让出返回
-    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsState()
+    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsStateWithLifecycle()
     // 撤回已由 ZeroTalkClientManager.recallMessage 发事件 + 服务端 message_recalled 广播就地标记为已撤回，无需本地兜底
     val visibleMessages = hallMessages
 
@@ -897,7 +901,7 @@ fun PublicChatroomScreen(
         // ---- 房间公告横幅条（对齐官方公共大厅 public-announcement-bar）----
         val hallAnnouncement = (roomBootstrapMap[hallRoomId]?.announcement
             ?: roomBootstrapMap[hallRoomId]?.room?.announcement)?.trim().orEmpty()
-        val dismissedAnnouncementsMap by ZeroTalkClientManager.dismissedRoomAnnouncements.collectAsState()
+        val dismissedAnnouncementsMap by ZeroTalkClientManager.dismissedRoomAnnouncements.collectAsStateWithLifecycle()
         val isAnnouncementDismissed = dismissedAnnouncementsMap[hallRoomId] == hallAnnouncement
 
         if (hallAnnouncement.isNotEmpty() && !isAnnouncementDismissed) {
@@ -924,7 +928,7 @@ fun PublicChatroomScreen(
                 // 加号面板与表情包面板互斥：打开加号面板时收起表情包面板
                 if (opened) showStickerPanel = false
             },
-            inputText = inputText,
+            inputText = inputTextState,
             onInputTextChange = { inputText = it },
             onSend = {
                 val textToSend = inputText.trim()
@@ -1034,14 +1038,14 @@ fun PublicChatroomScreen(
                 ZeroTalkClientManager.sendHallSticker(assetId)
             },
             stickerPanelContent = {
-                val stickerList = ZeroTalkClientManager.stickerList.collectAsState().value
-                val stickerLoading = ZeroTalkClientManager.stickerListLoading.collectAsState().value
-                val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsState().value
-                val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsState().value
-                val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsState().value
-                val stickerSearching = ZeroTalkClientManager.stickerSearching.collectAsState().value
-                val stickerLoadingMore = ZeroTalkClientManager.stickerSearchLoadingMore.collectAsState().value
-                val stickerHasMore = ZeroTalkClientManager.stickerSearchHasMore.collectAsState().value
+                val stickerList = ZeroTalkClientManager.stickerList.collectAsStateWithLifecycle().value
+                val stickerLoading = ZeroTalkClientManager.stickerListLoading.collectAsStateWithLifecycle().value
+                val stickerLoadFailed = ZeroTalkClientManager.stickerListFailed.collectAsStateWithLifecycle().value
+                val stickerUploading = ZeroTalkClientManager.stickerUploading.collectAsStateWithLifecycle().value
+                val stickerSearchResults = ZeroTalkClientManager.stickerSearchResults.collectAsStateWithLifecycle().value
+                val stickerSearching = ZeroTalkClientManager.stickerSearching.collectAsStateWithLifecycle().value
+                val stickerLoadingMore = ZeroTalkClientManager.stickerSearchLoadingMore.collectAsStateWithLifecycle().value
+                val stickerHasMore = ZeroTalkClientManager.stickerSearchHasMore.collectAsStateWithLifecycle().value
 
                 LaunchedEffect(Unit) {
                     ZeroTalkClientManager.refreshStickerList()

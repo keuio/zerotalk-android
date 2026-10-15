@@ -171,7 +171,7 @@ fun GamePickerSheet(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(GAME_OPTIONS) { game ->
+            items(GAME_OPTIONS, key = { it.type }) { game ->
                 GameCardItem(
                     game = game,
                     isDark = isDark,

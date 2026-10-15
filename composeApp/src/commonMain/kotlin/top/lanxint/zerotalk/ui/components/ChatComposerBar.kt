@@ -59,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -214,7 +215,13 @@ private const val STICKER_PANEL_ALPHA_LIGHT = 0.94f
 fun ChatComposerBar(
     drawerExpanded: Boolean,
     onDrawerExpandedChange: (Boolean) -> Unit,
-    inputText: String,
+    /**
+     * 输入框文本。刻意接收 [State] 而不是 String：
+     * 若由调用方传值，调用方组合期间就要读取该 state，于是每一次按键都会让整个
+     * 调用方 composable（聊天页可达 1800 行）失效重组。改为传 State 后，
+     * 读取下沉到本组件内部，按键只会失效本组件。
+     */
+    inputText: State<String>,
     onInputTextChange: (String) -> Unit,
     onSend: () -> Unit,
     actions: List<ChatComposerAction>,
@@ -604,7 +611,7 @@ fun ChatComposerBar(
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 BasicTextField(
-                                    value = inputText,
+                                    value = inputText.value,
                                     onValueChange = onInputTextChange,
                                     singleLine = true,
                                     textStyle = TextStyle(
@@ -626,7 +633,7 @@ fun ChatComposerBar(
                                             }
                                         },
                                     decorationBox = { innerTextField ->
-                                        if (inputText.isEmpty()) {
+                                        if (inputText.value.isEmpty()) {
                                             BasicText(
                                                 text = placeholder,
                                                 style = TextStyle(
@@ -643,7 +650,7 @@ fun ChatComposerBar(
 
                         // 右侧动态图标：麦克风图标 <-> 蓝色发送箭头（带弹性缩放与淡入淡出转换动画）
                         // 表情包按钮固定在最右，有文字时让位给发送按钮（与官方 composer 一致）
-                        val hasText = inputText.trim().isNotEmpty()
+                        val hasText = inputText.value.trim().isNotEmpty()
                         if (!hasText && onStickerPick != null) {
                             StickerToggleButton(
                                 expanded = stickerPanelExpanded,

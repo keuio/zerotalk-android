@@ -29,7 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,7 +105,7 @@ fun SheetMbtiTestContent(
     val higColors = AppleHigColors.colors(isDark)
     val scope = rememberCoroutineScope()
     val api = ZeroTalkClientManager.apiService
-    val userProfile by ZeroTalkClientManager.userProfile.collectAsState()
+    val userProfile by ZeroTalkClientManager.userProfile.collectAsStateWithLifecycle()
     val cachedMbtiResult = remember(userProfile.mbti) {
         userProfile.mbti?.takeIf { it.hasDetails }?.toMbtiResult()
     }

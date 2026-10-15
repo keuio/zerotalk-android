@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,7 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.rememberCoroutineScope
 import top.lanxint.zerotalk.data.model.AppThemeMode
 import top.lanxint.zerotalk.data.model.MessageCategory
@@ -123,9 +124,9 @@ fun ZeroTalkApp() {
     // 兼容渲染模式（设备级本地偏好）：开启后液态玻璃降级到 Android 13 以下的渲染能力
     var liquidGlassCompat by remember { mutableStateOf(UiPreferencesStore.liquidGlassCompatMode) }
     // 首次启动使用说明是否已确认（设备级一次性标记，未确认时盖一层说明浮层）
-    val usageNoticeAccepted by UiPreferencesStore.usageNoticeAccepted.collectAsState()
+    val usageNoticeAccepted by UiPreferencesStore.usageNoticeAccepted.collectAsStateWithLifecycle()
     // 后台接收消息（保活前台服务）：设备级偏好，默认开启
-    val backgroundReceiveEnabled by UiPreferencesStore.backgroundReceiveEnabled.collectAsState()
+    val backgroundReceiveEnabled by UiPreferencesStore.backgroundReceiveEnabled.collectAsStateWithLifecycle()
     // 渲染能力总闸是 KMPLiquidGlass 的全局状态，随开关即时下发（无需重启即生效）
     SideEffect { applyLiquidGlassCompatMode(liquidGlassCompat) }
     var selectedTab by remember { mutableStateOf(ZeroTalkTab.HOME) }
@@ -144,10 +145,10 @@ fun ZeroTalkApp() {
     var editingProfile by remember { mutableStateOf(userProfile) }
 
     // 观察全局零语后端连接与资料状态
-    val clientStatus by ZeroTalkClientManager.status.collectAsState()
-    val managerUserProfile by ZeroTalkClientManager.userProfile.collectAsState()
-    val managerLoginData by ZeroTalkClientManager.loginData.collectAsState()
-    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsState()
+    val clientStatus by ZeroTalkClientManager.status.collectAsStateWithLifecycle()
+    val managerUserProfile by ZeroTalkClientManager.userProfile.collectAsStateWithLifecycle()
+    val managerLoginData by ZeroTalkClientManager.loginData.collectAsStateWithLifecycle()
+    val roomPeers by ZeroTalkClientManager.roomPeers.collectAsStateWithLifecycle()
 
     LaunchedEffect(managerUserProfile) {
         userProfile = managerUserProfile
@@ -159,7 +160,7 @@ fun ZeroTalkApp() {
     }
 
     var privacySettings by remember { mutableStateOf(MomentsPrivacyData()) }
-    val managerPrivacy by ZeroTalkClientManager.privacySettings.collectAsState()
+    val managerPrivacy by ZeroTalkClientManager.privacySettings.collectAsStateWithLifecycle()
     LaunchedEffect(managerPrivacy) {
         privacySettings = managerPrivacy
     }
@@ -222,17 +223,28 @@ fun ZeroTalkApp() {
     var isLoggingIn by remember { mutableStateOf(false) }
     var loginError by remember { mutableStateOf<String?>(null) }
 
+    // 登录按钮可用态用 derivedStateOf 收敛。
+    //
+    // 若直接在 pTrailingAction 里读 loginUsername/loginPassword，逐字符输入都会让整个
+    // 根组件（1198 行）失效重组。derivedStateOf 只在「派生结果真正翻转」时才通知读取者：
+    // "a" → "ab" 结果仍是 false，不会触发任何重组；只有 false → true 那一次才会。
+    val loginDoneEnabled by remember {
+        derivedStateOf {
+            loginUsername.isNotBlank() && loginPassword.isNotBlank() && !isLoggingIn
+        }
+    }
+
     // 多账号（切换账号面板）：本地保存过的账号列表与当前选中账号
-    val savedAccounts by AccountStore.accounts.collectAsState()
-    val activeAccountLoginName by AccountStore.activeLoginName.collectAsState()
+    val savedAccounts by AccountStore.accounts.collectAsStateWithLifecycle()
+    val activeAccountLoginName by AccountStore.activeLoginName.collectAsStateWithLifecycle()
     var accountSwitching by remember { mutableStateOf(false) }
 
     // 消息列表与当前活跃单聊会话 (消息) - 直接观察 ZeroTalkClientManager 真实会话数据流
-    val conversations by ZeroTalkClientManager.conversations.collectAsState()
+    val conversations by ZeroTalkClientManager.conversations.collectAsStateWithLifecycle()
     var activeChatConversation by remember { mutableStateOf<ConversationItem?>(null) }
 
     // 同步「正在查看的会话」：私聊/群聊会话优先，其次零语大厅（进入大厅同样要忽略该房间的通知）
-    val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsState()
+    val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsStateWithLifecycle()
     LaunchedEffect(activeChatConversation?.id, inChatroom, hallRoomId) {
         ZeroTalkClientManager.setViewingRoom(
             activeChatConversation?.id ?: hallRoomId.takeIf { inChatroom && it.isNotBlank() }
@@ -240,7 +252,7 @@ fun ZeroTalkApp() {
     }
 
     // 系统通知点击：等会话列表就绪后直达对应会话
-    val pendingOpenRoomId by ZeroTalkClientManager.pendingOpenRoomId.collectAsState()
+    val pendingOpenRoomId by ZeroTalkClientManager.pendingOpenRoomId.collectAsStateWithLifecycle()
     LaunchedEffect(pendingOpenRoomId, conversations) {
         val roomId = pendingOpenRoomId ?: return@LaunchedEffect
         val conv = conversations.find { it.id == roomId } ?: return@LaunchedEffect
@@ -250,10 +262,10 @@ fun ZeroTalkApp() {
     }
 
     // 语音通话状态（全局覆盖层：任何页面都能浮出来电/去电/通话中）
-    val voiceUiState by ZeroTalkClientManager.voiceCall.uiState.collectAsState()
-    val voiceSession by ZeroTalkClientManager.voiceCall.session.collectAsState()
-    val voiceMuted by ZeroTalkClientManager.voiceCall.muted.collectAsState()
-    val voiceSpeakerOn by ZeroTalkClientManager.voiceCall.speakerOn.collectAsState()
+    val voiceUiState by ZeroTalkClientManager.voiceCall.uiState.collectAsStateWithLifecycle()
+    val voiceSession by ZeroTalkClientManager.voiceCall.session.collectAsStateWithLifecycle()
+    val voiceMuted by ZeroTalkClientManager.voiceCall.muted.collectAsStateWithLifecycle()
+    val voiceSpeakerOn by ZeroTalkClientManager.voiceCall.speakerOn.collectAsStateWithLifecycle()
 
     // 通话过程提示 + 被限制时把匹配模式切回「聊天」（对齐官网 voice_call_banned 行为）
     LaunchedEffect(Unit) {
@@ -267,9 +279,9 @@ fun ZeroTalkApp() {
             }
         }
     }
-    val voiceBannedTick by ZeroTalkClientManager.voiceBannedTick.collectAsState()
-    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsState()
-    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsState()
+    val voiceBannedTick by ZeroTalkClientManager.voiceBannedTick.collectAsStateWithLifecycle()
+    val matchStatus by ZeroTalkClientManager.matchStatus.collectAsStateWithLifecycle()
+    val activeGameSession by ZeroTalkClientManager.activeGameSession.collectAsStateWithLifecycle()
 
     // 资料页层级栈的两个渲染点：APP（动态作者 / 捞取记录）与 HALL（大厅点发送者）
     // 层级栈是全站唯一事实来源，这里只认领属于自己宿主的栈顶那一层
@@ -877,7 +889,7 @@ fun ZeroTalkApp() {
 
             val pTrailingAction = when (currentProfileSheet) {
                 is ProfileSheetType.Login -> SheetAction.Done(
-                    enabled = loginUsername.isNotBlank() && loginPassword.isNotBlank() && !isLoggingIn,
+                    enabled = loginDoneEnabled,
                     onClick = {
                         loginError = null
                         isLoggingIn = true

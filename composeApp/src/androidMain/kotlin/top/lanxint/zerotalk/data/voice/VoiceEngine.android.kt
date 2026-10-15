@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -252,6 +253,10 @@ internal class WebRtcVoiceEngine : VoiceEngine {
                 audioManager = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
                 applyAudioRoute(speakerOn)
                 true
+            } catch (t: CancellationException) {
+                // 协程取消：仍要释放已申请的原生资源，但必须把取消继续向上抛
+                close()
+                throw t
             } catch (t: Throwable) {
                 println("[VoiceEngine] start failed: ${t.message}")
                 close()

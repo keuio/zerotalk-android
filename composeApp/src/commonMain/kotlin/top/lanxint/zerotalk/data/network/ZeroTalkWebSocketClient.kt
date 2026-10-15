@@ -8,6 +8,7 @@ import top.lanxint.zerotalk.data.model.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,7 +39,9 @@ enum class WsConnectionState {
  */
 class ZeroTalkWebSocketClient(
     private val client: OkHttpClient,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
+    // 兜底 scope 同样需要 SupervisorJob：连接看门狗 / ping / 重连任一子任务失败
+    // 不应取消整个 scope 而使后续 launch 静默失效。
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
     private val gson = Gson()
     private var webSocket: WebSocket? = null

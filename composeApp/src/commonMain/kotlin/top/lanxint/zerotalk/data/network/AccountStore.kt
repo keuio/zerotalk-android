@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -65,9 +66,21 @@ object AccountStore {
      *
      * 与 [SessionStore] 一致采用后台异步预加载，避免在主线程阻塞磁盘 I/O 与 Keystore 解密。
      */
+    /**
+     * 后台预加载专用 scope。
+     *
+     * 原实现每次 init() 都新建 `CoroutineScope(Dispatchers.IO)`：既重复创建、
+     * 又无法取消，且没有任何异常处理 —— ensureLoaded() 抛出（例如 Keystore
+     * 解密失败）会作为未捕获异常直接崩溃应用。改为单例 scope + SupervisorJob，
+     * 并把预加载失败限制在内部，不影响启动。
+     */
+    private val preloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     fun init(filesDir: File) {
         storageDir = filesDir
-        CoroutineScope(Dispatchers.IO).launch { ensureLoaded() }
+        preloadScope.launch {
+            runCatching { ensureLoaded() }
+        }
     }
 
     /** 确保账号列表已从磁盘读入内存（首次访问时同步补读一次） */
