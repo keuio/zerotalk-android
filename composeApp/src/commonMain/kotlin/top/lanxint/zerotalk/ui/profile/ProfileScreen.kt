@@ -550,15 +550,6 @@ fun ProfileScreen(
             title = "账号与安全",
             isDark = isDark
         ) {
-            // 切换账号
-            AppleHigRow(
-                title = "切换账号",
-                icon = Icons.Default.SwitchAccount,
-                iconBgColor = Color(0xFF0EA5E9),
-                isDark = isDark,
-                onClick = onSwitchAccount
-            )
-            AppleHigDivider(isDark = isDark)
             AppleHigRow(
                 title = ProfileSettingItem.SECURITY_CENTER.title,
                 icon = ProfileSettingItem.SECURITY_CENTER.icon,
