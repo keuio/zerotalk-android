@@ -35,6 +35,7 @@ import top.lanxint.zerotalk.data.model.GameType
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
+import top.lanxint.zerotalk.ui.utils.VoiceDurationResolver
 
 /**
  * 沉浸式独立游戏对局页
@@ -679,7 +680,10 @@ private fun GameChatRow(message: ChatMessage) {
                 )
                 message.isSticker -> GameChatBubbleText("[表情包]")
                 message.isVoice && message.audioUrl.isBlank() -> GameChatBubbleText("语音已过期")
-                message.isVoice -> GameChatBubbleText("[语音] ${message.voiceDurationSec}″")
+                message.isVoice -> {
+                    val duration = if (message.voiceDurationSec > 0) message.voiceDurationSec else VoiceDurationResolver.getCached(message.audioUrl)
+                    GameChatBubbleText(if (duration > 0) "[语音] ${duration}″" else "[语音]")
+                }
                 else -> GameChatBubbleText(message.content)
             }
         }

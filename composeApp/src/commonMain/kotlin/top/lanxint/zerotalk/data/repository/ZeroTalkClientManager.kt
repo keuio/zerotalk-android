@@ -88,6 +88,7 @@ import top.lanxint.zerotalk.data.network.ZeroTalkWebSocketClient
 import top.lanxint.zerotalk.data.security.RoomKeyStore
 import top.lanxint.zerotalk.data.security.RoomMessageCrypto
 import top.lanxint.zerotalk.data.voice.VoiceCallConfig
+import top.lanxint.zerotalk.ui.utils.VoiceDurationResolver
 import top.lanxint.zerotalk.data.voice.VoiceCallController
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
@@ -2357,6 +2358,7 @@ object ZeroTalkClientManager {
                 onError?.invoke(res.exceptionOrNull()?.message ?: "语音上传失败")
                 return@launch
             }
+            VoiceDurationResolver.put(url, durationSec)
             appendLocalRoomMessage(
                 roomId = roomId,
                 content = "[语音 ${durationSec}\"]",
@@ -5762,7 +5764,7 @@ object ZeroTalkClientManager {
                 imageUrl = dto.imageUrl,
                 audioUrl = dto.audioUrl,
                 audioSource = dto.audioSource,
-                voiceDurationSec = dto.duration ?: 0,
+                voiceDurationSec = dto.duration?.takeIf { it > 0 } ?: VoiceDurationResolver.getCached(dto.audioUrl),
                 senderName = dto.username.orEmpty().ifBlank { memberName(dto.uid) },
                 senderAvatar = dto.avatarUrl.orEmpty().ifBlank { memberAvatar(dto.uid) },
                 senderGender = dto.gender.orEmpty().ifBlank { memberGender(dto.uid) },
@@ -7591,6 +7593,11 @@ object ZeroTalkClientManager {
                     requestRoomEncryptionUnlock(targetRoom)
                 }
 
+                val resolvedAudioUrl = event.audioUrl ?: event.content.takeIf {
+                    event.type.equals("audio", ignoreCase = true) &&
+                    (it.startsWith("http://") || it.startsWith("https://") || it.startsWith("//") || it.startsWith("/") || it.contains(".m4a") || it.contains(".mp4") || it.contains(".webm") || it.contains(".mp3") || it.contains(".aac") || it.contains(".ogg") || it.contains(".wav"))
+                }
+
                 // 类型判定（isImage / isVoice / isPat / preview）与字段映射与历史消息共用
                 val newMsg = buildChatMessage(
                     RawChatMessage(
@@ -7612,12 +7619,9 @@ object ZeroTalkClientManager {
                         serverId = event.messageId ?: 0L,
                         isMine = isMine,
                         imageUrl = event.imageUrl,
-                        audioUrl = event.audioUrl ?: event.content.takeIf {
-                            event.type.equals("audio", ignoreCase = true) &&
-                            (it.startsWith("http://") || it.startsWith("https://") || it.startsWith("//") || it.startsWith("/") || it.contains(".m4a") || it.contains(".mp4") || it.contains(".webm") || it.contains(".mp3") || it.contains(".aac") || it.contains(".ogg") || it.contains(".wav"))
-                        },
+                        audioUrl = resolvedAudioUrl,
                         audioSource = event.audioSource,
-                        voiceDurationSec = event.voiceDuration ?: 0,
+                        voiceDurationSec = event.voiceDuration?.takeIf { it > 0 } ?: VoiceDurationResolver.getCached(resolvedAudioUrl),
                         senderName = senderName,
                         senderAvatar = senderAvatar,
                         senderGender = senderGender,

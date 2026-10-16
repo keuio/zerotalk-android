@@ -54,6 +54,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextOverflow
 import top.lanxint.zerotalk.ui.utils.LinkTextHelper
+import top.lanxint.zerotalk.ui.utils.VoiceDurationResolver
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -210,8 +211,9 @@ fun BubbleVoiceContent(
             tint = Color.White,
             modifier = Modifier.size(18.dp)
         )
+        val durationText = if (durationSec > 0) "$durationSec\"" else "--\""
         BasicText(
-            text = "$durationSec\"",
+            text = durationText,
             style = TextStyle(
                 color = Color.White,
                 fontSize = 17.sp,
@@ -520,8 +522,21 @@ fun BubbleContentBox(
     val voicePlayer = rememberMomentAudioPlayer()
     val notificationState = LocalNotificationState.current
     var isVoicePlaying by remember(message.id) { mutableStateOf(false) }
-    // 服务端不下发语音时长（官方同样靠音频元数据现算）：消息本身没有时长时，用播放器就绪后回传的值
-    var resolvedVoiceDuration by remember(message.id) { mutableStateOf(0) }
+    // 服务端不下发语音时长：优先读取消息模型与本地缓存，缺失时静默预解析
+    val initialVoiceDuration = remember(message.id, message.audioUrl, message.voiceDurationSec) {
+        if (message.voiceDurationSec > 0) message.voiceDurationSec
+        else VoiceDurationResolver.getCached(message.audioUrl)
+    }
+    var resolvedVoiceDuration by remember(message.id, message.audioUrl) { mutableStateOf(initialVoiceDuration) }
+
+    LaunchedEffect(message.isVoice, message.audioUrl, resolvedVoiceDuration) {
+        if (message.isVoice && resolvedVoiceDuration <= 0 && message.audioUrl.isNotBlank()) {
+            val dur = VoiceDurationResolver.resolveDuration(message.audioUrl)
+            if (dur > 0) {
+                resolvedVoiceDuration = dur
+            }
+        }
+    }
 
     val textContent = if (message.isPat) message.patText.ifBlank { "拍了拍" } else message.content
     val annotatedContent = remember(textContent) {
@@ -714,7 +729,10 @@ fun BubbleContentBox(
                                         isVoicePlaying = false
                                         notificationState.show(err)
                                     },
-                                    onDuration = { resolvedVoiceDuration = it }
+                                    onDuration = { dur ->
+                                        resolvedVoiceDuration = dur
+                                        VoiceDurationResolver.put(message.audioUrl, dur)
+                                    }
                                 )
                             }
                         }

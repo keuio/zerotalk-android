@@ -462,7 +462,7 @@ fun ChatMessage.quotePreviewText(): String = when {
     isDeleted -> RECALLED_MESSAGE_TEXT
     isEncrypted -> encryptionPlaceholder.ifBlank { "[加密消息，请输入暗号解锁]" }
     isVoiceCall -> voiceCallText.ifBlank { "[语音通话]" }
-    isVoice -> "[语音 ${voiceDurationSec}\"]"
+    isVoice -> if (voiceDurationSec > 0) "[语音 ${voiceDurationSec}\"]" else "[语音]"
     isImage -> "[图片]"
     isDice -> if (diceValue in 1..6) "[骰子 $diceValue]" else "[骰子]"
     isPat -> patText.ifBlank { "拍了拍" }

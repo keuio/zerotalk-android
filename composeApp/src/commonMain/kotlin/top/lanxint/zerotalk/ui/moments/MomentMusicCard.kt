@@ -22,12 +22,14 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import top.lanxint.zerotalk.ui.utils.VoiceDurationResolver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -194,8 +196,16 @@ internal fun MomentVoiceBubble(
     val higColors = AppleHigColors.colors(isDark)
     val player = rememberMomentAudioPlayer()
     var isPlaying by remember(audioUrl) { mutableStateOf(false) }
+    var resolvedDuration by remember(audioUrl) { mutableStateOf(VoiceDurationResolver.getCached(audioUrl)) }
     val notificationState = LocalNotificationState.current
     val shape = RoundedCornerShape(100.dp)
+
+    LaunchedEffect(audioUrl, resolvedDuration) {
+        if (resolvedDuration <= 0 && audioUrl.isNotBlank()) {
+            val dur = VoiceDurationResolver.resolveDuration(audioUrl)
+            if (dur > 0) resolvedDuration = dur
+        }
+    }
 
     // 抽成命名 lambda：手势助手与无障碍 onClick 共用同一份回调
     val togglePlay: () -> Unit = {
@@ -209,6 +219,10 @@ internal fun MomentVoiceBubble(
                 onError = { err ->
                     isPlaying = false
                     notificationState.show(err)
+                },
+                onDuration = { dur ->
+                    resolvedDuration = dur
+                    VoiceDurationResolver.put(audioUrl, dur)
                 }
             )
             isPlaying = true
@@ -240,8 +254,13 @@ internal fun MomentVoiceBubble(
             tint = higColors.tint,
             modifier = Modifier.size(16.dp)
         )
+        val voiceLabel = when {
+            isPlaying -> "正在播放语音…"
+            resolvedDuration > 0 -> "语音 $resolvedDuration\""
+            else -> "语音"
+        }
         BasicText(
-            text = if (isPlaying) "正在播放语音…" else "语音",
+            text = voiceLabel,
             style = AppleHigTypography.subhead.copy(
                 color = higColors.label,
                 fontSize = 14.sp
