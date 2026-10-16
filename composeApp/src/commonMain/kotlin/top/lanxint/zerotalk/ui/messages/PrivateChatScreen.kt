@@ -250,6 +250,15 @@ fun PrivateChatScreen(
         ZeroTalkClientManager.enterRoom(conversation.id)
     }
 
+    // 监听本地会话列表：如果已拉取过列表且当前房间不再列表中，通知解散
+    LaunchedEffect(allConversations, conversation.id) {
+        if (!conversation.id.startsWith("conv_") && allConversations.isNotEmpty()) {
+            if (allConversations.none { it.id == conversation.id }) {
+                ZeroTalkClientManager.notifyRoomEvicted(conversation.id)
+            }
+        }
+    }
+
     // 会话消息列表
     var messageList by remember(conversation.id) {
         mutableStateOf<List<ChatMessage>>(emptyList())

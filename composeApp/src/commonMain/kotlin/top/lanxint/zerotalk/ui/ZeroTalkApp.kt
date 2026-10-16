@@ -299,12 +299,14 @@ fun ZeroTalkApp() {
         ZeroTalkClientManager.consumePendingOpenRoom()
     }
 
-    // 监听房间删除/解散/踢出事件：若当前正处于该房间内，退回主页并弹窗提示
+    // 房间解散/删除阻断提示状态
+    var evictedRoomNotice by remember { mutableStateOf<String?>(null) }
+
+    // 监听房间删除/解散/踢出事件：若当前正处于该房间内，弹出阻断提示框，点击确定后退回消息列表
     LaunchedEffect(Unit) {
         ZeroTalkClientManager.evictedRoomEvents.collect { roomId ->
             if (activeChatConversation?.id == roomId) {
-                activeChatConversation = null
-                notificationState.show("房间已被解散或删除")
+                evictedRoomNotice = "当前房间已被解散或删除"
             }
         }
     }
@@ -345,10 +347,15 @@ fun ZeroTalkApp() {
         }
     }
 
-    // 切换到消息 Tab 时自动触发真实房间列表刷新
-    LaunchedEffect(selectedTab) {
-        if (selectedTab == ZeroTalkTab.MESSAGES) {
+    // 处于「消息列表」或「正在单聊」时开启定时高频同步（4秒），切到动态或我的页面时暂停
+    LaunchedEffect(selectedTab, activeChatConversation != null, managerLoginData) {
+        if (managerLoginData == null) return@LaunchedEffect
+        val isInMessagesOrChat = selectedTab == ZeroTalkTab.MESSAGES || activeChatConversation != null
+        if (!isInMessagesOrChat) return@LaunchedEffect
+
+        while (true) {
             ZeroTalkClientManager.fetchRoomList()
+            delay(4_000L)
         }
     }
 
@@ -1436,6 +1443,55 @@ fun ZeroTalkApp() {
                 isDark = isDark,
                 onAck = {
                     NotificationCenterStore.ackCurrentForcePopup()
+                }
+            )
+        }
+
+        // 房间解散/删除阻断提示弹窗（用户点击确定后再退回消息列表）
+        val roomNotice = evictedRoomNotice
+        if (roomNotice != null) {
+            val higColors = AppleHigColors.colors(isDark)
+            AlertDialog(
+                onDismissRequest = {
+                    evictedRoomNotice = null
+                    activeChatConversation = null
+                },
+                properties = DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false
+                ),
+                containerColor = higColors.secondarySystemGroupedBackground,
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Text(
+                        text = "房间提示",
+                        style = AppleHigTypography.headline.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = higColors.label
+                        )
+                    )
+                },
+                text = {
+                    Text(
+                        text = roomNotice,
+                        style = AppleHigTypography.body.copy(color = higColors.label)
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            evictedRoomNotice = null
+                            activeChatConversation = null
+                        },
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = higColors.tint,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("确定", fontWeight = FontWeight.Bold)
+                    }
                 }
             )
         }

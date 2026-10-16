@@ -480,11 +480,14 @@ class ZeroTalkWebSocketClient(
                     WsServerEvent.MatchError(msg)
                 }
                 "user_left" -> {
-                    val roomId = root.get("room_id")?.takeIf { !it.isJsonNull }?.asString
+                    val dataObj = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val roomId = (root.get("room_id") ?: dataObj?.get("room_id"))?.takeIf { !it.isJsonNull }?.asString
                     WsServerEvent.UserLeft(roomId)
                 }
-                "room_closed" -> {
-                    val roomId = root.get("room_id")?.takeIf { !it.isJsonNull }?.asString
+                "room_closed", "room_deleted", "room_delete", "room_disband", "room_disbanded" -> {
+                    val dataObj = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val roomId = (root.get("room_id") ?: dataObj?.get("room_id") ?: root.get("id") ?: dataObj?.get("id"))
+                        ?.takeIf { !it.isJsonNull }?.asString
                     WsServerEvent.RoomClosed(roomId)
                 }
                 "message_recalled" -> {

@@ -354,6 +354,12 @@ object ZeroTalkClientManager {
     private val _evictedRoomEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val evictedRoomEvents: SharedFlow<String> = _evictedRoomEvents.asSharedFlow()
 
+    /** 通知房间被删除/解散并执行本地清理 */
+    fun notifyRoomEvicted(roomId: String) {
+        removeRoomLocally(roomId, refreshList = false)
+        _evictedRoomEvents.tryEmit(roomId)
+    }
+
     /** 触发账号失效/封禁阻断 */
     fun triggerSessionInvalidated(reason: String) {
         if (_sessionInvalidatedReason.value != null) return
@@ -4743,6 +4749,13 @@ object ZeroTalkClientManager {
                     _evictedRoomEvents.tryEmit(deleted.id)
                 }
 
+                // 若当前正在查看的房间已不在远端列表中，同样触发深度清理与退出事件
+                val currentViewing = viewingRoomId
+                if (!currentViewing.isNullOrBlank() && !currentViewing.startsWith("conv_") && !isHallRoom(currentViewing) && currentViewing !in remoteIds) {
+                    removeRoomLocally(currentViewing, refreshList = false)
+                    _evictedRoomEvents.tryEmit(currentViewing)
+                }
+
                 // 仅保留临时本地会话（如正在编辑首条消息的 conv_xxx 占位）
                 val temporaryConversations = currentRooms.filter { it.id.startsWith("conv_") }
                 _conversations.value = (roomItems + temporaryConversations).sortedByDescending { it.isPinned }
@@ -5559,6 +5572,13 @@ object ZeroTalkClientManager {
                 // 补缺口（官方 te）：从合并前的本地最大 id 起增量补页，
                 // 填上「本地旧消息」与「bootstrap 最近 N 条」之间的空洞
                 catchUpNewerMessages(roomId, fromId = previousMaxId)
+            }
+            res.onFailure { err ->
+                val msg = err.message.orEmpty()
+                if (msg.contains("不存在") || msg.contains("已解散") || msg.contains("已删除") || msg.contains("404")) {
+                    removeRoomLocally(roomId)
+                    _evictedRoomEvents.tryEmit(roomId)
+                }
             }
         }
     }
