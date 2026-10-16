@@ -16,6 +16,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -1064,12 +1065,20 @@ private enum class ProfileMomentsTab(val title: String) {
     MUSIC("音乐")
 }
 
+private data class ProfileMediaItem(
+    val key: String,
+    val momentId: String,
+    val src: String,
+    val imageIndex: Int,
+    val imageUrls: List<String>,
+    val showMultiBadge: Boolean
+)
+
 /**
  * 第三组：对方动态（GET /api/moment/user 的 list 字段）
  *
  * 对齐官网 UserMomentsView：支持「动态 / 媒体 / 音乐」三 Tab 切换与「最新 / 最热」排序（sort=latest|hot）；
- * 动态卡片直接复用动态主界面的 MomentCard
- * （头像 / 昵称 / 正文 / 配图 / 点赞 · 评论 · 分享）。
+ * 媒体 Tab 仅展示九宫格纯图片；动态/音乐 Tab 复用 MomentCard。
  */
 @Composable
 private fun ProfileMomentsCard(
@@ -1090,6 +1099,7 @@ private fun ProfileMomentsCard(
 ) {
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
+    val imageViewer = LocalImageViewer.current
     val moments = profile.moments
 
     var selectedMomentsTab by remember { mutableStateOf(ProfileMomentsTab.ALL) }
@@ -1105,6 +1115,29 @@ private fun ProfileMomentsCard(
             }
         }
     }
+
+    val mediaItems = remember(moments) {
+        moments.flatMap { moment ->
+            val images = if (moment.images.isNotEmpty()) {
+                moment.images
+            } else if (moment.imageUrl.isNotBlank()) {
+                listOf(moment.imageUrl)
+            } else {
+                emptyList()
+            }
+            images.mapIndexed { index, imgUrl ->
+                ProfileMediaItem(
+                    key = "${moment.id}-$index",
+                    momentId = moment.id,
+                    src = imgUrl,
+                    imageIndex = index,
+                    imageUrls = images,
+                    showMultiBadge = index == 0 && images.size > 1
+                )
+            }
+        }
+    }
+    val mediaGridRows = remember(mediaItems) { mediaItems.chunked(3) }
 
     // ---- 点聊天里的动态卡片进来：定位并高亮目标动态 ----
     // 资料页的动态列表是 verticalScroll + forEach（非 LazyColumn），所以按实测 Y 坐标滚动。
@@ -1174,7 +1207,7 @@ private fun ProfileMomentsCard(
 
             else -> {
                 // 合并成一张大卡片：表头（动态/媒体/音乐 / 共 N 条 / 最新·最热）挪进卡片内，
-                // 条目是同一作者，不再重复头像昵称
+                // 控件统一高度 32dp，严格对齐
                 AppleHigFillCard(
                     isDark = isDark,
                     modifier = Modifier
@@ -1194,30 +1227,119 @@ private fun ProfileMomentsCard(
                         onOptionSelect = { index ->
                             selectedMomentsTab = ProfileMomentsTab.entries.getOrElse(index) { ProfileMomentsTab.ALL }
                         },
-                        outerHeight = 34.dp,
-                        innerHeight = 28.dp,
+                        outerHeight = 32.dp,
+                        innerHeight = 26.dp,
                         isDark = isDark,
                         modifier = Modifier.width(132.dp)
                     )
                     Spacer(modifier = Modifier.weight(1f))
                     BasicText(
-                        text = if (profile.hasMoreMoments) "已加载 ${displayMoments.size} 条" else "共 ${displayMoments.size} 条",
+                        text = when (selectedMomentsTab) {
+                            ProfileMomentsTab.ALL -> if (profile.hasMoreMoments) "已加载 ${displayMoments.size} 条" else "共 ${displayMoments.size} 条"
+                            ProfileMomentsTab.MEDIA -> if (profile.hasMoreMoments) "已加载 ${mediaItems.size} 张" else "共 ${mediaItems.size} 张"
+                            ProfileMomentsTab.MUSIC -> if (profile.hasMoreMoments) "已加载 ${displayMoments.size} 首" else "共 ${displayMoments.size} 首"
+                        },
                         style = AppleHigTypography.caption1.copy(color = higColors.tertiaryLabel),
                         maxLines = 1
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    MomentsSortCapsule(
-                        currentSort = currentSort,
-                        onSortChange = onSortChange,
-                        isDark = isDark
+                    LiquidSegmentedControl(
+                        options = remember { listOf("最新", "最热") },
+                        selectedIndex = if (currentSort == MomentsSort.LATEST) 0 else 1,
+                        onOptionSelect = { index ->
+                            onSortChange(if (index == 0) MomentsSort.LATEST else MomentsSort.HOT)
+                        },
+                        outerHeight = 32.dp,
+                        innerHeight = 26.dp,
+                        isDark = isDark,
+                        modifier = Modifier.width(96.dp)
                     )
                 }
                 AppleHigDivider(isDark = isDark, insetStart = 16.dp)
-                if (displayMoments.isEmpty()) {
+                if (selectedMomentsTab == ProfileMomentsTab.MEDIA) {
+                    if (mediaItems.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 36.dp, horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            BasicText(
+                                text = "暂无图片动态",
+                                style = AppleHigTypography.footnote.copy(color = higColors.tertiaryLabel)
+                            )
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            mediaGridRows.forEach { rowItems ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    rowItems.forEach { item ->
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .aspectRatio(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(higColors.secondarySystemFill)
+                                                .clickable(
+                                                    interactionSource = remember { MutableInteractionSource() },
+                                                    indication = null,
+                                                    onClick = {
+                                                        imageViewer.open(item.imageUrls, item.imageIndex)
+                                                    }
+                                                )
+                                        ) {
+                                            if (item.src.isNotBlank()) {
+                                                AsyncNetworkImage(
+                                                    url = item.src,
+                                                    contentDescription = "媒体图片",
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentScale = ContentScale.Crop,
+                                                    shape = RoundedCornerShape(8.dp)
+                                                )
+                                            }
+                                            if (item.showMultiBadge) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .padding(5.dp)
+                                                        .background(
+                                                            Color.Black.copy(alpha = 0.55f),
+                                                            RoundedCornerShape(4.dp)
+                                                        )
+                                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                ) {
+                                                    BasicText(
+                                                        text = "${item.imageUrls.size}",
+                                                        style = TextStyle(
+                                                            color = Color.White,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    repeat(3 - rowItems.size) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (displayMoments.isEmpty()) {
                     val emptyTip = when (selectedMomentsTab) {
                         ProfileMomentsTab.ALL -> "暂无公开动态"
-                        ProfileMomentsTab.MEDIA -> "暂无图片动态"
                         ProfileMomentsTab.MUSIC -> "暂无音乐动态"
+                        else -> "暂无公开动态"
                     }
                     Box(
                         modifier = Modifier
@@ -1298,6 +1420,11 @@ private fun ProfileMomentsCard(
                 }
                 }
 
+                val hasAnyCurrentItems = when (selectedMomentsTab) {
+                    ProfileMomentsTab.MEDIA -> mediaItems.isNotEmpty()
+                    else -> displayMoments.isNotEmpty()
+                }
+
                 if (profile.hasMoreMoments) {
                     Row(
                         modifier = Modifier
@@ -1331,7 +1458,7 @@ private fun ProfileMomentsCard(
                             )
                         )
                     }
-                } else if (displayMoments.isNotEmpty()) {
+                } else if (hasAnyCurrentItems) {
                     BasicText(
                         text = "已阅尽此刻",
                         style = AppleHigTypography.caption1.copy(
