@@ -9,10 +9,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,19 +25,26 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -55,7 +60,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -65,10 +69,21 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.launch
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.utils.GlobalMusicPlayerManager
 import kotlin.math.roundToInt
+
+/**
+ * 格式化播放时间（秒 -> mm:ss）
+ */
+private fun formatTime(seconds: Int): String {
+    val s = seconds.coerceAtLeast(0)
+    val m = s / 60
+    val rem = s % 60
+    val mStr = if (m < 10) "0$m" else "$m"
+    val sStr = if (rem < 10) "0$rem" else "$rem"
+    return "$mStr:$sStr"
+}
 
 /**
  * 全局音乐播放器自由拖拽吸附悬浮窗
@@ -77,7 +92,11 @@ import kotlin.math.roundToInt
  * 1. 自由拖拽与屏幕边缘平滑吸附；
  * 2. 状态双模切换：
  *    - 折叠微球态：黑胶唱片旋转封面 + 音符呼吸律动 + 加载指示器；
- *    - 展开药丸态：曲名、歌手、播放/暂停、关闭与微型进度条；
+ *    - 展开精致卡片面板：
+ *      * 黑胶封面、曲名、歌手与折叠/关闭按钮；
+ *      * KMP Glass Slider 玻璃质感拖动进度条与已播/总时长；
+ *      * 上一首 / 播放(暂停) / 下一首 控制按钮；
+ *      * 播放列表抽屉开关与曲目管理（点击播放、移除单曲、一键清空）；
  * 3. 跨页面常驻，统一接管全局所有动态与聊天室音乐播放。
  */
 @Composable
@@ -90,30 +109,34 @@ fun GlobalMusicFloatingWidget(
     val isPlaying by GlobalMusicPlayerManager.isPlaying.collectAsState()
     val isLoading by GlobalMusicPlayerManager.isLoading.collectAsState()
     val currentTrack by GlobalMusicPlayerManager.currentTrack.collectAsState()
+    val playlist by GlobalMusicPlayerManager.playlist.collectAsState()
+    val currentIndex by GlobalMusicPlayerManager.currentIndex.collectAsState()
     val progressSec by GlobalMusicPlayerManager.progressSec.collectAsState()
     val durationSec by GlobalMusicPlayerManager.durationSec.collectAsState()
+
+    var showPlaylistDrawer by remember { mutableStateOf(false) }
+    var localSeekValue by remember { mutableFloatStateOf(-1f) }
 
     if (!isVisible || currentTrack == null) return
 
     val higColors = AppleHigColors.colors(isDark)
     val density = LocalDensity.current
-    val coroutineScope = rememberCoroutineScope()
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { maxHeight.toPx() }
 
         val collapsedSizeDp = 54.dp
-        val expandedWidthDp = 280.dp
-        val expandedHeightDp = 64.dp
+        val expandedWidthDp = 300.dp
+        val baseExpandedHeightDp = 142.dp
+        val drawerHeightDp = if (showPlaylistDrawer) 180.dp else 0.dp
+        val currentEstimatedHeightDp = if (isExpanded) baseExpandedHeightDp + drawerHeightDp else collapsedSizeDp
 
         val collapsedSizePx = with(density) { collapsedSizeDp.toPx() }
         val expandedWidthPx = with(density) { expandedWidthDp.toPx() }
-        val expandedHeightPx = with(density) { expandedHeightDp.toPx() }
+        val estimatedHeightPx = with(density) { currentEstimatedHeightDp.toPx() }
 
         val currentWidthPx = if (isExpanded) expandedWidthPx else collapsedSizePx
-        val currentHeightPx = if (isExpanded) expandedHeightPx else collapsedSizePx
-
         val edgeMarginPx = with(density) { 16.dp.toPx() }
         val topMarginPx = with(density) { 70.dp.toPx() }
         val bottomMarginPx = with(density) { 100.dp.toPx() }
@@ -157,7 +180,7 @@ fun GlobalMusicFloatingWidget(
         val discRotation = if (isPlaying) rotationAngle else 0f
 
         val safeX = effectiveX.coerceIn(edgeMarginPx, (screenWidthPx - currentWidthPx - edgeMarginPx).coerceAtLeast(edgeMarginPx))
-        val safeY = effectiveY.coerceIn(topMarginPx, (screenHeightPx - currentHeightPx - bottomMarginPx).coerceAtLeast(topMarginPx))
+        val safeY = effectiveY.coerceIn(topMarginPx, (screenHeightPx - estimatedHeightPx - bottomMarginPx).coerceAtLeast(topMarginPx))
 
         Box(
             modifier = Modifier
@@ -178,7 +201,7 @@ fun GlobalMusicFloatingWidget(
                             val finalX = targetOffsetX + dragDeltaX
                             val finalY = (targetOffsetY + dragDeltaY).coerceIn(
                                 topMarginPx,
-                                screenHeightPx - currentHeightPx - bottomMarginPx
+                                screenHeightPx - estimatedHeightPx - bottomMarginPx
                             )
                             // 边缘吸附：判断在中线偏左还是偏右
                             val centerX = finalX + currentWidthPx / 2
@@ -203,155 +226,100 @@ fun GlobalMusicFloatingWidget(
             val track = currentTrack ?: return@Box
 
             if (isExpanded) {
-                // ==================== 展开态：迷你药丸控制器 ====================
-                val pillShape = RoundedCornerShape(32.dp)
-                val pillBg = if (isDark) Color(0xF01C1C1E) else Color(0xF5FFFFFF)
+                // ==================== 展开态：卡片式控制面板 ====================
+                val cardShape = RoundedCornerShape(22.dp)
+                val cardBg = if (isDark) Color(0xF21C1E26) else Color(0xF7FFFFFF)
                 val borderColor = if (isDark) Color(0x33FFFFFF) else Color(0x1F000000)
 
-                Row(
+                Column(
                     modifier = Modifier
-                        .size(width = expandedWidthDp, height = expandedHeightDp)
-                        .shadow(elevation = 12.dp, shape = pillShape, ambientColor = Color(0x33000000))
-                        .clip(pillShape)
-                        .background(pillBg)
-                        .border(1.dp, borderColor, pillShape)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .width(expandedWidthDp)
+                        .shadow(elevation = 16.dp, shape = cardShape, ambientColor = Color(0x33000000))
+                        .clip(cardShape)
+                        .background(cardBg)
+                        .border(1.dp, borderColor, cardShape)
                 ) {
-                    // 黑胶封面（可点击折叠回微球）
-                    Box(
+                    // 1. 顶部栏：黑胶封面 + 歌曲信息 + 收起/关闭按钮
+                    Row(
                         modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF111111))
-                            .border(1.5.dp, Color(0xFFE11D48), CircleShape)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) {
-                                GlobalMusicPlayerManager.setExpanded(false)
-                            },
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .padding(top = 10.dp, start = 12.dp, end = 10.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        AsyncNetworkImage(
-                            url = track.coverUrl,
-                            contentDescription = "唱片封面",
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .rotate(discRotation)
-                        )
-                        // 黑胶中心孔
+                        // 唱片旋转微缩封面
                         Box(
                             modifier = Modifier
-                                .size(10.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
-                                .background(pillBg)
-                                .border(1.dp, Color(0x66FFFFFF), CircleShape)
-                        )
-                    }
-
-                    Spacer(Modifier.width(10.dp))
-
-                    // 歌名 + 歌手 + 微型进度条
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) {
-                                GlobalMusicPlayerManager.togglePlayPause()
-                            }
-                    ) {
-                        BasicText(
-                            text = track.name,
-                            style = TextStyle(
-                                color = higColors.label,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(Modifier.height(1.dp))
-                        BasicText(
-                            text = track.artist,
-                            style = TextStyle(
-                                color = higColors.secondaryLabel,
-                                fontSize = 11.sp
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(Modifier.height(4.dp))
-
-                        // 线性进度槽
-                        val progressFraction = if (durationSec > 0) {
-                            (progressSec.toFloat() / durationSec).coerceIn(0f, 1f)
-                        } else 0f
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(2.5.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(if (isDark) Color(0x33FFFFFF) else Color(0x1F000000))
+                                .background(Color(0xFF111111))
+                                .border(1.5.dp, Color(0xFFE11D48), CircleShape)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    GlobalMusicPlayerManager.setExpanded(false)
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
+                            AsyncNetworkImage(
+                                url = track.coverUrl,
+                                contentDescription = "唱片封面",
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .rotate(discRotation)
+                            )
+                            // 黑胶中心轴孔
                             Box(
                                 modifier = Modifier
-                                    .fillMaxWidth(progressFraction)
-                                    .height(2.5.dp)
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            listOf(Color(0xFFE11D48), Color(0xFFFB7185))
-                                        )
-                                    )
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(cardBg)
+                                    .border(1.dp, Color(0x66FFFFFF), CircleShape)
                             )
                         }
-                    }
 
-                    Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(10.dp))
 
-                    // 控制按钮行
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        // 播放 / 暂停 / 加载中按钮
-                        Box(
+                        // 歌名与歌手
+                        Column(
                             modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFE11D48))
+                                .weight(1f)
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null
                                 ) {
                                     GlobalMusicPlayerManager.togglePlayPause()
-                                },
-                            contentAlignment = Alignment.Center
+                                }
                         ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Color.White
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = if (isPlaying) "暂停" else "播放",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                            BasicText(
+                                text = track.name,
+                                style = TextStyle(
+                                    color = higColors.label,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            BasicText(
+                                text = track.artist,
+                                style = TextStyle(
+                                    color = higColors.secondaryLabel,
+                                    fontSize = 11.sp
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
+
+                        Spacer(Modifier.width(6.dp))
 
                         // 收起为微球按钮
                         Box(
                             modifier = Modifier
-                                .size(26.dp)
+                                .size(28.dp)
                                 .clip(CircleShape)
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
@@ -369,10 +337,10 @@ fun GlobalMusicFloatingWidget(
                             )
                         }
 
-                        // 关闭并停止播放按钮
+                        // 关闭按钮
                         Box(
                             modifier = Modifier
-                                .size(26.dp)
+                                .size(28.dp)
                                 .clip(CircleShape)
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
@@ -386,8 +354,351 @@ fun GlobalMusicFloatingWidget(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "关闭",
                                 tint = higColors.secondaryLabel,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(17.dp)
                             )
+                        }
+                    }
+
+                    // 2. 进度滑块区域 (KMP GlassSlider + 时间标签)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 2.dp)
+                    ) {
+                        val displayProgress = if (localSeekValue >= 0) localSeekValue else progressSec.toFloat()
+                        val maxDuration = durationSec.coerceAtLeast(1).toFloat()
+
+                        GlassSlider(
+                            value = displayProgress,
+                            valueRange = 0f..maxDuration,
+                            onValueChange = { localSeekValue = it },
+                            onValueChangeFinished = {
+                                if (localSeekValue >= 0) {
+                                    GlobalMusicPlayerManager.seekTo(localSeekValue.roundToInt())
+                                    localSeekValue = -1f
+                                }
+                            },
+                            isDark = isDark
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            BasicText(
+                                text = formatTime(displayProgress.toInt()),
+                                style = TextStyle(
+                                    color = higColors.tertiaryLabel,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                            BasicText(
+                                text = formatTime(durationSec),
+                                style = TextStyle(
+                                    color = higColors.tertiaryLabel,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+
+                    // 3. 核心控制栏：上一首 / 播放(暂停) / 下一首 / 播放列表开关
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // 播放列表抽屉开关
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (showPlaylistDrawer) Color(0xFFE11D48).copy(alpha = 0.15f) else Color.Transparent)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    showPlaylistDrawer = !showPlaylistDrawer
+                                }
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                    contentDescription = "播放列表",
+                                    tint = if (showPlaylistDrawer) Color(0xFFE11D48) else higColors.secondaryLabel,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                                if (playlist.isNotEmpty()) {
+                                    BasicText(
+                                        text = "${playlist.size}",
+                                        style = TextStyle(
+                                            color = if (showPlaylistDrawer) Color(0xFFE11D48) else higColors.secondaryLabel,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.weight(1f))
+
+                        // 上一首
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    GlobalMusicPlayerManager.playPrevious()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SkipPrevious,
+                                contentDescription = "上一首",
+                                tint = higColors.label,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        Spacer(Modifier.width(10.dp))
+
+                        // 播放 / 暂停 / 加载中
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .shadow(elevation = 4.dp, shape = CircleShape, spotColor = Color(0xFFE11D48))
+                                .clip(CircleShape)
+                                .background(Color(0xFFE11D48))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    GlobalMusicPlayerManager.togglePlayPause()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.White
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (isPlaying) "暂停" else "播放",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.width(10.dp))
+
+                        // 下一首
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    GlobalMusicPlayerManager.playNext()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SkipNext,
+                                contentDescription = "下一首",
+                                tint = higColors.label,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        Spacer(Modifier.weight(1f))
+
+                        // 右侧配重占位（保持播放键居中）
+                        Spacer(Modifier.width(36.dp))
+                    }
+
+                    // 4. 展开式播放列表抽屉
+                    AnimatedVisibility(
+                        visible = showPlaylistDrawer,
+                        enter = expandVertically(),
+                        exit = shrinkVertically()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(if (isDark) Color(0x1A000000) else Color(0x0A000000))
+                        ) {
+                            // 分隔线
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(0.5.dp)
+                                    .background(if (isDark) Color(0x22FFFFFF) else Color(0x14000000))
+                            )
+
+                            // 列表头部：曲目数量与清空操作
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                BasicText(
+                                    text = "播放队列 (${playlist.size})",
+                                    style = TextStyle(
+                                        color = higColors.secondaryLabel,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                                Spacer(Modifier.weight(1f))
+                                if (playlist.isNotEmpty()) {
+                                    BasicText(
+                                        text = "清空",
+                                        style = TextStyle(
+                                            color = Color(0xFFE11D48),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium
+                                        ),
+                                        modifier = Modifier.clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null
+                                        ) {
+                                            GlobalMusicPlayerManager.clearPlaylist()
+                                        }
+                                    )
+                                }
+                            }
+
+                            if (playlist.isEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(60.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    BasicText(
+                                        text = "队列暂无曲目",
+                                        style = TextStyle(
+                                            color = higColors.tertiaryLabel,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                }
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 160.dp)
+                                        .padding(start = 8.dp, end = 8.dp, bottom = 6.dp)
+                                ) {
+                                    itemsIndexed(playlist, key = { index, item -> "${item.songId}_$index" }) { index, item ->
+                                        val isCurrent = index == currentIndex
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(
+                                                    if (isCurrent) {
+                                                        if (isDark) Color(0x22E11D48) else Color(0x14E11D48)
+                                                    } else Color.Transparent
+                                                )
+                                                .clickable(
+                                                    interactionSource = remember { MutableInteractionSource() },
+                                                    indication = null
+                                                ) {
+                                                    GlobalMusicPlayerManager.playAt(index)
+                                                }
+                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            if (isCurrent) {
+                                                Icon(
+                                                    imageVector = Icons.Default.MusicNote,
+                                                    contentDescription = "正在播放",
+                                                    tint = Color(0xFFE11D48),
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            } else {
+                                                BasicText(
+                                                    text = "${index + 1}",
+                                                    style = TextStyle(
+                                                        color = higColors.tertiaryLabel,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Medium
+                                                    ),
+                                                    modifier = Modifier.width(14.dp)
+                                                )
+                                            }
+
+                                            Spacer(Modifier.width(8.dp))
+
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                BasicText(
+                                                    text = item.name,
+                                                    style = TextStyle(
+                                                        color = if (isCurrent) Color(0xFFE11D48) else higColors.label,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal
+                                                    ),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                BasicText(
+                                                    text = item.artist,
+                                                    style = TextStyle(
+                                                        color = higColors.secondaryLabel,
+                                                        fontSize = 10.sp
+                                                    ),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+
+                                            Spacer(Modifier.width(6.dp))
+
+                                            // 移除单曲按钮
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(20.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable(
+                                                        interactionSource = remember { MutableInteractionSource() },
+                                                        indication = null
+                                                    ) {
+                                                        GlobalMusicPlayerManager.removeFromPlaylist(index)
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "移除",
+                                                    tint = higColors.tertiaryLabel,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

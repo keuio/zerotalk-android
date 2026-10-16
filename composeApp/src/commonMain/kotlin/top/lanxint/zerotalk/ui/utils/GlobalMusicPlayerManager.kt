@@ -44,6 +44,12 @@ object GlobalMusicPlayerManager {
     private val _currentTrack = MutableStateFlow<PlayingTrack?>(null)
     val currentTrack: StateFlow<PlayingTrack?> = _currentTrack.asStateFlow()
 
+    private val _playlist = MutableStateFlow<List<PlayingTrack>>(emptyList())
+    val playlist: StateFlow<List<PlayingTrack>> = _playlist.asStateFlow()
+
+    private val _currentIndex = MutableStateFlow(-1)
+    val currentIndex: StateFlow<Int> = _currentIndex.asStateFlow()
+
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
@@ -64,6 +70,22 @@ object GlobalMusicPlayerManager {
 
     private fun getOrCreatePlayer(): MomentAudioPlayer {
         return player ?: createPlatformAudioPlayer().also { player = it }
+    }
+
+    private fun addToPlaylist(track: PlayingTrack): Int {
+        val list = _playlist.value.toMutableList()
+        val existingIndex = list.indexOfFirst { it.songId == track.songId }
+        return if (existingIndex != -1) {
+            val existing = list[existingIndex]
+            val merged = if (track.playUrl.isNotBlank() || existing.playUrl.isBlank()) track else track.copy(playUrl = existing.playUrl)
+            list[existingIndex] = merged
+            _playlist.value = list
+            existingIndex
+        } else {
+            list.add(track)
+            _playlist.value = list
+            list.size - 1
+        }
     }
 
     /**
@@ -123,6 +145,8 @@ object GlobalMusicPlayerManager {
             coverUrl = coverUrl,
             playUrl = ""
         )
+        val idx = addToPlaylist(initialTrack)
+        _currentIndex.value = idx
         _currentTrack.value = initialTrack
 
         scope.launch {
@@ -137,6 +161,7 @@ object GlobalMusicPlayerManager {
 
             val readyTrack = initialTrack.copy(playUrl = url)
             _currentTrack.value = readyTrack
+            addToPlaylist(readyTrack)
             startPlayingInternal(readyTrack, onError)
         }
     }
@@ -159,9 +184,94 @@ object GlobalMusicPlayerManager {
             coverUrl = coverUrl,
             playUrl = playUrl
         )
+        val idx = addToPlaylist(track)
+        _currentIndex.value = idx
         _currentTrack.value = track
         _isVisible.value = true
         startPlayingInternal(track, onError)
+    }
+
+    /**
+     * 播放播放列表中的指定索引歌曲
+     */
+    fun playAt(index: Int, onError: ((String) -> Unit)? = null) {
+        val list = _playlist.value
+        if (index !in list.indices) return
+        val track = list[index]
+        _currentIndex.value = index
+        _isVisible.value = true
+        if (track.playUrl.isNotBlank()) {
+            _currentTrack.value = track
+            startPlayingInternal(track, onError)
+        } else {
+            playSong(
+                songId = track.songId,
+                name = track.name,
+                artist = track.artist,
+                album = track.album,
+                coverUrl = track.coverUrl,
+                onError = onError
+            )
+        }
+    }
+
+    /**
+     * 切上一首
+     */
+    fun playPrevious(onError: ((String) -> Unit)? = null) {
+        val list = _playlist.value
+        if (list.isEmpty()) return
+        val currentIdx = _currentIndex.value
+        val prevIdx = if (currentIdx > 0) currentIdx - 1 else list.size - 1
+        playAt(prevIdx, onError)
+    }
+
+    /**
+     * 切下一首
+     */
+    fun playNext(onError: ((String) -> Unit)? = null) {
+        val list = _playlist.value
+        if (list.isEmpty()) return
+        val currentIdx = _currentIndex.value
+        val nextIdx = if (currentIdx + 1 < list.size) currentIdx + 1 else 0
+        playAt(nextIdx, onError)
+    }
+
+    /**
+     * 从播放列表中移除某一项
+     */
+    fun removeFromPlaylist(index: Int) {
+        val list = _playlist.value.toMutableList()
+        if (index !in list.indices) return
+        val isCurrent = index == _currentIndex.value
+        list.removeAt(index)
+        _playlist.value = list
+        if (list.isEmpty()) {
+            close()
+            _currentIndex.value = -1
+        } else if (isCurrent) {
+            val nextIdx = index.coerceAtMost(list.size - 1)
+            playAt(nextIdx)
+        } else if (index < _currentIndex.value) {
+            _currentIndex.value = _currentIndex.value - 1
+        }
+    }
+
+    /**
+     * 清空播放列表并停止播放
+     */
+    fun clearPlaylist() {
+        close()
+        _playlist.value = emptyList()
+        _currentIndex.value = -1
+    }
+
+    /**
+     * 跳转至指定秒数
+     */
+    fun seekTo(positionSec: Int) {
+        _progressSec.value = positionSec
+        player?.seekTo(positionSec)
     }
 
     private fun startPlayingInternal(track: PlayingTrack, onError: ((String) -> Unit)?) {
@@ -174,10 +284,15 @@ object GlobalMusicPlayerManager {
         p.play(
             url = track.playUrl,
             onComplete = {
-                _isPlaying.value = false
-                _isLoading.value = false
-                _progressSec.value = 0
-                stopProgressTracking()
+                val list = _playlist.value
+                if (list.size > 1) {
+                    playNext()
+                } else {
+                    _isPlaying.value = false
+                    _isLoading.value = false
+                    _progressSec.value = 0
+                    stopProgressTracking()
+                }
             },
             onError = { err ->
                 _isPlaying.value = false

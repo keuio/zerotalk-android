@@ -116,6 +116,20 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
         (player?.duration ?: 0) / 1000
     }.getOrDefault(0)
 
+    override fun seekTo(positionSec: Int) {
+        runCatching {
+            val current = player ?: return
+            if (isPrepared) {
+                val targetMs = (positionSec * 1000).coerceAtLeast(0)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    current.seekTo(targetMs.toLong(), MediaPlayer.SEEK_CLOSEST)
+                } else {
+                    current.seekTo(targetMs)
+                }
+            }
+        }
+    }
+
     override fun stop() {
         val current = player ?: return
         player = null

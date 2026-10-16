@@ -41,6 +41,9 @@ interface MomentAudioPlayer {
     /** 获取当前音频时长（秒） */
     fun getDuration(): Int = 0
 
+    /** 跳转至指定播放进度（秒） */
+    fun seekTo(positionSec: Int) {}
+
     /** 暂停 / 停止当前播放 */
     fun stop()
 
