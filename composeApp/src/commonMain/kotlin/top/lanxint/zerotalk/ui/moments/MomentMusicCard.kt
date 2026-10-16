@@ -19,8 +19,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +45,7 @@ import top.lanxint.zerotalk.ui.components.LocalNotificationState
 import top.lanxint.zerotalk.ui.messages.tapPreservingLongPress
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
+import top.lanxint.zerotalk.ui.utils.GlobalMusicPlayerManager
 import top.lanxint.zerotalk.ui.utils.rememberMomentAudioPlayer
 import kotlinx.coroutines.launch
 
@@ -60,12 +63,15 @@ internal fun MomentMusicCard(
     modifier: Modifier = Modifier
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val player = rememberMomentAudioPlayer()
-    val coroutineScope = rememberCoroutineScope()
     val notificationState = LocalNotificationState.current
 
-    var isPlaying by remember(music.songId) { mutableStateOf(false) }
-    var isLoading by remember(music.songId) { mutableStateOf(false) }
+    val currentTrack by GlobalMusicPlayerManager.currentTrack.collectAsState()
+    val isGlobalPlaying by GlobalMusicPlayerManager.isPlaying.collectAsState()
+    val isGlobalLoading by GlobalMusicPlayerManager.isLoading.collectAsState()
+
+    val isThisTrack = currentTrack?.songId == music.songId
+    val isPlaying = isThisTrack && isGlobalPlaying
+    val isLoading = isThisTrack && isGlobalLoading
 
     val cardShape = RoundedCornerShape(14.dp)
     val cardBg = if (isDark) Color(0xFF1F2430) else Color(0xFFF2F4F8)
@@ -124,34 +130,16 @@ internal fun MomentMusicCard(
 
         // 播放 / 暂停
         val canTogglePlay = music.isPlayable && !isLoading
-        // 抽成命名 lambda：手势助手与无障碍 onClick 共用同一份回调
-        // （原 `return@clickable` 在此改为 else 分支）
         val togglePlay: () -> Unit = {
             if (isPlaying) {
-                player.stop()
-                isPlaying = false
+                GlobalMusicPlayerManager.pause()
+            } else if (isThisTrack && currentTrack?.playUrl?.isNotBlank() == true) {
+                GlobalMusicPlayerManager.resume()
             } else {
-                isLoading = true
-                coroutineScope.launch {
-                    val res = ZeroTalkClientManager.apiService.getNeteasePlayUrl(music.songId, force = false)
-                    isLoading = false
-                    val url = res.getOrNull()?.url
-                    if (url.isNullOrBlank()) {
-                        notificationState.show(
-                            res.exceptionOrNull()?.message ?: "暂时无法播放该歌曲"
-                        )
-                        return@launch
-                    }
-                    player.play(
-                        url = url,
-                        onComplete = { isPlaying = false },
-                        onError = { err ->
-                            isPlaying = false
-                            notificationState.show(err)
-                        }
-                    )
-                    isPlaying = true
-                }
+                GlobalMusicPlayerManager.playMusic(
+                    music = music,
+                    onError = { notificationState.show(it) }
+                )
             }
         }
         Box(
@@ -161,9 +149,6 @@ internal fun MomentMusicCard(
                 .background(Color(0xFFE11D48))
                 .then(
                     if (canTogglePlay) {
-                        // 用 tapPreservingLongPress 而非 clickable：clickable 会消费 down，
-                        // 长按落在按钮上时父级气泡的消息菜单收不到事件
-                        // （官方 DOM 里按钮的 @click 不消费长按，整块都能长按）。
                         Modifier
                             .tapPreservingLongPress(key = music.songId, onTap = togglePlay)
                             .semantics {
@@ -176,12 +161,20 @@ internal fun MomentMusicCard(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "暂停" else "播放",
-                tint = Color.White,
-                modifier = Modifier.size(18.dp)
-            )
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White
+                )
+            } else {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }

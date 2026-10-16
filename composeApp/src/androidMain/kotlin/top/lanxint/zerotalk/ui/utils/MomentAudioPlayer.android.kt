@@ -63,6 +63,32 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
         }
     }
 
+    override fun pause() {
+        runCatching {
+            val current = player ?: return
+            if (current.isPlaying) {
+                current.pause()
+            }
+        }
+    }
+
+    override fun resume() {
+        runCatching {
+            val current = player ?: return
+            if (!current.isPlaying) {
+                current.start()
+            }
+        }
+    }
+
+    override fun getCurrentPosition(): Int = runCatching {
+        (player?.currentPosition ?: 0) / 1000
+    }.getOrDefault(0)
+
+    override fun getDuration(): Int = runCatching {
+        (player?.duration ?: 0) / 1000
+    }.getOrDefault(0)
+
     override fun stop() {
         val current = player ?: return
         player = null
@@ -76,6 +102,11 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
 
     override fun release() = stop()
 }
+
+/**
+ * 创建独立平台音频播放器（可脱离 Composable 生命周期跨页面常驻）
+ */
+actual fun createPlatformAudioPlayer(): MomentAudioPlayer = AndroidMomentAudioPlayer()
 
 /**
  * Android 平台联网音频播放器（Composable 生命周期内持有，销毁时释放）

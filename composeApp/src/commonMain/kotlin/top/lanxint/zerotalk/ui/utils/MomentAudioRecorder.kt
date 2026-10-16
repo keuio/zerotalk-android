@@ -54,5 +54,5 @@ interface MomentAudioRecorder {
  */
 @Composable
 expect fun rememberMomentAudioRecorder(
-    format: MomentAudioFormat
+    format: MomentAudioFormat = MomentAudioFormat.M4A
 ): MomentAudioRecorder

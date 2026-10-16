@@ -415,8 +415,8 @@ fun PrivateChatScreen(
     var mentionTargets by remember(conversation.id) { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var isVoiceMode by remember { mutableStateOf(false) }
 
-    // 聊天语音：实测链路为 webm 录音 → chat_audio 上传 → WS type=audio
-    val chatAudioRecorder = rememberMomentAudioRecorder(MomentAudioFormat.WEBM)
+    // 聊天语音：按官网通用规范录制 M4A(AAC) 音频（兼容 Web 端 Chrome/Safari/Edge 与 Android 播放，避免 Android WebM 非标编码导致网页端无声）
+    val chatAudioRecorder = rememberMomentAudioRecorder(MomentAudioFormat.M4A)
     var isVoiceCancelZone by remember { mutableStateOf(false) }
 
     // 聊天图片：相册选图 → chat_image 上传 → WS type=image
@@ -2180,18 +2180,19 @@ private fun BubbleMessageItem(
                 if (showSenderInfo && !isMine) {
                     Row(
                         modifier = Modifier
-                            .padding(start = 2.dp, bottom = 4.dp)
+                            .padding(bottom = 2.dp)
                             .then(
                                 if (onSenderClick != null) {
                                     Modifier
-                                        .clip(RoundedCornerShape(100.dp))
+                                        .clip(RoundedCornerShape(6.dp))
                                         .clickable(
                                             interactionSource = remember { MutableInteractionSource() },
                                             indication = null,
                                             onClick = onSenderClick
                                         )
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
                                 } else {
-                                    Modifier
+                                    Modifier.padding(horizontal = 2.dp, vertical = 2.dp)
                                 }
                             ),
                         verticalAlignment = Alignment.CenterVertically,

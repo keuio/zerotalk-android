@@ -65,9 +65,9 @@ fun UserTitleBadge(
         modifier = modifier
             .heightIn(min = 16.8.dp)
             .widthIn(max = 88.dp)
-            .clip(shape)
-            .background(surface.copy(alpha = palette.backgroundAlpha))
+            .background(surface.copy(alpha = palette.backgroundAlpha), shape)
             .border(1.dp, surface.copy(alpha = palette.borderAlpha), shape)
+            .clip(shape)
             .padding(horizontal = 5.6.dp),
         contentAlignment = Alignment.Center
     ) {

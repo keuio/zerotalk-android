@@ -2331,8 +2331,8 @@ object ZeroTalkClientManager {
         roomId: String,
         audioBytes: ByteArray,
         durationSec: Int,
-        contentType: String = "audio/webm",
-        fileExt: String = "webm",
+        contentType: String = "audio/mp4",
+        fileExt: String = "m4a",
         audioSource: String = "record",
         onError: ((String) -> Unit)? = null
     ) {
@@ -5705,6 +5705,7 @@ object ZeroTalkClientManager {
         val imageUrl: String? = null,
         val audioUrl: String? = null,
         val audioSource: String? = null,
+        val voiceDurationSec: Int = 0,
         val senderName: String = "",
         val senderAvatar: String = "",
         val senderGender: String = "",
@@ -5761,6 +5762,7 @@ object ZeroTalkClientManager {
                 imageUrl = dto.imageUrl,
                 audioUrl = dto.audioUrl,
                 audioSource = dto.audioSource,
+                voiceDurationSec = dto.duration ?: 0,
                 senderName = dto.username.orEmpty().ifBlank { memberName(dto.uid) },
                 senderAvatar = dto.avatarUrl.orEmpty().ifBlank { memberAvatar(dto.uid) },
                 senderGender = dto.gender.orEmpty().ifBlank { memberGender(dto.uid) },
@@ -5871,8 +5873,15 @@ object ZeroTalkClientManager {
             isGame = isGame,
             gameInvite = gameInvite,
             imageUrl = raw.imageUrl ?: raw.content.takeIf { isImage } ?: "",
-            audioUrl = raw.audioUrl?.takeIf { it.isNotBlank() } ?: raw.content.takeIf { isVoice } ?: "",
+            audioUrl = run {
+                val candidate = raw.audioUrl?.takeIf { it.isNotBlank() }
+                    ?: raw.content.takeIf {
+                        isVoice && (it.startsWith("http://") || it.startsWith("https://") || it.startsWith("//") || it.startsWith("/") || it.contains(".m4a") || it.contains(".mp4") || it.contains(".webm") || it.contains(".mp3") || it.contains(".aac") || it.contains(".ogg") || it.contains(".wav"))
+                    }
+                if (!candidate.isNullOrBlank()) NetworkImageUrl.resolve(candidate) else ""
+            },
             audioSource = raw.audioSource.orEmpty(),
+            voiceDurationSec = raw.voiceDurationSec,
             isPat = isPat,
             patText = patText,
             timestampMs = raw.timestampMs,
@@ -7603,7 +7612,12 @@ object ZeroTalkClientManager {
                         serverId = event.messageId ?: 0L,
                         isMine = isMine,
                         imageUrl = event.imageUrl,
+                        audioUrl = event.audioUrl ?: event.content.takeIf {
+                            event.type.equals("audio", ignoreCase = true) &&
+                            (it.startsWith("http://") || it.startsWith("https://") || it.startsWith("//") || it.startsWith("/") || it.contains(".m4a") || it.contains(".mp4") || it.contains(".webm") || it.contains(".mp3") || it.contains(".aac") || it.contains(".ogg") || it.contains(".wav"))
+                        },
                         audioSource = event.audioSource,
+                        voiceDurationSec = event.voiceDuration ?: 0,
                         senderName = senderName,
                         senderAvatar = senderAvatar,
                         senderGender = senderGender,

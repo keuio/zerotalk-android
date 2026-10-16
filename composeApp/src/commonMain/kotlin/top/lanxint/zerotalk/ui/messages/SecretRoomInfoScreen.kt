@@ -950,11 +950,14 @@ private fun MemberGridCell(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                UserTitleBadge(
-                    title = member.title,
-                    color = member.titleColor,
-                    isDark = isDark
-                )
+                if (!member.title.isNullOrBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    UserTitleBadge(
+                        title = member.title,
+                        color = member.titleColor,
+                        isDark = isDark
+                    )
+                }
             }
             if (metaParts.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))

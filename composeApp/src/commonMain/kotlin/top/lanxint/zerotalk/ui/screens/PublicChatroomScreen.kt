@@ -1520,18 +1520,19 @@ private fun HallMessageBubble(
             if (!isMine && showSenderInfo) {
                 Row(
                     modifier = Modifier
-                        .padding(start = 2.dp, bottom = 4.dp)
+                        .padding(bottom = 2.dp)
                         .then(
                             if (onSenderClick != null) {
                                 Modifier
-                                    .clip(RoundedCornerShape(100.dp))
+                                    .clip(RoundedCornerShape(6.dp))
                                     .clickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
                                         onClick = onSenderClick
                                     )
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
                             } else {
-                                Modifier
+                                Modifier.padding(horizontal = 2.dp, vertical = 2.dp)
                             }
                         ),
                     verticalAlignment = Alignment.CenterVertically,

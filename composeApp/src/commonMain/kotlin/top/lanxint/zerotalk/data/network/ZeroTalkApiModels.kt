@@ -260,8 +260,10 @@ sealed class WsServerEvent {
         val createdAt: String?,
         val messageId: Long? = null,
         val imageUrl: String? = null,
+        val audioUrl: String? = null,
         /** 语音来源：record（录音）/ file（语音文件），仅 `type="audio"` 携带 */
         val audioSource: String? = null,
+        val voiceDuration: Int? = null,
         val gender: String? = null,
         val avatarUrl: String? = null,
         /** 引用回复相关（reply_to_id / reply_preview / reply_to_user_id / reply_username） */
@@ -591,6 +593,7 @@ data class ChatMessageDto(
     @SerializedName("image_url") val imageUrl: String? = null,
     @SerializedName("audio_url") val audioUrl: String? = null,
     @SerializedName("audio_source") val audioSource: String? = null,
+    @SerializedName("duration") val duration: Int? = null,
     @SerializedName("reply_to_id") val replyToId: Long? = null,
     @SerializedName("reply_preview") val replyPreview: String? = null,
     @SerializedName("reply_to_user_id") val replyToUserId: String? = null,

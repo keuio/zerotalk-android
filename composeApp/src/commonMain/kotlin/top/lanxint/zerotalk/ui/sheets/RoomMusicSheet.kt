@@ -55,8 +55,10 @@ import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 import top.lanxint.zerotalk.ui.components.LocalNotificationState
 import top.lanxint.zerotalk.ui.moments.MomentNeteasePickerSheet
+import androidx.compose.runtime.collectAsState
 import top.lanxint.zerotalk.ui.theme.AppleHigColors
 import top.lanxint.zerotalk.ui.theme.AppleHigTypography
+import top.lanxint.zerotalk.ui.utils.GlobalMusicPlayerManager
 import top.lanxint.zerotalk.ui.utils.rememberMomentAudioPlayer
 import kotlinx.coroutines.launch
 
@@ -81,16 +83,15 @@ fun RoomMusicSheet(
     val higColors = AppleHigColors.colors(isDark)
     val notificationState = LocalNotificationState.current
     val coroutineScope = rememberCoroutineScope()
-    val audioPlayer = rememberMomentAudioPlayer()
+
+    val currentTrack by GlobalMusicPlayerManager.currentTrack.collectAsState()
+    val isGlobalPlaying by GlobalMusicPlayerManager.isPlaying.collectAsState()
 
     var playlist by remember { mutableStateOf<List<RoomMusicPlaylistItem>>(emptyList()) }
     var currentVersion by remember { mutableStateOf(0) }
     var playMode by remember { mutableStateOf("loop-all") }
     var isLoading by remember { mutableStateOf(true) }
     var isAddingSong by remember { mutableStateOf(false) }
-
-    var playingSongId by remember { mutableStateOf<String?>(null) }
-    var isPlaying by remember { mutableStateOf(false) }
 
     fun refreshList() {
         isLoading = true
@@ -302,17 +303,14 @@ fun RoomMusicSheet(
                         .background(if (isDark) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
                         .clickable {
                             val first = playlist.firstOrNull() ?: return@clickable
-                            coroutineScope.launch {
-                                val res = ZeroTalkClientManager.apiService.getNeteasePlayUrl(first.songId)
-                                val playUrl = res.getOrNull()?.url.orEmpty()
-                                if (playUrl.isNotBlank()) {
-                                    playingSongId = first.songId
-                                    isPlaying = true
-                                    audioPlayer.play(playUrl)
-                                } else {
-                                    notificationState.show("无法获取歌曲播放直链")
-                                }
-                            }
+                            GlobalMusicPlayerManager.playSong(
+                                songId = first.songId,
+                                name = first.name,
+                                artist = first.artists,
+                                album = first.album,
+                                coverUrl = first.coverUrl,
+                                onError = { notificationState.show(it) }
+                            )
                         },
                     contentAlignment = Alignment.Center
                 ) {
@@ -373,7 +371,8 @@ fun RoomMusicSheet(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 itemsIndexed(playlist, key = { _, item -> item.songId }) { index, item ->
-                    val isCurrent = playingSongId == item.songId && isPlaying
+                    val isThisSong = currentTrack?.songId == item.songId
+                    val isCurrent = isThisSong && isGlobalPlaying
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -425,20 +424,18 @@ fun RoomMusicSheet(
                                     .background(if (isDark) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
                                     .clickable {
                                         if (isCurrent) {
-                                            audioPlayer.stop()
-                                            isPlaying = false
+                                            GlobalMusicPlayerManager.pause()
+                                        } else if (isThisSong && currentTrack?.playUrl?.isNotBlank() == true) {
+                                            GlobalMusicPlayerManager.resume()
                                         } else {
-                                            coroutineScope.launch {
-                                                val res = ZeroTalkClientManager.apiService.getNeteasePlayUrl(item.songId)
-                                                val playUrl = res.getOrNull()?.url.orEmpty()
-                                                if (playUrl.isNotBlank()) {
-                                                    playingSongId = item.songId
-                                                    isPlaying = true
-                                                    audioPlayer.play(playUrl)
-                                                } else {
-                                                    notificationState.show("无法获取歌曲播放直链")
-                                                }
-                                            }
+                                            GlobalMusicPlayerManager.playSong(
+                                                songId = item.songId,
+                                                name = item.name,
+                                                artist = item.artists,
+                                                album = item.album,
+                                                coverUrl = item.coverUrl,
+                                                onError = { notificationState.show(it) }
+                                            )
                                         }
                                     },
                                 contentAlignment = Alignment.Center
@@ -446,7 +443,7 @@ fun RoomMusicSheet(
                                 Icon(
                                     imageVector = if (isCurrent) Icons.Default.Pause else Icons.Default.PlayArrow,
                                     contentDescription = "播放",
-                                    tint = if (isCurrent) Color(0xFF007AFF) else higColors.label,
+                                    tint = if (isCurrent) Color(0xFFE11D48) else higColors.label,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }

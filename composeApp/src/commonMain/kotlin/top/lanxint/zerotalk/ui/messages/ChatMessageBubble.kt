@@ -75,6 +75,7 @@ import top.lanxint.zerotalk.data.model.RECALLED_MESSAGE_TEXT
 import top.lanxint.zerotalk.data.network.NetworkImageUrl
 import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
+import top.lanxint.zerotalk.ui.components.LocalNotificationState
 import top.lanxint.zerotalk.ui.components.ChatDice
 import top.lanxint.zerotalk.ui.components.NetworkImageLoader
 import top.lanxint.zerotalk.ui.components.shouldAnimateDice
@@ -517,6 +518,7 @@ fun BubbleContentBox(
     val isMine = message.isMine
     val quotedText = quotedTextOverride ?: message.quotedText
     val voicePlayer = rememberMomentAudioPlayer()
+    val notificationState = LocalNotificationState.current
     var isVoicePlaying by remember(message.id) { mutableStateOf(false) }
     // 服务端不下发语音时长（官方同样靠音频元数据现算）：消息本身没有时长时，用播放器就绪后回传的值
     var resolvedVoiceDuration by remember(message.id) { mutableStateOf(0) }
@@ -700,13 +702,20 @@ fun BubbleContentBox(
                                 voicePlayer.stop()
                                 isVoicePlaying = false
                             } else {
+                                if (message.audioUrl.isBlank()) {
+                                    notificationState.show("语音地址已失效或不存在")
+                                    return@BubbleVoiceContent
+                                }
+                                isVoicePlaying = true
                                 voicePlayer.play(
                                     url = message.audioUrl,
                                     onComplete = { isVoicePlaying = false },
-                                    onError = { isVoicePlaying = false },
+                                    onError = { err ->
+                                        isVoicePlaying = false
+                                        notificationState.show(err)
+                                    },
                                     onDuration = { resolvedVoiceDuration = it }
                                 )
-                                isVoicePlaying = true
                             }
                         }
                     )
@@ -1095,11 +1104,21 @@ fun MomentShareCardBubble(
             }
         }
 
-        // ---- 正文摘要（官网最多 5 行） ----
+        // ---- 正文摘要（官网最多 5 行，支持 Markdown 语法解析渲染） ----
         if (data.excerpt.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
+            val annotatedExcerpt = remember(data.excerpt, isDark) {
+                LinkTextHelper.buildAnnotatedMarkdown(
+                    text = data.excerpt,
+                    linkColor = higColors.link,
+                    codeBg = if (isDark) Color(0x33FFFFFF) else Color(0x14000000),
+                    codeColor = if (isDark) Color(0xFFFF9F0A) else Color(0xFFFF3B30),
+                    quoteColor = excerptColor,
+                    tag = "URL"
+                )
+            }
             BasicText(
-                text = data.excerpt,
+                text = annotatedExcerpt,
                 style = TextStyle(color = excerptColor, fontSize = 13.sp, lineHeight = 19.sp),
                 maxLines = 5,
                 overflow = TextOverflow.Ellipsis

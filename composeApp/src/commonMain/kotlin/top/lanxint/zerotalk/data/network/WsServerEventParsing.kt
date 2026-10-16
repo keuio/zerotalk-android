@@ -102,7 +102,10 @@ internal fun parseMessageEvent(root: JsonObject): WsServerEvent.Message {
         messageId = long("message_id") ?: long("id"),
         isSelf = bool("is_self"),
         imageUrl = str("image_url"),
+        audioUrl = str("audio_url") ?: str("audioUrl") ?: str("voice_url") ?: str("url"),
         audioSource = str("audio_source"),
+        voiceDuration = raw("duration")?.let { runCatching { it.asInt }.getOrNull() }
+            ?: raw("voice_duration")?.let { runCatching { it.asInt }.getOrNull() },
         gender = str("gender"),
         avatarUrl = str("avatar_url"),
         replyToId = long("reply_to_id"),

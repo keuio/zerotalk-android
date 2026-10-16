@@ -113,8 +113,10 @@ class AndroidMomentAudioRecorder(
                 runCatching { mediaRecorder.release() }
                 return false
             }
-            mediaRecorder.setAudioEncodingBitRate(96_000)
-            mediaRecorder.setAudioSamplingRate(44_100)
+            val sampleRate = if (format == MomentAudioFormat.WEBM) 48_000 else 44_100
+            val bitRate = if (format == MomentAudioFormat.WEBM) 64_000 else 128_000
+            mediaRecorder.setAudioEncodingBitRate(bitRate)
+            mediaRecorder.setAudioSamplingRate(sampleRate)
             mediaRecorder.setOutputFile(file.absolutePath)
             mediaRecorder.prepare()
             mediaRecorder.start()

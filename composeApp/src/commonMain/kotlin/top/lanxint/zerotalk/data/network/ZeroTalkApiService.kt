@@ -1292,6 +1292,7 @@ class ZeroTalkApiService(
                 "audio/wav" -> "wav"
                 "audio/ogg" -> "ogg"
                 "audio/webm" -> "webm"
+                "audio/mp4", "audio/m4a", "audio/x-m4a" -> "m4a"
                 else -> "jpg"
             }
         }

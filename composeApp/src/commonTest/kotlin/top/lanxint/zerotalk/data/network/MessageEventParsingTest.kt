@@ -113,4 +113,30 @@ class MessageEventParsingTest {
         assertEquals("aXY", dto.enc?.iv)
         assertEquals(1, dto.enc?.version)
     }
+
+    // ---- 语音消息解析（audio_url / duration）----
+
+    @Test
+    fun `WS 实时帧 audio_url 与 duration 解析`() {
+        val event = parse(
+            """{"event":"message","id":30,"type":"audio","content":"[语音]","audio_url":"https://oss/audio.webm","audio_source":"record","duration":5}"""
+        )
+        assertEquals("audio", event.type)
+        assertEquals("[语音]", event.content)
+        assertEquals("https://oss/audio.webm", event.audioUrl)
+        assertEquals("record", event.audioSource)
+        assertEquals(5, event.voiceDuration)
+    }
+
+    @Test
+    fun `历史 DTO audio_url 与 duration 解析`() {
+        val dto = Gson().fromJson(
+            """{"id":31,"type":"audio","content":"[语音]","audio_url":"https://oss/audio.webm","duration":8}""",
+            ChatMessageDto::class.java
+        )
+        assertEquals("audio", dto.type)
+        assertEquals("https://oss/audio.webm", dto.audioUrl)
+        assertEquals(8, dto.duration)
+    }
 }
+

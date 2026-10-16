@@ -54,6 +54,7 @@ import java.util.Date
 import java.util.Locale
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.components.FirstLaunchNoticeOverlay
+import top.lanxint.zerotalk.ui.components.GlobalMusicFloatingWidget
 import top.lanxint.zerotalk.ui.components.ImageViewerProvider
 import top.lanxint.zerotalk.ui.components.NotificationProvider
 import top.lanxint.zerotalk.ui.components.SheetAction
@@ -1302,6 +1303,9 @@ fun ZeroTalkApp() {
                 ZeroTalkClientManager.cancelMatching()
             }
         )
+
+        // 全局音乐播放器自由拖拽吸附悬浮窗 (支持黑胶微球与迷你控制器双模切换)
+        GlobalMusicFloatingWidget(isDark = isDark)
 
         // 顶部居中展开式全局动态通知胶囊 (Apple Dynamic Island / Pill 风格)
         ZeroTalkNotificationHost(

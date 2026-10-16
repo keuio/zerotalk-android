@@ -29,12 +29,29 @@ interface MomentAudioPlayer {
         onDuration: ((Int) -> Unit)? = null
     )
 
+    /** 暂停播放（保留进度，可调用 [resume] 继续） */
+    fun pause() {}
+
+    /** 恢复播放 */
+    fun resume() {}
+
+    /** 获取当前播放进度（秒） */
+    fun getCurrentPosition(): Int = 0
+
+    /** 获取当前音频时长（秒） */
+    fun getDuration(): Int = 0
+
     /** 暂停 / 停止当前播放 */
     fun stop()
 
     /** 释放底层资源（页面销毁时调用） */
     fun release()
 }
+
+/**
+ * 创建独立平台音频播放器（可脱离 Composable 生命周期跨页面常驻）
+ */
+expect fun createPlatformAudioPlayer(): MomentAudioPlayer
 
 /**
  * 获取当前页面的联网音频播放器（Composable 内使用，随作用域释放）
