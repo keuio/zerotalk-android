@@ -47,17 +47,29 @@ import top.lanxint.zerotalk.data.repository.ZeroTalkClientManager
 import top.lanxint.zerotalk.data.network.AccountStore
 import top.lanxint.zerotalk.data.network.WsServerEvent
 import top.lanxint.zerotalk.data.settings.UiPreferencesStore
+import top.lanxint.zerotalk.ui.theme.AppleHigColors
+import top.lanxint.zerotalk.ui.theme.AppleHigTypography
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import top.lanxint.zerotalk.ui.components.AdminNoticeForceModal
 import top.lanxint.zerotalk.ui.components.AppleModalBottomSheet
 import top.lanxint.zerotalk.ui.components.FirstLaunchNoticeOverlay
 import top.lanxint.zerotalk.ui.components.GlobalMusicFloatingWidget
 import top.lanxint.zerotalk.ui.components.ImageViewerProvider
 import top.lanxint.zerotalk.ui.components.NotificationProvider
 import top.lanxint.zerotalk.ui.components.SheetAction
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.window.DialogProperties
 import top.lanxint.zerotalk.ui.components.ZeroTalkNotificationHost
 import top.lanxint.zerotalk.ui.components.rememberNotificationState
 import top.lanxint.zerotalk.ui.home.HomeScreen
@@ -185,8 +197,9 @@ fun ZeroTalkApp() {
 
         var previousUnread: Int? = null
         while (true) {
-            val unread = ZeroTalkClientManager.apiService.getUnreadNotificationCount().getOrNull()
-            if (unread != null) {
+            val unreadResult = ZeroTalkClientManager.apiService.getUnreadNotificationCount()
+            if (unreadResult.isSuccess) {
+                val unread = unreadResult.getOrThrow()
                 val previous = previousUnread
                 if (previous != null && unread > previous) {
                     // 停留在某个聊天页时不再弹「全局未读聚合」横幅：该会话的通知已由房间级通道按
@@ -196,10 +209,23 @@ fun ZeroTalkApp() {
                     }
                 }
                 previousUnread = unread
+            } else {
+                val error = unreadResult.exceptionOrNull()
+                if (ZeroTalkClientManager.isSessionRejectedOrBanned(error)) {
+                    val msg = error?.message?.takeIf { !it.startsWith("HTTP Error") }
+                        ?: "账号已被封禁或登录已失效，请重新登录"
+                    ZeroTalkClientManager.triggerSessionInvalidated(msg)
+                    break
+                }
             }
+
+            // 轮询全站强制通知公告
+            NotificationCenterStore.fetchForcePopups()
+
             delay(10_000L)
         }
     }
+
 
     LaunchedEffect(managerLoginData) {
         if (managerLoginData == null) return@LaunchedEffect
@@ -246,6 +272,15 @@ fun ZeroTalkApp() {
     val conversations by ZeroTalkClientManager.conversations.collectAsStateWithLifecycle()
     var activeChatConversation by remember { mutableStateOf<ConversationItem?>(null) }
 
+    // 账号异常/封禁阻断状态
+    val sessionInvalidatedReason by ZeroTalkClientManager.sessionInvalidatedReason.collectAsStateWithLifecycle()
+
+    // 全站强制公告通知队列
+    val forcePopups by NotificationCenterStore.forcePopups.collectAsStateWithLifecycle()
+    val forcePopupReadSeconds by NotificationCenterStore.forcePopupReadSeconds.collectAsStateWithLifecycle()
+    val isAckingForcePopup by NotificationCenterStore.isAckingForcePopup.collectAsStateWithLifecycle()
+    val currentForcePopup = forcePopups.firstOrNull()
+
     // 同步「正在查看的会话」：私聊/群聊会话优先，其次零语大厅（进入大厅同样要忽略该房间的通知）
     val hallRoomId by ZeroTalkClientManager.hallRoomId.collectAsStateWithLifecycle()
     LaunchedEffect(activeChatConversation?.id, inChatroom, hallRoomId) {
@@ -262,6 +297,16 @@ fun ZeroTalkApp() {
         ZeroTalkClientManager.markConversationRead(conv.id)
         activeChatConversation = conv.copy(unreadCount = 0)
         ZeroTalkClientManager.consumePendingOpenRoom()
+    }
+
+    // 监听房间删除/解散/踢出事件：若当前正处于该房间内，退回主页并弹窗提示
+    LaunchedEffect(Unit) {
+        ZeroTalkClientManager.evictedRoomEvents.collect { roomId ->
+            if (activeChatConversation?.id == roomId) {
+                activeChatConversation = null
+                notificationState.show("房间已被解散或删除")
+            }
+        }
     }
 
     // 语音通话状态（全局覆盖层：任何页面都能浮出来电/去电/通话中）
@@ -1333,6 +1378,65 @@ fun ZeroTalkApp() {
                 isDark = isDark,
                 onAccept = { UiPreferencesStore.setUsageNoticeAccepted() },
                 onExit = { platformActions.exitApp() }
+            )
+        }
+
+        // 账号异常/封禁提示弹窗（阻断式提示，点击退出登录重置本地状态）
+        val invalidReason = sessionInvalidatedReason
+        if (invalidReason != null) {
+            val higColors = AppleHigColors.colors(isDark)
+            AlertDialog(
+                onDismissRequest = {},
+                properties = DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false
+                ),
+                containerColor = higColors.secondarySystemGroupedBackground,
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Text(
+                        text = "账号异常通知",
+                        style = AppleHigTypography.headline.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = higColors.destructive
+                        )
+                    )
+                },
+                text = {
+                    Text(
+                        text = invalidReason,
+                        style = AppleHigTypography.body.copy(color = higColors.label)
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            activeChatConversation = null
+                            ZeroTalkClientManager.dismissSessionInvalidatedAndLogout()
+                        },
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = higColors.destructive,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("退出登录", fontWeight = FontWeight.Bold)
+                    }
+                }
+            )
+        }
+
+        // 全站强制公告阻断式弹窗（倒计时读秒后方可确认消除）
+        if (currentForcePopup != null) {
+            AdminNoticeForceModal(
+                item = currentForcePopup,
+                readSeconds = forcePopupReadSeconds,
+                isAcking = isAckingForcePopup,
+                isDark = isDark,
+                onAck = {
+                    NotificationCenterStore.ackCurrentForcePopup()
+                }
             )
         }
     }

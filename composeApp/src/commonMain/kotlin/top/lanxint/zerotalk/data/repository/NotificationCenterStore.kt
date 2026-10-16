@@ -52,7 +52,60 @@ object NotificationCenterStore {
     private val _state = MutableStateFlow(NotificationCenterUiState())
     val state: StateFlow<NotificationCenterUiState> = _state.asStateFlow()
 
+    /** 全站强制通知弹窗队列 (GET /api/notifications/force-popups) */
+    private val _forcePopups = MutableStateFlow<List<NotificationItemDto>>(emptyList())
+    val forcePopups: StateFlow<List<NotificationItemDto>> = _forcePopups.asStateFlow()
+
+    /** 强制通知阅读倒计时（秒） */
+    private val _forcePopupReadSeconds = MutableStateFlow(15)
+    val forcePopupReadSeconds: StateFlow<Int> = _forcePopupReadSeconds.asStateFlow()
+
+    /** 强制通知确认中 */
+    private val _isAckingForcePopup = MutableStateFlow(false)
+    val isAckingForcePopup: StateFlow<Boolean> = _isAckingForcePopup.asStateFlow()
+
     private val api get() = ZeroTalkClientManager.apiService
+
+    /**
+     * 拉取全站强制待确认通知列表 (GET /api/notifications/force-popups)
+     */
+    fun fetchForcePopups(reset: Boolean = false) {
+        scope.launch {
+            api.getForcePopups(reset).onSuccess { data ->
+                val seconds = data.readSeconds ?: 15
+                _forcePopupReadSeconds.value = seconds.coerceAtLeast(1)
+                val newList = data.list
+                if (newList.isNotEmpty()) {
+                    _forcePopups.update { current ->
+                        val existingIds = current.map { it.id }.toSet()
+                        current + newList.filter { it.id !in existingIds }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 确认并消除当前强制弹窗 (POST /notifications/force-popup/ack)
+     */
+    fun ackCurrentForcePopup(onComplete: ((Boolean, String?) -> Unit)? = null) {
+        val current = _forcePopups.value.firstOrNull() ?: return
+        if (_isAckingForcePopup.value) return
+        _isAckingForcePopup.value = true
+        scope.launch {
+            val result = api.ackForcePopup(current.id)
+            _isAckingForcePopup.value = false
+            result.onSuccess { serverUnread ->
+                _forcePopups.update { list -> list.filterNot { it.id == current.id } }
+                if (serverUnread != null) {
+                    _state.update { it.copy(unreadCount = serverUnread) }
+                }
+                onComplete?.invoke(true, null)
+            }.onFailure { err ->
+                onComplete?.invoke(false, err.message ?: "确认失败")
+            }
+        }
+    }
 
     /**
      * 并发加载代号：切换分类 / 重新刷新会让仍在途的旧请求响应作废
@@ -166,6 +219,8 @@ object NotificationCenterStore {
     fun clear() {
         loadToken++
         _state.value = NotificationCenterUiState()
+        _forcePopups.value = emptyList()
+        _isAckingForcePopup.value = false
     }
 
     private fun loadPage(append: Boolean) {

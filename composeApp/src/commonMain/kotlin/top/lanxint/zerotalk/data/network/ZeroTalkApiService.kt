@@ -1778,6 +1778,29 @@ class ZeroTalkApiService(
     ).mapCatching { it?.unread?.coerceAtLeast(0) }
 
     /**
+     * 获取全站强制待确认通知列表 (GET /api/notifications/force-popups)
+     */
+    suspend fun getForcePopups(reset: Boolean = false): Result<ForcePopupsData> = apiDataRequestRequired(
+        path = "/api/notifications/force-popups",
+        type = object : TypeToken<ApiResponse<ForcePopupsData>>() {}.type,
+        params = mapOf("reset" to if (reset) "1" else "0"),
+        get = true,
+        fallbackMessage = "获取强制通知失败"
+    )
+
+    /**
+     * 确认并消除强制通知 (POST /notifications/force-popup/ack)
+     *
+     * 请求体 form-urlencoded：`id={notificationId}`
+     */
+    suspend fun ackForcePopup(id: Long): Result<Int?> = apiDataRequest<NotificationUnreadData>(
+        path = "/notifications/force-popup/ack",
+        type = object : TypeToken<ApiResponse<NotificationUnreadData>>() {}.type,
+        params = mapOf("id" to id.toString()),
+        fallbackMessage = "确认通知失败"
+    ).mapCatching { it?.unread?.coerceAtLeast(0) }
+
+    /**
      * 举报记录列表 (GET /api/report/list)
      *
      * 官网 `MyReportsView` 固定按 `page` + `per_page=10` 分页，并用 `has_more` 控制「加载更多」。
@@ -1838,7 +1861,19 @@ class ZeroTalkApiService(
             val response = client.newCall(request).execute()
             val bodyString = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(IOException("HTTP Error: ${response.code}"))
+                val serverMsg = try {
+                    val jo = gson.fromJson(bodyString, com.google.gson.JsonObject::class.java)
+                    jo?.get("msg")?.takeIf { !it.isJsonNull }?.asString
+                        ?: jo?.get("message")?.takeIf { !it.isJsonNull }?.asString
+                } catch (e: Exception) {
+                    null
+                }
+                val finalMsg = if (!serverMsg.isNullOrBlank()) {
+                    serverMsg
+                } else {
+                    "HTTP Error: ${response.code}"
+                }
+                return@withContext Result.failure(IOException(finalMsg))
             }
 
             val apiResponse = gson.fromJson(bodyString, type) as? ApiResponse<T>
@@ -1894,7 +1929,19 @@ class ZeroTalkApiService(
             val response = client.newCall(request).execute()
             val bodyString = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(IOException("HTTP Error: ${response.code}"))
+                val serverMsg = try {
+                    val jo = gson.fromJson(bodyString, com.google.gson.JsonObject::class.java)
+                    jo?.get("msg")?.takeIf { !it.isJsonNull }?.asString
+                        ?: jo?.get("message")?.takeIf { !it.isJsonNull }?.asString
+                } catch (e: Exception) {
+                    null
+                }
+                val finalMsg = if (!serverMsg.isNullOrBlank()) {
+                    serverMsg
+                } else {
+                    "HTTP Error: ${response.code}"
+                }
+                return@withContext Result.failure(IOException(finalMsg))
             }
 
             val apiResponse = gson.fromJson(bodyString, type) as? ApiResponse<T>

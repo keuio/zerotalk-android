@@ -451,6 +451,31 @@ sealed class WsServerEvent {
         val roomName: String? = null
     ) : WsServerEvent()
 
+    /**
+     * 强制下线（官方 force_logout）
+     */
+    data class ForceLogout(
+        val reason: String? = null
+    ) : WsServerEvent()
+
+    /**
+     * 账号受限 / 封禁（官方 user_restricted）
+     *
+     * @param scope 受限范围（`site` 代表全站封禁；`dm` / `room` 代表局部房间受限）
+     */
+    data class UserRestricted(
+        val scope: String? = null,
+        val reason: String? = null,
+        val roomId: String? = null
+    ) : WsServerEvent()
+
+    /**
+     * 管理员强制全站弹窗通知（官方 admin_notice_popup）
+     */
+    data class AdminNoticePopup(
+        val rawJson: String? = null
+    ) : WsServerEvent()
+
     data class Unknown(val rawEvent: String, val rawJson: String) : WsServerEvent()
 }
 

@@ -14,7 +14,7 @@ data class NotificationItemDto(
     @SerializedName("id") val id: Long = 0L,
     @SerializedName("type") val type: String? = null,
     @SerializedName("title") val title: String? = null,
-    @SerializedName("body") val body: String? = null,
+    @SerializedName(value = "body", alternate = ["content", "message"]) val body: String? = null,
     @SerializedName("label") val label: String? = null,
     @SerializedName("level") val level: String? = null,
     @SerializedName("is_read") val isRead: Boolean = false,
@@ -59,3 +59,12 @@ enum class NotificationCategory(val key: String, val label: String) {
     ACCOUNT("account", "账号"),
     SYSTEM("system", "系统")
 }
+
+/**
+ * 全站强制弹窗通知列表响应 (GET /api/notifications/force-popups)
+ */
+data class ForcePopupsData(
+    @SerializedName("read_seconds") val readSeconds: Int? = null,
+    @SerializedName("list") val list: List<NotificationItemDto> = emptyList(),
+    @SerializedName("reset") val reset: Boolean = false
+)

@@ -517,6 +517,23 @@ class ZeroTalkWebSocketClient(
                         roomName = roomName
                     )
                 }
+                "force_logout" -> {
+                    val dataObj = root.getAsJsonObject("data")
+                    val reason = (root.get("reason") ?: dataObj?.get("reason") ?: root.get("message") ?: dataObj?.get("message"))
+                        ?.takeIf { !it.isJsonNull }?.asString
+                    WsServerEvent.ForceLogout(reason)
+                }
+                "user_restricted" -> {
+                    val dataObj = root.getAsJsonObject("data")
+                    val scope = (root.get("scope") ?: dataObj?.get("scope"))?.takeIf { !it.isJsonNull }?.asString
+                    val reason = (root.get("reason") ?: dataObj?.get("reason") ?: root.get("message") ?: dataObj?.get("message"))
+                        ?.takeIf { !it.isJsonNull }?.asString
+                    val roomId = (root.get("room_id") ?: dataObj?.get("room_id"))?.takeIf { !it.isJsonNull }?.asString
+                    WsServerEvent.UserRestricted(scope = scope, reason = reason, roomId = roomId)
+                }
+                "admin_notice_popup" -> {
+                    WsServerEvent.AdminNoticePopup(text)
+                }
                 else -> when {
                     // 语音通话全量下行（voice_invite_sent / ringing / offer / answer / ice / …）
                     event.startsWith("voice_") -> parseVoiceCall(event.removePrefix("voice_"), root, text)

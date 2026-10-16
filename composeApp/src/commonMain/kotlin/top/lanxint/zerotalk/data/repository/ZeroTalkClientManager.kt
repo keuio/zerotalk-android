@@ -100,6 +100,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -344,6 +345,45 @@ object ZeroTalkClientManager {
 
     private val _status = MutableStateFlow<ClientStatus>(ClientStatus.Idle)
     val status: StateFlow<ClientStatus> = _status.asStateFlow()
+
+    /** 账号状态异常/被封禁原因（非空时阻断全屏交互并引导退出登录） */
+    private val _sessionInvalidatedReason = MutableStateFlow<String?>(null)
+    val sessionInvalidatedReason: StateFlow<String?> = _sessionInvalidatedReason.asStateFlow()
+
+    /** 被远端删除/踢出的房间通知事件（携带 roomId，UI 监听以退出该房间） */
+    private val _evictedRoomEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val evictedRoomEvents: SharedFlow<String> = _evictedRoomEvents.asSharedFlow()
+
+    /** 触发账号失效/封禁阻断 */
+    fun triggerSessionInvalidated(reason: String) {
+        if (_sessionInvalidatedReason.value != null) return
+        _sessionInvalidatedReason.value = reason
+        wsClient.disconnect()
+    }
+
+    /** 确认封禁/失效并退出登录 */
+    fun dismissSessionInvalidatedAndLogout() {
+        _sessionInvalidatedReason.value = null
+        logout()
+    }
+
+    /** 判断错误是否属于账号失效/封禁/不可用 */
+    fun isSessionRejectedOrBanned(error: Throwable?): Boolean {
+        val msg = error?.message.orEmpty()
+        return isSessionRejected(error) ||
+            msg.contains("封禁") ||
+            msg.contains("banned") ||
+            msg.contains("禁言") ||
+            msg.contains("限制") ||
+            msg.contains("被禁用") ||
+            msg.contains("账号已冻结") ||
+            msg.contains("冻结") ||
+            msg.contains("已注销") ||
+            msg.contains("用户不存在") ||
+            msg.contains("token") ||
+            msg.contains("401") ||
+            msg.contains("403")
+    }
 
     private val _userProfile = MutableStateFlow(UserProfile.NO_ACCOUNT)
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
@@ -4694,9 +4734,18 @@ object ZeroTalkClientManager {
                     )
                 }
 
-                val existingIds = roomItems.map { it.id }.toSet()
-                val leftovers = _conversations.value.filter { it.id !in existingIds && !it.id.startsWith("conv_") }
-                _conversations.value = (roomItems + leftovers).sortedByDescending { it.isPinned }
+                val remoteIds = roomItems.map { it.id }.toSet()
+                val currentRooms = _conversations.value
+                // 找出远端已删除或解散的真实房间（非临时 conv_ 占位会话），触发深度清理与退出事件
+                val deletedRooms = currentRooms.filter { !it.id.startsWith("conv_") && it.id !in remoteIds }
+                for (deleted in deletedRooms) {
+                    removeRoomLocally(deleted.id, refreshList = false)
+                    _evictedRoomEvents.tryEmit(deleted.id)
+                }
+
+                // 仅保留临时本地会话（如正在编辑首条消息的 conv_xxx 占位）
+                val temporaryConversations = currentRooms.filter { it.id.startsWith("conv_") }
+                _conversations.value = (roomItems + temporaryConversations).sortedByDescending { it.isPinned }
                 // 会话列表落地后刷新 uid -> 备注 映射（备注清空的 uid 会被移除）
                 refreshUidRemarks()
             }
@@ -4899,20 +4948,29 @@ object ZeroTalkClientManager {
     /**
      * 「退出房间 / 删除房间」成功后的本地清理
      *
-     * 移出会话列表、清空该房消息与分页游标、必要时退出 WS 房间，并刷新房间列表。
+     * 移出会话列表、清空该房消息与分页游标、清理草稿与加密标记、必要时退出 WS 房间，并刷新房间列表。
      */
-    private fun removeRoomLocally(roomId: String) {
+    private fun removeRoomLocally(roomId: String, refreshList: Boolean = true) {
         _conversations.value = _conversations.value.filterNot { it.id == roomId }
         _roomMessages.value = _roomMessages.value - roomId
         _roomHasMoreHistory.value = _roomHasMoreHistory.value - roomId
         _roomHistoryLoading.value = _roomHistoryLoading.value - roomId
+        _roomNewerLoading.value = _roomNewerLoading.value - roomId
         _groupRooms.value = _groupRooms.value - roomId
-        // 退房 / 删房后清掉该房间的 DEK 与加密状态，避免残留解锁态
+        _roomMembers.value = _roomMembers.value - roomId
+        _roomMemberTotal.value = _roomMemberTotal.value - roomId
+        _roomMembersLoading.value = _roomMembersLoading.value - roomId
+        _roomJoinBans.value = _roomJoinBans.value - roomId
+        _roomJoinBansLoading.value = _roomJoinBansLoading.value - roomId
+        _roomPeers.value = _roomPeers.value - roomId
+        // 退房 / 删房后清掉该房间的 DEK 与加密状态，避免残留解锁态与本地缓存
         roomKeyStore.lock(roomId)
         _roomEncryption.value = _roomEncryption.value - roomId
         _roomBootstrapMap.value = _roomBootstrapMap.value - roomId
+        UiPreferencesStore.clearChatDraft(roomId)
+        UiPreferencesStore.markRoomEncrypted(roomId, false)
         if (wsClient.currentRoomId == roomId) wsClient.leaveRoom()
-        fetchRoomList()
+        if (refreshList) fetchRoomList()
     }
 
     /**
@@ -7810,11 +7868,16 @@ object ZeroTalkClientManager {
             is WsServerEvent.Typing -> {
                 handlePeerTyping(event)
             }
-            is WsServerEvent.UserLeft, is WsServerEvent.RoomClosed -> {
-                val targetRoomId = (event as? WsServerEvent.UserLeft)?.roomId
-                    ?: (event as? WsServerEvent.RoomClosed)?.roomId
-                    ?: wsClient.currentRoomId
-                // 对端离开房间：立刻收掉「正在输入」状态
+            is WsServerEvent.RoomClosed -> {
+                val targetRoomId = event.roomId ?: wsClient.currentRoomId
+                clearPeerTyping(targetRoomId)
+                if (!targetRoomId.isNullOrBlank() && !isHallRoom(targetRoomId)) {
+                    removeRoomLocally(targetRoomId)
+                    _evictedRoomEvents.tryEmit(targetRoomId)
+                }
+            }
+            is WsServerEvent.UserLeft -> {
+                val targetRoomId = event.roomId ?: wsClient.currentRoomId
                 clearPeerTyping(targetRoomId)
                 if (!targetRoomId.isNullOrBlank() && !isHallRoom(targetRoomId)) {
                     _roomPeers.value = _roomPeers.value - targetRoomId
@@ -7827,6 +7890,20 @@ object ZeroTalkClientManager {
                         } else conv
                     }
                 }
+            }
+            is WsServerEvent.ForceLogout -> {
+                triggerSessionInvalidated(event.reason ?: "账号已被强制下线")
+            }
+            is WsServerEvent.UserRestricted -> {
+                if (event.scope == "site" || event.scope.isNullOrBlank()) {
+                    triggerSessionInvalidated(event.reason ?: "账号已被限制使用")
+                } else if (!event.roomId.isNullOrBlank()) {
+                    removeRoomLocally(event.roomId)
+                    _evictedRoomEvents.tryEmit(event.roomId)
+                }
+            }
+            is WsServerEvent.AdminNoticePopup -> {
+                NotificationCenterStore.fetchForcePopups(reset = true)
             }
             else -> {}
         }
