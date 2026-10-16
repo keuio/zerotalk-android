@@ -1056,10 +1056,19 @@ private fun StatCell(
 }
 
 /**
+ * 个人资料动态筛选标签
+ */
+private enum class ProfileMomentsTab(val title: String) {
+    ALL("动态"),
+    MEDIA("媒体"),
+    MUSIC("音乐")
+}
+
+/**
  * 第三组：对方动态（GET /api/moment/user 的 list 字段）
  *
- * 对齐官网 UserMomentsView：支持「最新 / 最热」排序（sort=latest|hot）与
- * before_id / before_score 分页；动态卡片直接复用动态主界面的 MomentCard
+ * 对齐官网 UserMomentsView：支持「动态 / 媒体 / 音乐」三 Tab 切换与「最新 / 最热」排序（sort=latest|hot）；
+ * 动态卡片直接复用动态主界面的 MomentCard
  * （头像 / 昵称 / 正文 / 配图 / 点赞 · 评论 · 分享）。
  */
 @Composable
@@ -1083,6 +1092,20 @@ private fun ProfileMomentsCard(
     val notificationState = LocalNotificationState.current
     val moments = profile.moments
 
+    var selectedMomentsTab by remember { mutableStateOf(ProfileMomentsTab.ALL) }
+
+    val displayMoments = remember(moments, selectedMomentsTab) {
+        when (selectedMomentsTab) {
+            ProfileMomentsTab.ALL -> moments
+            ProfileMomentsTab.MEDIA -> moments.filter {
+                it.images.isNotEmpty() || it.imageUrl.isNotBlank() || it.localImageRes != null
+            }
+            ProfileMomentsTab.MUSIC -> moments.filter {
+                it.music != null
+            }
+        }
+    }
+
     // ---- 点聊天里的动态卡片进来：定位并高亮目标动态 ----
     // 资料页的动态列表是 verticalScroll + forEach（非 LazyColumn），所以按实测 Y 坐标滚动。
     val momentOffsets = remember { mutableStateMapOf<String, Float>() }
@@ -1094,6 +1117,7 @@ private fun ProfileMomentsCard(
         val target = targetMomentId?.toString() ?: return@LaunchedEffect
         // 目标不在已加载的分页里时只进资料页，不做定位（与「原消息不在当前列表中」同思路）
         if (moments.none { it.id == target }) return@LaunchedEffect
+        selectedMomentsTab = ProfileMomentsTab.ALL
         // momentOffsets 记录的是「相对自身父布局」的 Y，不能直接当滚动量用：
         // 必须换算成滚动内容坐标 = 当前滚动量 + (目标在 root 中的 Y - 滚动视口在 root 中的 Y)。
         // 旧实现直接拿 positionInParent 的 Y 滚动，少算了头像 / 签名等头部高度，
@@ -1149,7 +1173,7 @@ private fun ProfileMomentsCard(
             }
 
             else -> {
-                // 合并成一张大卡片：表头（动态 / 共 N 条 / 最新·最热）挪进卡片内，
+                // 合并成一张大卡片：表头（动态/媒体/音乐 / 共 N 条 / 最新·最热）挪进卡片内，
                 // 条目是同一作者，不再重复头像昵称
                 AppleHigFillCard(
                     isDark = isDark,
@@ -1161,22 +1185,27 @@ private fun ProfileMomentsCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    BasicText(
-                        text = "动态",
-                        style = AppleHigTypography.subhead.copy(
-                            color = higColors.secondaryLabel,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        modifier = Modifier.weight(1f)
+                    LiquidSegmentedControl(
+                        options = remember { ProfileMomentsTab.entries.map { it.title } },
+                        selectedIndex = selectedMomentsTab.ordinal,
+                        onOptionSelect = { index ->
+                            selectedMomentsTab = ProfileMomentsTab.entries.getOrElse(index) { ProfileMomentsTab.ALL }
+                        },
+                        outerHeight = 34.dp,
+                        innerHeight = 28.dp,
+                        isDark = isDark,
+                        modifier = Modifier.width(132.dp)
                     )
+                    Spacer(modifier = Modifier.weight(1f))
                     BasicText(
-                        text = if (profile.hasMoreMoments) "已加载 ${moments.size} 条" else "共 ${moments.size} 条",
-                        style = AppleHigTypography.caption1.copy(color = higColors.tertiaryLabel)
+                        text = if (profile.hasMoreMoments) "已加载 ${displayMoments.size} 条" else "共 ${displayMoments.size} 条",
+                        style = AppleHigTypography.caption1.copy(color = higColors.tertiaryLabel),
+                        maxLines = 1
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     MomentsSortCapsule(
                         currentSort = currentSort,
                         onSortChange = onSortChange,
@@ -1184,69 +1213,88 @@ private fun ProfileMomentsCard(
                     )
                 }
                 AppleHigDivider(isDark = isDark, insetStart = 16.dp)
-                moments.forEach { moment ->
-                    MomentCard(
-                        moment = moment,
-                        isDark = isDark,
+                if (displayMoments.isEmpty()) {
+                    val emptyTip = when (selectedMomentsTab) {
+                        ProfileMomentsTab.ALL -> "暂无公开动态"
+                        ProfileMomentsTab.MEDIA -> "暂无图片动态"
+                        ProfileMomentsTab.MUSIC -> "暂无音乐动态"
+                    }
+                    Box(
                         modifier = Modifier
-                            .onGloballyPositioned { coords ->
-                                // 记录 root 坐标：与滚动视口顶部一起换算成滚动内容坐标（见上方定位逻辑）
-                                momentOffsets[moment.id] = coords.positionInRoot().y
-                            }
-                            .background(
-                                if (moment.id == flashedMomentId) {
-                                    Color(0x1A3B82F6).copy(alpha = flashAlpha.value)
-                                } else {
-                                    Color.Transparent
-                                },
-                                RoundedCornerShape(14.dp)
-                            ),
-                        onLikeClick = { onToggleLike(moment.id) },
-                        onCommentClick = { onComment(moment) },
-                        onShareClick = { onShare(moment) },
-                        onFollowClick = null,
-                        // 资料页里性别已在「签名」卡展示，动态卡片不再重复
-                        showGender = false,
-                        // 同一作者：不重复头像昵称，且不再自带卡片背景
-                        showAuthor = false,
-                        embedded = true,
-                        onReportClick = { onReport(moment) },
-                        // 置顶 / 可见性 / 删除仅在 moment.isMine 时由卡片露出管理菜单
-                        onPinToggle = { isPinned ->
-                            moment.id.toLongOrNull()?.let { id ->
-                                ZeroTalkClientManager.setMomentPin(
-                                    momentId = id,
-                                    isPinned = isPinned,
-                                    onSuccess = {
-                                        notificationState.show(if (isPinned) "动态已置顶" else "已取消置顶")
+                            .fillMaxWidth()
+                            .padding(vertical = 36.dp, horizontal = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        BasicText(
+                            text = emptyTip,
+                            style = AppleHigTypography.footnote.copy(color = higColors.tertiaryLabel)
+                        )
+                    }
+                } else {
+                    displayMoments.forEach { moment ->
+                        MomentCard(
+                            moment = moment,
+                            isDark = isDark,
+                            modifier = Modifier
+                                .onGloballyPositioned { coords ->
+                                    // 记录 root 坐标：与滚动视口顶部一起换算成滚动内容坐标（见上方定位逻辑）
+                                    momentOffsets[moment.id] = coords.positionInRoot().y
+                                }
+                                .background(
+                                    if (moment.id == flashedMomentId) {
+                                        Color(0x1A3B82F6).copy(alpha = flashAlpha.value)
+                                    } else {
+                                        Color.Transparent
                                     },
-                                    onError = { notificationState.show(it) }
-                                )
+                                    RoundedCornerShape(14.dp)
+                                ),
+                            onLikeClick = { onToggleLike(moment.id) },
+                            onCommentClick = { onComment(moment) },
+                            onShareClick = { onShare(moment) },
+                            onFollowClick = null,
+                            // 资料页里性别已在「签名」卡展示，动态卡片不再重复
+                            showGender = false,
+                            // 同一作者：不重复头像昵称，且不再自带卡片背景
+                            showAuthor = false,
+                            embedded = true,
+                            onReportClick = { onReport(moment) },
+                            // 置顶 / 可见性 / 删除仅在 moment.isMine 时由卡片露出管理菜单
+                            onPinToggle = { isPinned ->
+                                moment.id.toLongOrNull()?.let { id ->
+                                    ZeroTalkClientManager.setMomentPin(
+                                        momentId = id,
+                                        isPinned = isPinned,
+                                        onSuccess = {
+                                            notificationState.show(if (isPinned) "动态已置顶" else "已取消置顶")
+                                        },
+                                        onError = { notificationState.show(it) }
+                                    )
+                                }
+                            },
+                            onVisibilityToggle = { isPrivate ->
+                                moment.id.toLongOrNull()?.let { id ->
+                                    ZeroTalkClientManager.setMomentVisibility(
+                                        momentId = id,
+                                        isPrivate = isPrivate,
+                                        onSuccess = {
+                                            notificationState.show(if (isPrivate) "已设为仅自己可见" else "已设为公开")
+                                        },
+                                        onError = { notificationState.show(it) }
+                                    )
+                                }
+                            },
+                            onDelete = {
+                                moment.id.toLongOrNull()?.let { id ->
+                                    ZeroTalkClientManager.deleteMoment(
+                                        momentId = id,
+                                        onSuccess = { notificationState.show("动态已删除") },
+                                        onError = { notificationState.show(it) }
+                                    )
+                                }
                             }
-                        },
-                        onVisibilityToggle = { isPrivate ->
-                            moment.id.toLongOrNull()?.let { id ->
-                                ZeroTalkClientManager.setMomentVisibility(
-                                    momentId = id,
-                                    isPrivate = isPrivate,
-                                    onSuccess = {
-                                        notificationState.show(if (isPrivate) "已设为仅自己可见" else "已设为公开")
-                                    },
-                                    onError = { notificationState.show(it) }
-                                )
-                            }
-                        },
-                        onDelete = {
-                            moment.id.toLongOrNull()?.let { id ->
-                                ZeroTalkClientManager.deleteMoment(
-                                    momentId = id,
-                                    onSuccess = { notificationState.show("动态已删除") },
-                                    onError = { notificationState.show(it) }
-                                )
-                            }
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                    }
                 }
                 }
 
@@ -1283,7 +1331,7 @@ private fun ProfileMomentsCard(
                             )
                         )
                     }
-                } else {
+                } else if (displayMoments.isNotEmpty()) {
                     BasicText(
                         text = "已阅尽此刻",
                         style = AppleHigTypography.caption1.copy(
