@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import top.lanxint.zerotalk.data.model.AppThemeMode
 import top.lanxint.zerotalk.data.model.MessageCategory
@@ -347,15 +348,26 @@ fun ZeroTalkApp() {
         }
     }
 
-    // 处于「消息列表」或「正在单聊」时开启定时高频同步（4秒），切到动态或我的页面时暂停
+    // 官方对齐：切回前台（visibilitychange / focus）时立即触发一次校验
+    LifecycleResumeEffect(selectedTab, activeChatConversation != null, managerLoginData) {
+        if (managerLoginData != null && (selectedTab == ZeroTalkTab.MESSAGES || activeChatConversation != null)) {
+            ZeroTalkClientManager.fetchRoomList()
+        }
+        onPauseOrDispose {}
+    }
+
+    // 官方对齐：处于「消息列表」或「正在单聊」时开启定时静默轮询（官方标准 20 秒），切到其他页面时暂停
     LaunchedEffect(selectedTab, activeChatConversation != null, managerLoginData) {
         if (managerLoginData == null) return@LaunchedEffect
         val isInMessagesOrChat = selectedTab == ZeroTalkTab.MESSAGES || activeChatConversation != null
         if (!isInMessagesOrChat) return@LaunchedEffect
 
+        // 进入时先立即执行一次刷新（对齐官方 onMounted / tab activate）
+        ZeroTalkClientManager.fetchRoomList()
+
         while (true) {
+            delay(20_000L) // 严格对齐官方 20 秒 (2e4 ms)
             ZeroTalkClientManager.fetchRoomList()
-            delay(4_000L)
         }
     }
 
