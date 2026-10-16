@@ -99,8 +99,8 @@ object GlobalMusicPlayerManager {
         }
 
         val current = _currentTrack.value
-        // 如果点击的是当前正在播放的同一首歌曲且已经就绪
-        if (current?.songId == songId && current.playUrl.isNotBlank()) {
+        // 如果点击的是当前正在播放的同一首歌曲且底层播放器实例仍有效
+        if (current?.songId == songId && current.playUrl.isNotBlank() && player != null) {
             if (_isPlaying.value) {
                 pause()
             } else {
@@ -169,11 +169,13 @@ object GlobalMusicPlayerManager {
         val p = getOrCreatePlayer()
         p.stop()
         _isLoading.value = true
+        _isPlaying.value = false
 
         p.play(
             url = track.playUrl,
             onComplete = {
                 _isPlaying.value = false
+                _isLoading.value = false
                 _progressSec.value = 0
                 stopProgressTracking()
             },
@@ -190,8 +192,6 @@ object GlobalMusicPlayerManager {
                 startProgressTracking()
             }
         )
-        _isPlaying.value = true
-        startProgressTracking()
     }
 
     fun togglePlayPause() {
@@ -211,9 +211,14 @@ object GlobalMusicPlayerManager {
     fun resume() {
         val current = _currentTrack.value ?: return
         if (current.playUrl.isNotBlank()) {
-            player?.resume()
-            _isPlaying.value = true
-            startProgressTracking()
+            val p = player
+            if (p != null) {
+                p.resume()
+                _isPlaying.value = true
+                startProgressTracking()
+            } else {
+                startPlayingInternal(current, null)
+            }
         }
     }
 

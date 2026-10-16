@@ -1,6 +1,9 @@
 package top.lanxint.zerotalk.ui.utils
 
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
@@ -15,9 +18,11 @@ import java.io.IOException
 class AndroidMomentAudioPlayer : MomentAudioPlayer {
 
     private var player: MediaPlayer? = null
+    @Volatile
+    private var isPrepared = false
 
     override val isPlaying: Boolean
-        get() = player?.isPlaying == true
+        get() = runCatching { isPrepared && player?.isPlaying == true }.getOrDefault(false)
 
     override fun play(
         url: String,
@@ -32,6 +37,21 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
         }
         val mediaPlayer = MediaPlayer()
         player = mediaPlayer
+        isPrepared = false
+
+        // 统一配置媒体音频通道与属性，确保声音路由至媒体音量（非通话/铃声音道）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            mediaPlayer.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC)
+        }
+
         try {
             mediaPlayer.setDataSource(url)
             mediaPlayer.prepareAsync()
@@ -45,18 +65,23 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
             return
         }
 
-        mediaPlayer.setOnPreparedListener {
-            // 就绪即回传真实时长（毫秒 → 秒），供「服务端未下发时长」的语音气泡显示
-            if (it.duration > 0) onDuration?.invoke(it.duration / 1000)
-            it.start()
+        mediaPlayer.setOnPreparedListener { mp ->
+            if (player !== mp) return@setOnPreparedListener
+            isPrepared = true
+            val durationMs = runCatching { mp.duration }.getOrDefault(0)
+            if (durationMs > 0) onDuration?.invoke(durationMs / 1000)
+            runCatching { mp.start() }
         }
-        mediaPlayer.setOnCompletionListener {
-            it.release()
-            if (player === it) player = null
+        mediaPlayer.setOnCompletionListener { mp ->
+            isPrepared = false
+            runCatching { mp.release() }
+            if (player === mp) player = null
             onComplete?.invoke()
         }
         mediaPlayer.setOnErrorListener { mp, what, extra ->
-            mp.release()
+            isPrepared = false
+            runCatching { mp.reset() }
+            runCatching { mp.release() }
             if (player === mp) player = null
             onError?.invoke("播放出错（$what/$extra）")
             true
@@ -66,7 +91,7 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
     override fun pause() {
         runCatching {
             val current = player ?: return
-            if (current.isPlaying) {
+            if (isPrepared && current.isPlaying) {
                 current.pause()
             }
         }
@@ -75,27 +100,32 @@ class AndroidMomentAudioPlayer : MomentAudioPlayer {
     override fun resume() {
         runCatching {
             val current = player ?: return
-            if (!current.isPlaying) {
+            if (isPrepared && !current.isPlaying) {
                 current.start()
             }
         }
     }
 
     override fun getCurrentPosition(): Int = runCatching {
+        if (!isPrepared) return 0
         (player?.currentPosition ?: 0) / 1000
     }.getOrDefault(0)
 
     override fun getDuration(): Int = runCatching {
+        if (!isPrepared) return 0
         (player?.duration ?: 0) / 1000
     }.getOrDefault(0)
 
     override fun stop() {
         val current = player ?: return
         player = null
+        isPrepared = false
         runCatching {
             current.setOnCompletionListener(null)
             current.setOnErrorListener(null)
+            current.setOnPreparedListener(null)
             if (current.isPlaying) current.stop()
+            current.reset()
             current.release()
         }
     }
