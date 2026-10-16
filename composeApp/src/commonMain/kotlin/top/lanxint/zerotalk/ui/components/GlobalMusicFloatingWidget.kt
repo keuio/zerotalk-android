@@ -368,8 +368,8 @@ fun GlobalMusicFloatingWidget(
                         val displayProgress = if (localSeekValue >= 0) localSeekValue else progressSec.toFloat()
                         val maxDuration = durationSec.coerceAtLeast(1).toFloat()
 
-                        GlassSlider(
-                            value = displayProgress,
+                        LiquidSlider(
+                            value = { displayProgress },
                             valueRange = 0f..maxDuration,
                             onValueChange = { localSeekValue = it },
                             onValueChangeFinished = {
@@ -378,7 +378,10 @@ fun GlobalMusicFloatingWidget(
                                     localSeekValue = -1f
                                 }
                             },
-                            isDark = isDark
+                            accentColor = Color(0xFFE11D48),
+                            trackHeight = 5.dp,
+                            thumbWidth = 32.dp,
+                            thumbHeight = 18.dp
                         )
 
                         Row(
