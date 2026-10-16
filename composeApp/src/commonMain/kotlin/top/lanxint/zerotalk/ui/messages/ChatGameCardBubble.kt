@@ -148,67 +148,116 @@ fun ChatGameCardBubble(
 
             Spacer(Modifier.height(12.dp))
 
-            // 对战信息区域（双方头像与昵称展示）
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.5f) else Color(0xFFF2F2F7))
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                // 蓝方/白方/发起方
+            // 对战信息区域（棋类双人 VS / 谁是卧底多人房间）
+            val isUndercover = invite.gameType.lowercase() == GameType.UNDERCOVER
+            if (isUndercover) {
                 Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.5f) else Color(0xFFF2F2F7))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    val p1Name = invite.whiteUsername ?: invite.redUsername ?: "发起人"
-                    val p1Avatar = invite.whiteAvatarUrl ?: invite.redAvatarUrl
-                    PlayerMiniAvatar(avatarUrl = p1Avatar, name = p1Name, color = accentColor)
-                    BasicText(
-                        text = p1Name,
-                        style = TextStyle(
-                            color = higColors.label,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column {
+                        BasicText(
+                            text = "文字推理 · 4-12 人对局",
+                            style = TextStyle(
+                                color = higColors.label,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        BasicText(
+                            text = if (invite.status == "waiting") "满 4 人全部准备后开局" else "游戏进行中",
+                            style = TextStyle(
+                                color = higColors.secondaryLabel,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
+                    if (invite.maxPlayers > 0) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(accentColor.copy(alpha = 0.12f))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            BasicText(
+                                text = "${invite.playerCount}/${invite.maxPlayers} 人",
+                                style = TextStyle(
+                                    color = accentColor,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                        }
+                    }
                 }
-
-                // VS 标识
-                BasicText(
-                    text = "VS",
-                    style = TextStyle(
-                        color = higColors.tertiaryLabel,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    ),
-                    modifier = Modifier.padding(horizontal = 6.dp)
-                )
-
-                // 黑方/应战方
+            } else {
                 Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.5f) else Color(0xFFF2F2F7))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    val p2Name = invite.blackUsername ?: if (invite.status == "waiting") "等待应战..." else "对手"
-                    val p2Avatar = invite.blackAvatarUrl
-                    PlayerMiniAvatar(avatarUrl = p2Avatar, name = p2Name, color = Color(0xFF8E8E93))
+                    // 蓝方/白方/红方/发起方
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        val p1Name = invite.whiteUsername ?: invite.redUsername ?: "发起人"
+                        val p1Avatar = invite.whiteAvatarUrl ?: invite.redAvatarUrl
+                        PlayerMiniAvatar(avatarUrl = p1Avatar, name = p1Name, color = accentColor)
+                        BasicText(
+                            text = p1Name,
+                            style = TextStyle(
+                                color = higColors.label,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // VS 标识
                     BasicText(
-                        text = p2Name,
+                        text = "VS",
                         style = TextStyle(
-                            color = if (invite.blackUsername != null) higColors.label else higColors.tertiaryLabel,
+                            color = higColors.tertiaryLabel,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Bold
                         ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        modifier = Modifier.padding(horizontal = 6.dp)
                     )
+
+                    // 黑方/应战方
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        val p2Name = invite.blackUsername ?: if (invite.status == "waiting") "等待应战..." else "对手"
+                        val p2Avatar = invite.blackAvatarUrl
+                        PlayerMiniAvatar(avatarUrl = p2Avatar, name = p2Name, color = Color(0xFF8E8E93))
+                        BasicText(
+                            text = p2Name,
+                            style = TextStyle(
+                                color = if (invite.blackUsername != null) higColors.label else higColors.tertiaryLabel,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
@@ -217,13 +266,14 @@ fun ChatGameCardBubble(
             // 底部操作按钮
             val isWaiting = invite.status == "waiting"
             val buttonText = when {
+                isUndercover && isWaiting -> if (isMine) "进入房间 (房主)" else "进入房间 / 加入"
                 isWaiting && !isMine -> "接受应战"
                 isWaiting && isMine -> "等待加入中..."
                 invite.status == "playing" -> "进入对局"
                 else -> "查看棋局"
             }
 
-            val canClick = !(isWaiting && isMine) && invite.status != "cancelled"
+            val canClick = (isUndercover || !(isWaiting && isMine)) && invite.status != "cancelled"
 
             Box(
                 modifier = Modifier

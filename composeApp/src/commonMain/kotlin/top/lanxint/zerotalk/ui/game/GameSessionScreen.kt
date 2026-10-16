@@ -243,15 +243,16 @@ fun GameSessionScreen(
                             GameType.GOBANG -> {
                                 val isBlack = currentSession.blackUid == currentUserId
                                 val isWhite = currentSession.whiteUid == currentUserId
-                                val myColor = when {
-                                    isBlack -> 2
-                                    isWhite -> 1
-                                    else -> 0
+                                val isMyTurn = currentSession.status == "playing" && when {
+                                    currentSession.turnSide != null -> {
+                                        (currentSession.turnSide == "black" && isBlack) ||
+                                                (currentSession.turnSide == "white" && isWhite)
+                                    }
+                                    else -> {
+                                        (currentSession.turn == 1 && isBlack) ||
+                                                (currentSession.turn == 2 && isWhite)
+                                    }
                                 }
-                                val isMyTurn = currentSession.status == "playing" && (
-                                        (currentSession.turn == 1 && isWhite) ||
-                                                (currentSession.turn == 2 && isBlack)
-                                        )
 
                                 GobangBoard(
                                     boardString = currentSession.board,
@@ -267,10 +268,16 @@ fun GameSessionScreen(
                             GameType.GO -> {
                                 val isBlack = currentSession.blackUid == currentUserId
                                 val isWhite = currentSession.whiteUid == currentUserId
-                                val isMyTurn = currentSession.status == "playing" && (
-                                        (currentSession.turn == 1 && isBlack) || // 围棋黑先
+                                val isMyTurn = currentSession.status == "playing" && when {
+                                    currentSession.turnSide != null -> {
+                                        (currentSession.turnSide == "black" && isBlack) ||
+                                                (currentSession.turnSide == "white" && isWhite)
+                                    }
+                                    else -> {
+                                        (currentSession.turn == 1 && isBlack) ||
                                                 (currentSession.turn == 2 && isWhite)
-                                        )
+                                    }
+                                }
 
                                 GoBoard(
                                     boardString = currentSession.board,
@@ -291,10 +298,16 @@ fun GameSessionScreen(
                                 val isRed = currentSession.redUid == currentUserId
                                 val isBlack = currentSession.blackUid == currentUserId
                                 val mySide = if (isRed) "red" else if (isBlack) "black" else "spectator"
-                                val isMyTurn = currentSession.status == "playing" && (
+                                val isMyTurn = currentSession.status == "playing" && when {
+                                    currentSession.turnSide != null -> {
+                                        (currentSession.turnSide == "red" && isRed) ||
+                                                (currentSession.turnSide == "black" && isBlack)
+                                    }
+                                    else -> {
                                         (currentSession.turn == 1 && isRed) ||
                                                 (currentSession.turn == 2 && isBlack)
-                                        )
+                                    }
+                                }
 
                                 val lastMoveList = (currentSession.lastMove as? List<*>)?.mapNotNull {
                                     (it as? Number)?.toInt()
@@ -317,11 +330,17 @@ fun GameSessionScreen(
                                 val isWhite = currentSession.whiteUid == currentUserId
                                 val isBlack = currentSession.blackUid == currentUserId
                                 val mySide = if (isWhite) "white" else if (isBlack) "black" else "spectator"
-                                val turnSide = if (currentSession.turn == 1) "white" else "black"
-                                val isMyTurn = currentSession.status == "playing" && (
+                                val turnSide = currentSession.turnSide ?: if (currentSession.turn == 1) "white" else "black"
+                                val isMyTurn = currentSession.status == "playing" && when {
+                                    currentSession.turnSide != null -> {
+                                        (currentSession.turnSide == "white" && isWhite) ||
+                                                (currentSession.turnSide == "black" && isBlack)
+                                    }
+                                    else -> {
                                         (currentSession.turn == 1 && isWhite) ||
                                                 (currentSession.turn == 2 && isBlack)
-                                        )
+                                    }
+                                }
 
                                 val lastMoveList = (currentSession.lastMove as? List<*>)?.mapNotNull {
                                     (it as? Number)?.toInt()
@@ -345,6 +364,7 @@ fun GameSessionScreen(
                                 UndercoverRoom(
                                     session = currentSession,
                                     currentUserId = currentUserId,
+                                    onJoin = { clientManager.joinGame(GameType.UNDERCOVER, currentSession.id) },
                                     onReady = { ready -> clientManager.sendUndercoverReady(ready) },
                                     onStart = { clientManager.sendUndercoverStart() },
                                     onLeave = { clientManager.sendUndercoverLeave() },
@@ -711,18 +731,52 @@ private fun GameMatchHeader(
 ) {
     // 双方信息解析
     val isXiangqi = gameType == GameType.XIANGQI
-    val player1Name = if (isXiangqi) session.redUsername ?: "红方" else session.whiteUsername ?: "白方"
-    val player1Avatar = if (isXiangqi) session.redAvatarUrl else session.whiteAvatarUrl
-    val player1Uid = if (isXiangqi) session.redUid else session.whiteUid
-    val player1SideName = if (isXiangqi) "红方" else "白方"
+    val isBlackFirst = gameType == GameType.GO || gameType == GameType.GOBANG
 
-    val player2Name = session.blackUsername ?: if (session.status == "waiting") "等待应战..." else "黑方"
-    val player2Avatar = session.blackAvatarUrl
-    val player2Uid = session.blackUid
-    val player2SideName = "黑方"
+    val player1Name = when {
+        isXiangqi -> session.redUsername ?: "红方"
+        isBlackFirst -> session.blackUsername ?: "黑方"
+        else -> session.whiteUsername ?: "白方"
+    }
+    val player1Avatar = when {
+        isXiangqi -> session.redAvatarUrl
+        isBlackFirst -> session.blackAvatarUrl
+        else -> session.whiteAvatarUrl
+    }
+    val player1Uid = when {
+        isXiangqi -> session.redUid
+        isBlackFirst -> session.blackUid
+        else -> session.whiteUid
+    }
+    val player1SideName = when {
+        isXiangqi -> "红方"
+        isBlackFirst -> "黑方"
+        else -> "白方"
+    }
 
-    val isPlayer1Turn = session.turn == 1
-    val isPlayer2Turn = session.turn == 2
+    val player2Name = when {
+        isXiangqi || !isBlackFirst -> session.blackUsername ?: if (session.status == "waiting") "等待应战..." else "黑方"
+        else -> session.whiteUsername ?: if (session.status == "waiting") "等待应战..." else "白方"
+    }
+    val player2Avatar = if (isBlackFirst) session.whiteAvatarUrl else session.blackAvatarUrl
+    val player2Uid = if (isBlackFirst) session.whiteUid else session.blackUid
+    val player2SideName = if (isBlackFirst) "白方" else "黑方"
+
+    val isPlayer1Turn = when {
+        session.turnSide != null -> when {
+            isXiangqi -> session.turnSide == "red"
+            isBlackFirst -> session.turnSide == "black"
+            else -> session.turnSide == "white"
+        }
+        else -> session.turn == 1
+    }
+    val isPlayer2Turn = when {
+        session.turnSide != null -> when {
+            isXiangqi || !isBlackFirst -> session.turnSide == "black"
+            else -> session.turnSide == "white"
+        }
+        else -> session.turn == 2
+    }
 
     Card(
         modifier = Modifier
@@ -850,17 +904,26 @@ private fun GameTurnFooter(
         GameType.XIANGQI -> {
             val isRed = session.redUid == currentUserId
             val isBlack = session.blackUid == currentUserId
-            (session.turn == 1 && isRed) || (session.turn == 2 && isBlack)
+            when {
+                session.turnSide != null -> (session.turnSide == "red" && isRed) || (session.turnSide == "black" && isBlack)
+                else -> (session.turn == 1 && isRed) || (session.turn == 2 && isBlack)
+            }
         }
-        GameType.GO -> {
+        GameType.GO, GameType.GOBANG -> {
             val isBlack = session.blackUid == currentUserId
             val isWhite = session.whiteUid == currentUserId
-            (session.turn == 1 && isBlack) || (session.turn == 2 && isWhite)
+            when {
+                session.turnSide != null -> (session.turnSide == "black" && isBlack) || (session.turnSide == "white" && isWhite)
+                else -> (session.turn == 1 && isBlack) || (session.turn == 2 && isWhite)
+            }
         }
         else -> {
             val isWhite = session.whiteUid == currentUserId
             val isBlack = session.blackUid == currentUserId
-            (session.turn == 1 && isWhite) || (session.turn == 2 && isBlack)
+            when {
+                session.turnSide != null -> (session.turnSide == "white" && isWhite) || (session.turnSide == "black" && isBlack)
+                else -> (session.turn == 1 && isWhite) || (session.turn == 2 && isBlack)
+            }
         }
     }
 

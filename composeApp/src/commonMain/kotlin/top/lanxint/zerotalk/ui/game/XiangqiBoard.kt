@@ -89,10 +89,12 @@ fun XiangqiBoard(
                 .pointerInput(isMyTurn, normalizedBoard, targetMoves, mySide, flip) {
                     if (!isMyTurn) return@pointerInput
                     detectTapGestures { offset ->
-                        val cellW = size.width / (cols - 1)
-                        val cellH = size.height / (rows - 1)
-                        val screenCol = (offset.x / cellW).roundToInt().coerceIn(0, cols - 1)
-                        val screenRow = (offset.y / cellH).roundToInt().coerceIn(0, rows - 1)
+                        val cellW = size.width / cols
+                        val cellH = size.height / rows
+                        val marginW = cellW * 0.5f
+                        val marginH = cellH * 0.5f
+                        val screenCol = ((offset.x - marginW) / cellW).roundToInt().coerceIn(0, cols - 1)
+                        val screenRow = ((offset.y - marginH) / cellH).roundToInt().coerceIn(0, rows - 1)
 
                         // 屏幕坐标映射回棋盘逻辑坐标
                         val x = if (flip) 8 - screenCol else screenCol
@@ -120,54 +122,58 @@ fun XiangqiBoard(
                     }
                 }
         ) {
-            val cellW = size.width / (cols - 1)
-            val cellH = size.height / (rows - 1)
+            val cellW = size.width / cols
+            val cellH = size.height / rows
+            val marginW = cellW * 0.5f
+            val marginH = cellH * 0.5f
 
             // 1. 棋盘横线 (10条)
             for (r in 0 until rows) {
+                val lineY = marginH + r * cellH
                 drawLine(
                     color = gridLineColor,
-                    start = Offset(0f, r * cellH),
-                    end = Offset(size.width, r * cellH),
+                    start = Offset(marginW, lineY),
+                    end = Offset(marginW + (cols - 1) * cellW, lineY),
                     strokeWidth = 1.2.dp.toPx()
                 )
             }
 
             // 2. 棋盘竖线 (9条，楚河汉界在屏幕第4排与第5排之间中断)
             for (c in 0 until cols) {
+                val lineX = marginW + c * cellW
                 if (c == 0 || c == cols - 1) {
                     drawLine(
                         color = gridLineColor,
-                        start = Offset(c * cellW, 0f),
-                        end = Offset(c * cellW, size.height),
+                        start = Offset(lineX, marginH),
+                        end = Offset(lineX, marginH + (rows - 1) * cellH),
                         strokeWidth = 1.2.dp.toPx()
                     )
                 } else {
                     // 上半场 (屏幕行 0..4)
                     drawLine(
                         color = gridLineColor,
-                        start = Offset(c * cellW, 0f),
-                        end = Offset(c * cellW, 4 * cellH),
+                        start = Offset(lineX, marginH),
+                        end = Offset(lineX, marginH + 4 * cellH),
                         strokeWidth = 1.2.dp.toPx()
                     )
                     // 下半场 (屏幕行 5..9)
                     drawLine(
                         color = gridLineColor,
-                        start = Offset(c * cellW, 5 * cellH),
-                        end = Offset(c * cellW, 9 * cellH),
+                        start = Offset(lineX, marginH + 5 * cellH),
+                        end = Offset(lineX, marginH + 9 * cellH),
                         strokeWidth = 1.2.dp.toPx()
                     )
                 }
             }
 
             // 3. 九宫格斜线 (顶部九宫: 行 0..2, 列 3..5; 底部九宫: 行 7..9, 列 3..5)
-            drawLine(gridLineColor, Offset(3 * cellW, 0f), Offset(5 * cellW, 2 * cellH), 1.2.dp.toPx())
-            drawLine(gridLineColor, Offset(5 * cellW, 0f), Offset(3 * cellW, 2 * cellH), 1.2.dp.toPx())
-            drawLine(gridLineColor, Offset(3 * cellW, 7 * cellH), Offset(5 * cellW, 9 * cellH), 1.2.dp.toPx())
-            drawLine(gridLineColor, Offset(5 * cellW, 7 * cellH), Offset(3 * cellW, 9 * cellH), 1.2.dp.toPx())
+            drawLine(gridLineColor, Offset(marginW + 3 * cellW, marginH + 0f), Offset(marginW + 5 * cellW, marginH + 2 * cellH), 1.2.dp.toPx())
+            drawLine(gridLineColor, Offset(marginW + 5 * cellW, marginH + 0f), Offset(marginW + 3 * cellW, marginH + 2 * cellH), 1.2.dp.toPx())
+            drawLine(gridLineColor, Offset(marginW + 3 * cellW, marginH + 7 * cellH), Offset(marginW + 5 * cellW, marginH + 9 * cellH), 1.2.dp.toPx())
+            drawLine(gridLineColor, Offset(marginW + 5 * cellW, marginH + 7 * cellH), Offset(marginW + 3 * cellW, marginH + 9 * cellH), 1.2.dp.toPx())
 
             // 4. 楚河汉界文字标注 (在屏幕第4至第5排之间的河界区)
-            val riverY = 4.5f * cellH
+            val riverY = marginH + 4.5f * cellH
             val riverFontSize = (cellH * 0.38f).toSp()
             val riverTextStyle = TextStyle(
                 color = gridLineColor.copy(alpha = 0.55f),
@@ -180,7 +186,7 @@ fun XiangqiBoard(
             drawText(
                 textLayoutResult = chuheLayout,
                 topLeft = Offset(
-                    x = 2 * cellW - chuheLayout.size.width / 2f,
+                    x = marginW + 2 * cellW - chuheLayout.size.width / 2f,
                     y = riverY - chuheLayout.size.height / 2f
                 )
             )
@@ -189,7 +195,7 @@ fun XiangqiBoard(
             drawText(
                 textLayoutResult = hanjieLayout,
                 topLeft = Offset(
-                    x = 6 * cellW - hanjieLayout.size.width / 2f,
+                    x = marginW + 6 * cellW - hanjieLayout.size.width / 2f,
                     y = riverY - hanjieLayout.size.height / 2f
                 )
             )
@@ -201,8 +207,8 @@ fun XiangqiBoard(
                 val tScX = if (flip) 8 - lastMove[2] else lastMove[2]
                 val tScY = if (flip) lastMove[3] else 9 - lastMove[3]
 
-                val fromCenter = Offset(fScX * cellW, fScY * cellH)
-                val toCenter = Offset(tScX * cellW, tScY * cellH)
+                val fromCenter = Offset(marginW + fScX * cellW, marginH + fScY * cellH)
+                val toCenter = Offset(marginW + tScX * cellW, marginH + tScY * cellH)
                 drawCircle(Color(0xFF34C759).copy(alpha = 0.25f), cellW * 0.45f, fromCenter)
                 drawCircle(Color(0xFF34C759).copy(alpha = 0.35f), cellW * 0.45f, toCenter)
             }
@@ -214,7 +220,7 @@ fun XiangqiBoard(
                 drawCircle(
                     color = Color(0xFF007AFF),
                     radius = cellW * 0.48f,
-                    center = Offset(scX * cellW, scY * cellH),
+                    center = Offset(marginW + scX * cellW, marginH + scY * cellH),
                     style = Stroke(width = 2.dp.toPx())
                 )
             }
@@ -225,7 +231,7 @@ fun XiangqiBoard(
                 val targetChar = normalizedBoard.getOrNull(targetIdx) ?: '.'
                 val scX = if (flip) 8 - tx else tx
                 val scY = if (flip) ty else 9 - ty
-                val center = Offset(scX * cellW, scY * cellH)
+                val center = Offset(marginW + scX * cellW, marginH + scY * cellH)
                 if (targetChar == '.') {
                     // 空位画小实心点
                     drawCircle(Color(0xFF34C759), cellW * 0.16f, center)
@@ -248,7 +254,7 @@ fun XiangqiBoard(
                     // 棋盘逻辑坐标映射为屏幕坐标
                     val screenX = if (flip) 8 - x else x
                     val screenY = if (flip) y else 9 - y
-                    val center = Offset(screenX * cellW, screenY * cellH)
+                    val center = Offset(marginW + screenX * cellW, marginH + screenY * cellH)
 
                     val isRed = char.isUpperCase()
                     val pColor = if (isRed) redColor else blackColor

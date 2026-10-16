@@ -15,8 +15,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -71,17 +75,43 @@ fun GoBoard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                BasicText(
-                    text = "黑方提子: ${captures["black"] ?: 0}",
-                    style = TextStyle(color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                )
-                BasicText(
-                    text = "白方提子: ${captures["white"] ?: 0}",
-                    style = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF1A1A1A))
+                    )
+                    Text(
+                        text = "黑方提子: ${captures["black"] ?: 0}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFF0F0F0))
+                            .border(1.dp, Color(0xFF8E8E93), CircleShape)
+                    )
+                    Text(
+                        text = "白方提子: ${captures["white"] ?: 0}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
         }
 
@@ -180,20 +210,27 @@ fun GoBoard(
 
         Spacer(Modifier.height(8.dp))
 
-        // 停一手 (Pass) 控制
-        if (isMyTurn) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF5856D6))
-                    .clickable { onPass() }
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                BasicText(
-                    text = "停一手 (Pass)",
-                    style = TextStyle(color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                )
+        // 停一手 (Pass) 控制：固定高度占位，避免回合交替时棋盘上下跳动
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(36.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isMyTurn) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF5856D6))
+                        .clickable { onPass() }
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        text = "停一手 (Pass)",
+                        style = TextStyle(color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    )
+                }
             }
         }
     }

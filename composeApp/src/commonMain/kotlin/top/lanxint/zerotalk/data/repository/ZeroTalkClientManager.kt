@@ -2782,9 +2782,9 @@ object ZeroTalkClientManager {
                 .onFailure { e ->
                     ZtLog.w("ZeroTalk", "[GAME] 立即拉取对局详情失败 game=$gameId: ${e.message}")
                 }
-            // 依规范设置轮询周期：围棋 1600ms，谁是卧底 2500ms，其他棋类 8000ms
+            // 依规范设置轮询周期：围棋/五子棋 1600ms，谁是卧底 2500ms，其他棋类 8000ms
             val intervalMs = when (gameType) {
-                GameType.GO -> 1600L
+                GameType.GO, GameType.GOBANG -> 1600L
                 GameType.UNDERCOVER -> 2500L
                 else -> 8000L
             }

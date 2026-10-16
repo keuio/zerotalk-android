@@ -106,7 +106,8 @@ fun ChatDice(
         if (settleFace == null && !rolling) {
             UnknownValueMark()
         } else {
-            DicePips(pips = DICE_FACES.getOrNull(shownFace) ?: DICE_FACES[0])
+            val faceIndex = (shownFace - 1).coerceIn(0, DICE_FACES.lastIndex)
+            DicePips(pips = DICE_FACES[faceIndex])
         }
     }
 }

@@ -121,8 +121,8 @@ android {
         applicationId = "top.lanxint.zerotalk"
         minSdk = 23
         targetSdk = 36
-        versionCode = 15
-        versionName = "1.8.3"
+        versionCode = 16
+        versionName = "1.8.4"
     }
 
     compileOptions {

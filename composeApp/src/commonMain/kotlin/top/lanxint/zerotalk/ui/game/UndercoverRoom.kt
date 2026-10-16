@@ -34,6 +34,7 @@ import top.lanxint.zerotalk.ui.components.AsyncNetworkImage
 fun UndercoverRoom(
     session: GameSessionDetail,
     currentUserId: String,
+    onJoin: () -> Unit,
     onReady: (Boolean) -> Unit,
     onStart: () -> Unit,
     onLeave: () -> Unit,
@@ -47,7 +48,10 @@ fun UndercoverRoom(
 ) {
     val phase = session.phase ?: "WAITING"
     val isHost = session.hostUid == currentUserId || session.creatorUid == currentUserId
-    val myPlayer = session.players.find { it.uid == currentUserId }
+    val myNumericId = currentUserId.toLongOrNull() ?: 0L
+    val myPlayer = session.players.find {
+        (it.uid.isNotBlank() && it.uid == currentUserId) || (myNumericId > 0L && it.userId == myNumericId)
+    }
     val isJoined = myPlayer != null
     val myReady = myPlayer?.ready ?: false
 
@@ -106,6 +110,7 @@ fun UndercoverRoom(
                     isJoined = isJoined,
                     myReady = myReady,
                     players = session.players,
+                    onJoin = onJoin,
                     onReady = onReady,
                     onStart = onStart,
                     onLeave = onLeave,
@@ -355,6 +360,7 @@ private fun WaitingPhaseControls(
     isJoined: Boolean,
     myReady: Boolean,
     players: List<UndercoverPlayer>,
+    onJoin: () -> Unit,
     onReady: (Boolean) -> Unit,
     onStart: () -> Unit,
     onLeave: () -> Unit,
@@ -377,7 +383,14 @@ private fun WaitingPhaseControls(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (isJoined) {
+            if (!isJoined) {
+                Button(
+                    onClick = onJoin,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("加入游戏 (上座)")
+                }
+            } else {
                 Button(
                     onClick = { onReady(!myReady) },
                     modifier = Modifier.weight(1f),
@@ -520,15 +533,21 @@ private fun DescriptionPhaseControls(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VotingPhaseControls(
     session: GameSessionDetail,
     currentUserId: String,
     onVote: (Long) -> Unit
 ) {
-    val myPlayer = session.players.find { it.uid == currentUserId }
+    val myNumericId = currentUserId.toLongOrNull() ?: 0L
+    val myPlayer = session.players.find {
+        (it.uid.isNotBlank() && it.uid == currentUserId) || (myNumericId > 0L && it.userId == myNumericId)
+    }
     val hasVoted = session.votes?.votedUids?.contains(currentUserId) == true
-    val candidates = session.players.filter { it.alive && it.uid != currentUserId }
+    val candidates = session.players.filter {
+        it.alive && it.uid != currentUserId && (myNumericId <= 0L || it.userId != myNumericId)
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
@@ -539,14 +558,14 @@ private fun VotingPhaseControls(
         Spacer(modifier = Modifier.height(8.dp))
 
         if (!hasVoted && myPlayer?.alive == true) {
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 candidates.forEach { c ->
                     Button(
-                        onClick = { onVote(c.userId) },
-                        modifier = Modifier.weight(1f)
+                        onClick = { onVote(c.userId) }
                     ) {
                         Text(c.username, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }

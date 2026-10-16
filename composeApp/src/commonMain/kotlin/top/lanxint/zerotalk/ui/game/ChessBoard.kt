@@ -295,13 +295,14 @@ private fun PromotionPickerModal(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                                 .clickable { onSelect(code) }
-                                .padding(8.dp)
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
                         ) {
                             Text(
                                 text = symbol,
                                 fontSize = 36.sp,
-                                color = if (isWhite) Color.Black else Color.DarkGray
+                                color = MaterialTheme.colorScheme.primary
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
