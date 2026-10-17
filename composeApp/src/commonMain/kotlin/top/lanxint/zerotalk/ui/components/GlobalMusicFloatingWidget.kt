@@ -1,13 +1,14 @@
 package top.lanxint.zerotalk.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -55,6 +57,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -141,31 +144,38 @@ fun GlobalMusicFloatingWidget(
         val topMarginPx = with(density) { 70.dp.toPx() }
         val bottomMarginPx = with(density) { 100.dp.toPx() }
 
+        val coroutineScope = rememberCoroutineScope()
+
         // 默认停靠在右侧中上部
-        var targetOffsetX by remember {
-            mutableFloatStateOf(screenWidthPx - currentWidthPx - edgeMarginPx)
+        val defaultX = screenWidthPx - currentWidthPx - edgeMarginPx
+        val defaultY = screenHeightPx * 0.35f
+
+        val animOffsetX = remember { Animatable(defaultX) }
+        val animOffsetY = remember { Animatable(defaultY) }
+
+        var currentX by remember { mutableFloatStateOf(defaultX) }
+        var currentY by remember { mutableFloatStateOf(defaultY) }
+        var isDockedOnRight by remember { mutableStateOf(true) }
+
+        val minX = edgeMarginPx
+        val maxX = (screenWidthPx - currentWidthPx - edgeMarginPx).coerceAtLeast(minX)
+        val minY = topMarginPx
+        val maxY = (screenHeightPx - estimatedHeightPx - bottomMarginPx).coerceAtLeast(minY)
+
+        // 屏幕尺寸或展开状态切换时，依据记忆的停靠侧平滑吸附，绝不跨屏幕误跳
+        LaunchedEffect(isExpanded, screenWidthPx, screenHeightPx) {
+            val targetX = if (isDockedOnRight) maxX else minX
+            val targetY = currentY.coerceIn(minY, maxY)
+            currentX = targetX
+            currentY = targetY
+
+            launch {
+                animOffsetX.animateTo(targetX, tween(durationMillis = 350, easing = FastOutSlowInEasing))
+            }
+            launch {
+                animOffsetY.animateTo(targetY, tween(durationMillis = 350, easing = FastOutSlowInEasing))
+            }
         }
-        var targetOffsetY by remember {
-            mutableFloatStateOf(screenHeightPx * 0.35f)
-        }
-
-        // 平滑吸附过渡动画
-        val animatedOffsetX by animateFloatAsState(
-            targetValue = targetOffsetX,
-            animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
-        )
-        val animatedOffsetY by animateFloatAsState(
-            targetValue = targetOffsetY,
-            animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
-        )
-
-        // 拖拽手势临时偏移
-        var dragDeltaX by remember { mutableFloatStateOf(0f) }
-        var dragDeltaY by remember { mutableFloatStateOf(0f) }
-        var isDragging by remember { mutableStateOf(false) }
-
-        val effectiveX = if (isDragging) targetOffsetX + dragDeltaX else animatedOffsetX
-        val effectiveY = if (isDragging) targetOffsetY + dragDeltaY else animatedOffsetY
 
         // 黑胶唱片旋转动效
         val infiniteTransition = rememberInfiniteTransition()
@@ -179,46 +189,75 @@ fun GlobalMusicFloatingWidget(
         )
         val discRotation = if (isPlaying) rotationAngle else 0f
 
-        val safeX = effectiveX.coerceIn(edgeMarginPx, (screenWidthPx - currentWidthPx - edgeMarginPx).coerceAtLeast(edgeMarginPx))
-        val safeY = effectiveY.coerceIn(topMarginPx, (screenHeightPx - estimatedHeightPx - bottomMarginPx).coerceAtLeast(topMarginPx))
-
         Box(
             modifier = Modifier
-                .offset { IntOffset(safeX.roundToInt(), safeY.roundToInt()) }
+                .offset {
+                    val safeX = animOffsetX.value.coerceIn(minX, maxX)
+                    val safeY = animOffsetY.value.coerceIn(minY, maxY)
+                    IntOffset(safeX.roundToInt(), safeY.roundToInt())
+                }
                 .pointerInput(screenWidthPx, screenHeightPx, isExpanded) {
                     detectDragGestures(
                         onDragStart = {
-                            isDragging = true
-                            dragDeltaX = 0f
-                            dragDeltaY = 0f
+                            coroutineScope.launch {
+                                animOffsetX.stop()
+                                animOffsetY.stop()
+                            }
                         },
                         onDrag = { change, dragAmount ->
                             change.consume()
-                            dragDeltaX += dragAmount.x
-                            dragDeltaY += dragAmount.y
+                            currentX = (currentX + dragAmount.x).coerceIn(minX, maxX)
+                            currentY = (currentY + dragAmount.y).coerceIn(minY, maxY)
+                            coroutineScope.launch {
+                                animOffsetX.snapTo(currentX)
+                                animOffsetY.snapTo(currentY)
+                            }
                         },
                         onDragEnd = {
-                            val finalX = targetOffsetX + dragDeltaX
-                            val finalY = (targetOffsetY + dragDeltaY).coerceIn(
-                                topMarginPx,
-                                screenHeightPx - estimatedHeightPx - bottomMarginPx
-                            )
-                            // 边缘吸附：判断在中线偏左还是偏右
-                            val centerX = finalX + currentWidthPx / 2
-                            targetOffsetX = if (centerX < screenWidthPx / 2) {
-                                edgeMarginPx
-                            } else {
-                                screenWidthPx - currentWidthPx - edgeMarginPx
+                            val centerX = currentX + currentWidthPx / 2
+                            isDockedOnRight = centerX >= screenWidthPx / 2
+                            val targetX = if (isDockedOnRight) maxX else minX
+                            val targetY = currentY.coerceIn(minY, maxY)
+                            currentX = targetX
+                            currentY = targetY
+
+                            val snapSpec = tween<Float>(durationMillis = 400, easing = FastOutSlowInEasing)
+
+                            coroutineScope.launch {
+                                animOffsetX.animateTo(
+                                    targetValue = targetX,
+                                    animationSpec = snapSpec
+                                )
                             }
-                            targetOffsetY = finalY
-                            dragDeltaX = 0f
-                            dragDeltaY = 0f
-                            isDragging = false
+                            coroutineScope.launch {
+                                animOffsetY.animateTo(
+                                    targetValue = targetY,
+                                    animationSpec = snapSpec
+                                )
+                            }
                         },
                         onDragCancel = {
-                            dragDeltaX = 0f
-                            dragDeltaY = 0f
-                            isDragging = false
+                            val centerX = currentX + currentWidthPx / 2
+                            isDockedOnRight = centerX >= screenWidthPx / 2
+                            val targetX = if (isDockedOnRight) maxX else minX
+                            val targetY = currentY.coerceIn(minY, maxY)
+                            currentX = targetX
+                            currentY = targetY
+
+                            val snapSpec = tween<Float>(durationMillis = 400, easing = FastOutSlowInEasing)
+
+                            coroutineScope.launch {
+                                animOffsetX.animateTo(
+                                    targetValue = targetX,
+                                    animationSpec = snapSpec
+                                )
+                            }
+                            coroutineScope.launch {
+                                animOffsetY.animateTo(
+                                    targetValue = targetY,
+                                    animationSpec = snapSpec
+                                )
+                            }
                         }
                     )
                 }

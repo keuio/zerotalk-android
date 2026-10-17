@@ -8022,8 +8022,13 @@ object ZeroTalkClientManager {
     private fun formatConversationTime(dateStr: String?): String {
         if (dateStr.isNullOrBlank()) return "刚刚"
         return try {
-            val parser = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            val date = parser.parse(dateStr) ?: return dateStr.takeLast(8).take(5)
+            val clean = dateStr.trim().replace("T", " ").removeSuffix("Z")
+            val normalized = if (clean.contains(".")) clean.substringBefore(".") else clean
+            // 服务端默认下发北京时间 (GMT+8)，按此基准自适应转换为设备本地时间
+            val parser = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).apply {
+                timeZone = java.util.TimeZone.getTimeZone("GMT+8")
+            }
+            val date = parser.parse(normalized) ?: return normalized.takeLast(8).take(5)
             val now = Calendar.getInstance()
             val msgCal = Calendar.getInstance().apply { time = date }
 
@@ -8047,34 +8052,13 @@ object ZeroTalkClientManager {
         if (dateStr.isNullOrBlank()) return System.currentTimeMillis()
         val trimmed = dateStr.trim()
         return try {
-            if (trimmed.contains("T") || trimmed.endsWith("Z", ignoreCase = true)) {
-                val clean = trimmed.replace("T", " ").removeSuffix("Z")
-                val pattern = if (clean.contains(".")) "yyyy-MM-dd HH:mm:ss.SSS" else "yyyy-MM-dd HH:mm:ss"
-                val sdf = SimpleDateFormat(pattern, Locale.US).apply {
-                    timeZone = java.util.TimeZone.getTimeZone("UTC")
-                }
-                sdf.parse(clean.substringBefore(".").let { if (clean.contains(".")) clean else "$it.000" })?.time
-                    ?: System.currentTimeMillis()
-            } else {
-                val pattern = "yyyy-MM-dd HH:mm:ss"
-                val sdfUtc = SimpleDateFormat(pattern, Locale.US).apply {
-                    timeZone = java.util.TimeZone.getTimeZone("UTC")
-                }
-                val utcTime = sdfUtc.parse(trimmed)?.time
-                val sdfLocal = SimpleDateFormat(pattern, Locale.getDefault())
-                val localTime = sdfLocal.parse(trimmed)?.time
-                if (utcTime != null && localTime != null) {
-                    val now = System.currentTimeMillis()
-                    // 自动选择与当前系统时间更近的解析（当服务端以 UTC 格式下发 created_at 时，utcTime 偏差在数秒内，而 localTime 偏差达 8 小时）
-                    if (kotlin.math.abs(now - utcTime) < kotlin.math.abs(now - localTime)) {
-                        utcTime
-                    } else {
-                        localTime
-                    }
-                } else {
-                    utcTime ?: localTime ?: System.currentTimeMillis()
-                }
+            val clean = trimmed.replace("T", " ").removeSuffix("Z")
+            val normalized = if (clean.contains(".")) clean.substringBefore(".") else clean
+            // 服务端默认下发北京时间 (GMT+8)，按此基准自适应转换为设备本地时间毫秒戳
+            val parser = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).apply {
+                timeZone = java.util.TimeZone.getTimeZone("GMT+8")
             }
+            parser.parse(normalized)?.time ?: System.currentTimeMillis()
         } catch (_: Exception) {
             System.currentTimeMillis()
         }
