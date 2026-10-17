@@ -1148,12 +1148,16 @@ fun ZeroTalkApp() {
                                 notificationState.show("已删除本地账号")
                             },
                             onAddAccount = {
-                                // 复用登录表单：登录成功后由 loginAndBootstrap 记入账号列表
-                                loginUsername = ""
-                                loginPassword = ""
-                                loginError = null
-                                isLoggingIn = false
-                                activeProfileSheet = ProfileSheetType.Login
+                                if (savedAccounts.size >= AccountStore.MAX_ACCOUNTS) {
+                                    notificationState.show("最多只能添加 ${AccountStore.MAX_ACCOUNTS} 个账号，请先删除已有账号")
+                                } else {
+                                    // 复用登录表单：登录成功后由 loginAndBootstrap 记入账号列表
+                                    loginUsername = ""
+                                    loginPassword = ""
+                                    loginError = null
+                                    isLoggingIn = false
+                                    activeProfileSheet = ProfileSheetType.Login
+                                }
                             }
                         )
                     }

@@ -38,6 +38,9 @@ data class SavedAccount(
  * - 账号列表里的密码同样只在本地加密保存，删除某个账号即彻底抹掉其密码。
  */
 object AccountStore {
+    /** 允许保存的最大账号数量 */
+    const val MAX_ACCOUNTS = 2
+
     private const val ACCOUNT_FILE = "zt_accounts.txt"
 
     private val gson = Gson()
@@ -90,8 +93,13 @@ object AccountStore {
         loaded = true
         val raw = readSecure() ?: return
         val persisted = runCatching { gson.fromJson(raw, Persisted::class.java) }.getOrNull() ?: return
-        _accounts.value = persisted.accounts.filter { it.loginName.isNotBlank() }
+        _accounts.value = persisted.accounts.filter { it.loginName.isNotBlank() }.take(MAX_ACCOUNTS)
         _activeLoginName.value = persisted.active?.takeIf { name -> _accounts.value.any { it.loginName == name } }
+    }
+
+    fun canAddAccount(): Boolean {
+        ensureLoaded()
+        return _accounts.value.size < MAX_ACCOUNTS
     }
 
     fun find(loginName: String): SavedAccount? {
@@ -129,8 +137,8 @@ object AccountStore {
             userId = userId.ifBlank { existing?.userId.orEmpty() },
             lastUsedAt = System.currentTimeMillis()
         )
-        // 最近使用的排最前，面板里一眼能看到刚用过的账号
-        _accounts.value = (listOf(merged) + _accounts.value.filter { it.loginName != name })
+        // 最近使用的排最前，面板里一眼能看到刚用过的账号；最多保留 MAX_ACCOUNTS 个账号
+        _accounts.value = (listOf(merged) + _accounts.value.filter { it.loginName != name }).take(MAX_ACCOUNTS)
         _activeLoginName.value = name
         persist()
     }

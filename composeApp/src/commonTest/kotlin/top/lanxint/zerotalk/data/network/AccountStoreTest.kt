@@ -69,4 +69,27 @@ class AccountStoreTest {
         AccountStore.setActive("不存在")
         assertNull(AccountStore.activeLoginName.value)
     }
+
+    @Test
+    fun `最多保留2个账号且新加入账号超出上限时淘汰最旧账号`() {
+        assertEquals(2, AccountStore.MAX_ACCOUNTS)
+        assertEquals(true, AccountStore.canAddAccount())
+
+        AccountStore.save(loginName = "a", password = "pa")
+        assertEquals(true, AccountStore.canAddAccount())
+
+        AccountStore.save(loginName = "b", password = "pb")
+        assertEquals(false, AccountStore.canAddAccount())
+
+        // 尝试保存第3个账号，此时应该淘汰最早的 "a"，保留最近的 "c" 和 "b"
+        AccountStore.save(loginName = "c", password = "pc")
+        assertEquals(2, AccountStore.accounts.value.size)
+        assertEquals(listOf("c", "b"), AccountStore.accounts.value.map { it.loginName })
+        assertNull(AccountStore.find("a"))
+
+        // 删除一个账号后，canAddAccount 重新变为 true
+        AccountStore.remove("b")
+        assertEquals(1, AccountStore.accounts.value.size)
+        assertEquals(true, AccountStore.canAddAccount())
+    }
 }

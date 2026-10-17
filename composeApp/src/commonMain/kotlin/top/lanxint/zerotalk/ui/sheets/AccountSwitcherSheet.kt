@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import top.lanxint.zerotalk.data.network.AccountStore
 import top.lanxint.zerotalk.data.network.SavedAccount
 import top.lanxint.zerotalk.ui.components.AppleHigDivider
 import top.lanxint.zerotalk.ui.components.AppleHigGroupedSection
@@ -95,7 +96,7 @@ fun SheetAccountSwitcherContent(
         } else {
             AppleHigGroupedSection(
                 isDark = isDark,
-                footer = "账号密码仅加密保存在本机；删除账号会同时清除其本地密码；添加账号后会切换到新账号",
+                footer = "最多可保存 ${AccountStore.MAX_ACCOUNTS} 个账号；账号密码仅加密保存在本机；删除账号会同时清除其本地密码；添加账号后会切换到新账号",
                 modifier = Modifier.padding(horizontal = 16.dp)
             ) {
                 accounts.forEachIndexed { index, account ->
@@ -114,13 +115,20 @@ fun SheetAccountSwitcherContent(
 
         Spacer(Modifier.height(18.dp))
 
-        // 添加账号：复用「登录账号」表单，登录成功后自动记入列表
+        // 添加账号：复用「登录账号」表单，达到上限时提示并限制添加
+        val isLimitReached = accounts.size >= AccountStore.MAX_ACCOUNTS
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(higColors.tint.copy(alpha = if (isDark) 0.22f else 0.12f))
+                .background(
+                    if (isLimitReached) {
+                        higColors.secondarySystemGroupedBackground
+                    } else {
+                        higColors.tint.copy(alpha = if (isDark) 0.22f else 0.12f)
+                    }
+                )
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -131,17 +139,19 @@ fun SheetAccountSwitcherContent(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = null,
-                tint = higColors.tint,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(Modifier.width(6.dp))
+            if (!isLimitReached) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = null,
+                    tint = higColors.tint,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+            }
             BasicText(
-                text = "添加账号",
+                text = if (isLimitReached) "已达账号上限（最多 ${AccountStore.MAX_ACCOUNTS} 个）" else "添加账号",
                 style = AppleHigTypography.subhead.copy(
-                    color = higColors.tint,
+                    color = if (isLimitReached) higColors.tertiaryLabel else higColors.tint,
                     fontWeight = FontWeight.SemiBold
                 )
             )
