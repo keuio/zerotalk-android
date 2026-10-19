@@ -62,10 +62,10 @@ fun AdminNoticeForceModal(
     onAck: () -> Unit
 ) {
     val higColors = AppleHigColors.colors(isDark)
-    val effectiveSeconds = readSeconds.coerceAtLeast(1)
+    val effectiveSeconds = (item.readSeconds ?: item.payload?.readSeconds ?: readSeconds).coerceAtLeast(1)
     var countdown by remember(item.id) { mutableStateOf(effectiveSeconds) }
 
-    LaunchedEffect(item.id, readSeconds) {
+    LaunchedEffect(item.id) {
         countdown = effectiveSeconds
         while (countdown > 0) {
             delay(1000L)

@@ -72,7 +72,8 @@ object NotificationCenterStore {
     fun fetchForcePopups(reset: Boolean = false) {
         scope.launch {
             api.getForcePopups(reset).onSuccess { data ->
-                val seconds = data.readSeconds ?: 15
+                val itemSeconds = data.list.firstOrNull()?.let { it.readSeconds ?: it.payload?.readSeconds }
+                val seconds = data.readSeconds ?: itemSeconds ?: 15
                 _forcePopupReadSeconds.value = seconds.coerceAtLeast(1)
                 val newList = data.list
                 if (newList.isNotEmpty()) {

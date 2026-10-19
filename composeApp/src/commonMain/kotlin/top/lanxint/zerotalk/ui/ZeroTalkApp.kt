@@ -1452,13 +1452,20 @@ fun ZeroTalkApp() {
 
         // 全站强制公告阻断式弹窗（倒计时读秒后方可确认消除）
         if (currentForcePopup != null) {
+            val popupSeconds = currentForcePopup.readSeconds
+                ?: currentForcePopup.payload?.readSeconds
+                ?: forcePopupReadSeconds
             AdminNoticeForceModal(
                 item = currentForcePopup,
-                readSeconds = forcePopupReadSeconds,
+                readSeconds = popupSeconds,
                 isAcking = isAckingForcePopup,
                 isDark = isDark,
                 onAck = {
-                    NotificationCenterStore.ackCurrentForcePopup()
+                    NotificationCenterStore.ackCurrentForcePopup { success, error ->
+                        if (!success && error != null) {
+                            notificationState.show(error)
+                        }
+                    }
                 }
             )
         }

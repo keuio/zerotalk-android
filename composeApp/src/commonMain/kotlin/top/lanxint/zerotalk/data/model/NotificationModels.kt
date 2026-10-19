@@ -23,7 +23,8 @@ data class NotificationItemDto(
     @SerializedName("ref_id") val refId: Long? = null,
     @SerializedName("actor_uid") val actorUid: String? = null,
     @SerializedName("actor_id") val actorId: Long? = null,
-    @SerializedName("payload") val payload: NotificationPayloadDto? = null
+    @SerializedName("payload") val payload: NotificationPayloadDto? = null,
+    @SerializedName(value = "read_seconds", alternate = ["readSeconds", "seconds", "duration"]) val readSeconds: Int? = null
 )
 
 /**
@@ -35,7 +36,8 @@ data class NotificationPayloadDto(
     @SerializedName("room_id") val roomId: String? = null,
     @SerializedName("uid") val uid: String? = null,
     @SerializedName("user_id") val userId: Long? = null,
-    @SerializedName("follower_id") val followerId: Long? = null
+    @SerializedName("follower_id") val followerId: Long? = null,
+    @SerializedName(value = "read_seconds", alternate = ["readSeconds", "seconds", "duration"]) val readSeconds: Int? = null
 )
 
 /**

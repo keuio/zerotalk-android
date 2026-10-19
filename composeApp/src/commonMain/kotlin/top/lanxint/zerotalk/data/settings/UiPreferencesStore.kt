@@ -301,6 +301,62 @@ object UiPreferencesStore {
         setChatDraft(roomId, "")
     }
 
+    // ==================== 已关闭房间公告 (Dismissed Room Announcements) ====================
+    private const val DISMISSED_ANNOUNCEMENTS_FILE = "zt_dismissed_announcements.json"
+    private val dismissedAnnouncementsCache = mutableMapOf<String, String>()
+    private var dismissedAnnouncementsLoaded = false
+
+    /**
+     * 获取已被用户手动关闭的群/房间公告映射表（roomId -> announcementText）
+     */
+    @Synchronized
+    fun getDismissedRoomAnnouncements(): Map<String, String> {
+        if (!dismissedAnnouncementsLoaded) {
+            dismissedAnnouncementsLoaded = true
+            val json = readText(DISMISSED_ANNOUNCEMENTS_FILE)
+            if (!json.isNullOrBlank()) {
+                try {
+                    val map = Gson().fromJson<Map<String, String>>(
+                        json,
+                        object : TypeToken<Map<String, String>>() {}.type
+                    )
+                    if (map != null) {
+                        dismissedAnnouncementsCache.putAll(map)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+        return dismissedAnnouncementsCache.toMap()
+    }
+
+    /**
+     * 记录某个房间已被关闭的公告文本；只有当后续公告内容变更时才会重新弹出
+     */
+    @Synchronized
+    fun setDismissedRoomAnnouncement(roomId: String, announcementText: String) {
+        if (roomId.isBlank()) return
+        getDismissedRoomAnnouncements() // 确保已加载
+        val trimmed = announcementText.trim()
+        val changed = if (trimmed.isEmpty()) {
+            dismissedAnnouncementsCache.remove(roomId) != null
+        } else {
+            val prev = dismissedAnnouncementsCache.put(roomId, trimmed)
+            prev != trimmed
+        }
+        if (changed) {
+            val json = Gson().toJson(dismissedAnnouncementsCache)
+            writeText(DISMISSED_ANNOUNCEMENTS_FILE, json)
+        }
+    }
+
+    /**
+     * 清除指定房间已关闭的公告记录（例如群主清空公告，或发布了新公告）
+     */
+    @Synchronized
+    fun clearDismissedRoomAnnouncement(roomId: String) {
+        setDismissedRoomAnnouncement(roomId, "")
+    }
+
     // ==================== 动态草稿 (Moment Draft) ====================
 
     /**

@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.Casino
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -187,6 +188,7 @@ import top.lanxint.zerotalk.ui.moments.MomentNeteasePickerSheet
 import top.lanxint.zerotalk.ui.sheets.RoomMusicSheet
 import top.lanxint.zerotalk.ui.sheets.GamePickerSheet
 import top.lanxint.zerotalk.ui.sheets.VoiceCallMemberPickerSheet
+import top.lanxint.zerotalk.ui.sheets.MentionMemberPickerSheet
 import top.lanxint.zerotalk.ui.sheets.MyGameSessionsSheet
 import top.lanxint.zerotalk.ui.sheets.UnlockRoomMode
 import top.lanxint.zerotalk.ui.sheets.UnlockRoomSheet
@@ -423,6 +425,13 @@ fun PrivateChatScreen(
     }
     var mentionTargets by remember(conversation.id) { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var isVoiceMode by remember { mutableStateOf(false) }
+    var showMentionPicker by remember(conversation.id) { mutableStateOf(false) }
+
+    LaunchedEffect(conversation.id, isGroupRoom) {
+        if (isGroupRoom) {
+            ZeroTalkClientManager.loadRoomMembers(conversation.id)
+        }
+    }
 
     // 聊天语音：按官网通用规范录制 M4A(AAC) 音频（兼容 Web 端 Chrome/Safari/Edge 与 Android 播放，避免 Android WebM 非标编码导致网页端无声）
     val chatAudioRecorder = rememberMomentAudioRecorder(MomentAudioFormat.M4A)
@@ -1358,7 +1367,15 @@ fun PrivateChatScreen(
             },
             inputText = inputTextState,
             onInputTextChange = { newText ->
+                val prev = inputTextState.value
                 inputText = newText
+                // 在暗号群聊中输入 '@' 时自动触发成员选择列表
+                if (isGroupRoom && newText.length > prev.length) {
+                    val added = newText.substring(prev.length)
+                    if (added == "@" || (newText.endsWith("@") && !prev.endsWith("@"))) {
+                        showMentionPicker = true
+                    }
+                }
                 // 上报自己的输入状态：有内容 → active=true（仓库层按 2 秒节流）；清空 → active=false
                 ZeroTalkClientManager.sendTypingIndicator(newText.isNotBlank())
             },
@@ -1369,6 +1386,7 @@ fun PrivateChatScreen(
                 val quotedSenderName = quotingMessage?.senderName
                 val replyToId = quotingMessage?.serverId?.takeIf { it > 0L }
                 val mentionIds = mentionTargets
+                    .filter { contentToSend.contains("@${it.second}") }
                     .map { it.first }
                     .filter(String::isNotBlank)
                     .distinct()
@@ -1397,87 +1415,113 @@ fun PrivateChatScreen(
             },
             onCancelQuote = { quotingMessage = null },
             // 抽屉扩展项：全集与顺序与重构前完全一致（组件点击时会先收起抽屉，与旧实现一致）
-            actions = listOf(
-                ChatComposerAction(
-                    id = "photo",
-                    label = "照片",
-                    icon = Icons.Default.Image,
-                    color = Color(0xFF34C759)
-                ) {
-                    // 实测链路：presign(upload_source=chat_image, room_id) → PUT → bind → WS type=image
-                    chatPhotoPicker.launch()
-                },
-                ChatComposerAction(
-                    id = "voice_file",
-                    label = "语音文件",
-                    icon = Icons.AutoMirrored.Filled.VolumeUp,
-                    color = Color(0xFF5856D6)
-                ) {
-                    // 实测链路：presign(upload_source=chat_audio, audio_source=file) → PUT → bind → WS type=audio
-                    chatAudioFilePicker.launch()
-                },
-                ChatComposerAction(
-                    id = "music_share",
-                    label = "分享歌曲",
-                    icon = Icons.Default.MusicNote,
-                    color = Color(0xFF007AFF)
-                ) {
-                    showMusicShareSheet = true
-                },
-                ChatComposerAction(
-                    id = "room_music",
-                    label = "房间音乐",
-                    icon = Icons.Default.GraphicEq,
-                    color = Color(0xFFFF2D55)
-                ) {
-                    showRoomMusicSheet = true
-                },
-                ChatComposerAction(
-                    id = "dice",
-                    label = "摇骰子",
-                    icon = Icons.Default.Casino,
-                    color = Color(0xFFFF9500)
-                ) {
-                    ZeroTalkClientManager.sendRoomDice(conversation.id)
-                },
-                ChatComposerAction(
-                    id = "game",
-                    label = "游戏",
-                    icon = Icons.Default.SportsEsports,
-                    color = Color(0xFFAF52DE)
-                ) {
-                    showGamePickerSheet = true
-                },
-                ChatComposerAction(
-                    id = "voice_call",
-                    label = "语音通话",
-                    icon = Icons.Default.Call,
-                    color = Color(0xFF34C759)
-                ) {
-                    // 对齐官网 useVoiceCall 的判定：
-                    // ① 群聊先选成员（voice-picker-panel「请选择一位成员发起语音通话」）
-                    // ② 私聊需双方互发文字后才能发起
-                    // 注：to_user_id 可空，服务端会按房间推导对端（官网同样只在已知时携带）
-                    val toUserId = conversation.targetUserId.toLongOrNull()?.takeIf { it > 0 }
-                    // 延迟读取：本段在点击时才执行，不参与组合期读取
-                    val roomMessages = roomMessagesMap[conversation.id].orEmpty()
-                    val hasBothSidesText = roomMessages.any { it.isMine } &&
-                        roomMessages.any { !it.isMine }
-                    when {
-                        isGroupRoom -> showVoiceCallPicker = true
-                        !hasBothSidesText ->
-                            notificationState.show("私聊需双方互发文字后才能发送图片、语音、表情包、音乐或发起语音通话")
-
-                        else -> ZeroTalkClientManager.voiceCall.startCall(
-                            roomId = conversation.id,
-                            toUserId = toUserId,
-                            toUid = conversation.targetUid.takeIf { it.isNotBlank() },
-                            peerLabel = conversation.targetName,
-                            peerAvatarUrl = conversation.targetAvatar
-                        )
-                    }
+            actions = buildList {
+                if (isGroupRoom) {
+                    add(
+                        ChatComposerAction(
+                            id = "mention",
+                            label = "@成员",
+                            icon = Icons.Default.Group,
+                            color = Color(0xFF007AFF)
+                        ) {
+                            showMentionPicker = true
+                        }
+                    )
                 }
-            ),
+                add(
+                    ChatComposerAction(
+                        id = "photo",
+                        label = "照片",
+                        icon = Icons.Default.Image,
+                        color = Color(0xFF34C759)
+                    ) {
+                        // 实测链路：presign(upload_source=chat_image, room_id) → PUT → bind → WS type=image
+                        chatPhotoPicker.launch()
+                    }
+                )
+                add(
+                    ChatComposerAction(
+                        id = "voice_file",
+                        label = "语音文件",
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
+                        color = Color(0xFF5856D6)
+                    ) {
+                        // 实测链路：presign(upload_source=chat_audio, audio_source=file) → PUT → bind → WS type=audio
+                        chatAudioFilePicker.launch()
+                    }
+                )
+                add(
+                    ChatComposerAction(
+                        id = "music_share",
+                        label = "分享歌曲",
+                        icon = Icons.Default.MusicNote,
+                        color = Color(0xFF007AFF)
+                    ) {
+                        showMusicShareSheet = true
+                    }
+                )
+                add(
+                    ChatComposerAction(
+                        id = "room_music",
+                        label = "房间音乐",
+                        icon = Icons.Default.GraphicEq,
+                        color = Color(0xFFFF2D55)
+                    ) {
+                        showRoomMusicSheet = true
+                    }
+                )
+                add(
+                    ChatComposerAction(
+                        id = "dice",
+                        label = "摇骰子",
+                        icon = Icons.Default.Casino,
+                        color = Color(0xFFFF9500)
+                    ) {
+                        ZeroTalkClientManager.sendRoomDice(conversation.id)
+                    }
+                )
+                add(
+                    ChatComposerAction(
+                        id = "game",
+                        label = "游戏",
+                        icon = Icons.Default.SportsEsports,
+                        color = Color(0xFFAF52DE)
+                    ) {
+                        showGamePickerSheet = true
+                    }
+                )
+                add(
+                    ChatComposerAction(
+                        id = "voice_call",
+                        label = "语音通话",
+                        icon = Icons.Default.Call,
+                        color = Color(0xFF34C759)
+                    ) {
+                        // 对齐官网 useVoiceCall 的判定：
+                        // ① 群聊先选成员（voice-picker-panel「请选择一位成员发起语音通话」）
+                        // ② 私聊需双方互发文字后才能发起
+                        // 注：to_user_id 可空，服务端会按房间推导对端（官网同样只在已知时携带）
+                        val toUserId = conversation.targetUserId.toLongOrNull()?.takeIf { it > 0 }
+                        // 延迟读取：本段在点击时才执行，不参与组合期读取
+                        val roomMessages = roomMessagesMap[conversation.id].orEmpty()
+                        val hasBothSidesText = roomMessages.any { it.isMine } &&
+                            roomMessages.any { !it.isMine }
+                        when {
+                            isGroupRoom -> showVoiceCallPicker = true
+                            !hasBothSidesText ->
+                                notificationState.show("私聊需双方互发文字后才能发送图片、语音、表情包、音乐或发起语音通话")
+
+                            else -> ZeroTalkClientManager.voiceCall.startCall(
+                                roomId = conversation.id,
+                                toUserId = toUserId,
+                                toUid = conversation.targetUid.takeIf { it.isNotBlank() },
+                                peerLabel = conversation.targetName,
+                                peerAvatarUrl = conversation.targetAvatar
+                            )
+                        }
+                    }
+                )
+            },
             isDark = isDark,
             backdrop = chatBackdrop,
             controlContentColor = controlContentColor,
@@ -1946,6 +1990,40 @@ fun PrivateChatScreen(
                         )
                     },
                     onDismiss = { showVoiceCallPicker = false }
+                )
+            }
+        }
+
+        // ---- 10.6 群聊 @ 成员选择器 ----
+        if (showMentionPicker) {
+            AppleModalBottomSheet(
+                onDismissRequest = { showMentionPicker = false },
+                backdrop = chatBackdrop,
+                title = null,
+                leadingAction = SheetAction.None,
+                isDark = isDark
+            ) {
+                MentionMemberPickerSheet(
+                    roomId = conversation.id,
+                    isDark = isDark,
+                    onPick = { member ->
+                        showMentionPicker = false
+                        val name = member.username.ifBlank { "零友" }
+                        val id = member.uid.ifBlank { member.userId.toString() }
+                        val current = inputTextState.value
+                        val newText = if (current.endsWith("@")) {
+                            current.dropLast(1) + "@$name "
+                        } else if (current.isEmpty() || current.endsWith(" ")) {
+                            "${current}@$name "
+                        } else {
+                            "$current @$name "
+                        }
+                        inputText = newText
+                        if (id.isNotBlank()) {
+                            mentionTargets = (mentionTargets + (id to name)).distinctBy { it.first }
+                        }
+                    },
+                    onDismiss = { showMentionPicker = false }
                 )
             }
         }

@@ -1922,8 +1922,18 @@ object ZeroTalkClientManager {
         }
         _roomBootstrapMap.value = _roomBootstrapMap.value + (roomId to updatedBootstrap)
 
-        // 清除该房间被关闭的公告记录，重新向用户弹出
-        _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - roomId
+        // 仅当新发布的公告内容非空且与此前已关闭的内容不同时，才清除关闭记录重新弹出；
+        // 若公告被清空，或公告未实质发生变动（例如仅更新房间名），绝不重复弹出
+        if (announcementText.isEmpty()) {
+            _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - roomId
+            UiPreferencesStore.clearDismissedRoomAnnouncement(roomId)
+        } else {
+            val prevDismissed = _dismissedRoomAnnouncements.value[roomId]
+            if (prevDismissed != null && prevDismissed != announcementText) {
+                _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - roomId
+                UiPreferencesStore.clearDismissedRoomAnnouncement(roomId)
+            }
+        }
 
         // 若有更新房间名称，同步到 conversations
         if (!event.roomName.isNullOrBlank()) {
@@ -5106,14 +5116,16 @@ object ZeroTalkClientManager {
         }
     }
 
-    /** 已被用户关闭/隐去的房间公告集合（按 roomId 记录；若公告更新则会自动重现） */
-    private val _dismissedRoomAnnouncements = MutableStateFlow<Map<String, String>>(emptyMap())
+    /** 已被用户关闭/隐去的房间公告集合（按 roomId 记录；若公告更新则会自动重现，并持久化到本地） */
+    private val _dismissedRoomAnnouncements = MutableStateFlow<Map<String, String>>(UiPreferencesStore.getDismissedRoomAnnouncements())
     val dismissedRoomAnnouncements: StateFlow<Map<String, String>> = _dismissedRoomAnnouncements.asStateFlow()
 
     /** 用户手动关闭聊天页顶部的房间公告横幅条 */
     fun dismissRoomAnnouncement(roomId: String, announcementText: String) {
         if (roomId.isBlank()) return
-        _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value + (roomId to announcementText)
+        val trimmed = announcementText.trim()
+        _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value + (roomId to trimmed)
+        UiPreferencesStore.setDismissedRoomAnnouncement(roomId, trimmed)
     }
 
     /**
@@ -5200,8 +5212,17 @@ object ZeroTalkClientManager {
                     if (conv.id == room) conv.copy(targetName = name) else conv
                 }
 
-                // 如果公告发生了实质变更，清掉此前的关闭记录，让新公告重新上屏
-                _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - room
+                // 如果清空了公告，同步清除持久化记录；如果修改成了新内容，清除关闭记录让新公告重新上屏
+                if (trimmedAnnouncement.isEmpty()) {
+                    _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - room
+                    UiPreferencesStore.clearDismissedRoomAnnouncement(room)
+                } else {
+                    val prevDismissed = _dismissedRoomAnnouncements.value[room]
+                    if (prevDismissed != null && prevDismissed != trimmedAnnouncement) {
+                        _dismissedRoomAnnouncements.value = _dismissedRoomAnnouncements.value - room
+                        UiPreferencesStore.clearDismissedRoomAnnouncement(room)
+                    }
+                }
 
                 fetchRoomList()
                 onResult?.invoke(true, null)
