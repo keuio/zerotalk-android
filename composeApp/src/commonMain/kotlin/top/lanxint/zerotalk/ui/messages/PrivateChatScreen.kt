@@ -280,7 +280,8 @@ fun PrivateChatScreen(
     // 群聊判定：优先后端下发的房间类型，其次回落到会话分类（暗号）
     val groupRoomsMap by ZeroTalkClientManager.groupRooms.collectAsStateWithLifecycle()
     val isGroupRoom = groupRoomsMap[conversation.id] == true ||
-        conversation.category == MessageCategory.CODE
+        conversation.category == MessageCategory.CODE ||
+        conversation.id.startsWith("room_")
 
     // 房管权限（viewer_can_delete_message）：可删除本房他人消息
     val roomBootstrapMap by ZeroTalkClientManager.roomBootstrapMap.collectAsStateWithLifecycle()
@@ -1369,10 +1370,18 @@ fun PrivateChatScreen(
             onInputTextChange = { newText ->
                 val prev = inputTextState.value
                 inputText = newText
-                // 在暗号群聊中输入 '@' 时自动触发成员选择列表
-                if (isGroupRoom && newText.length > prev.length) {
-                    val added = newText.substring(prev.length)
-                    if (added == "@" || (newText.endsWith("@") && !prev.endsWith("@"))) {
+                // 在暗号群聊中输入 '@' 或 '＠' 时自动触发成员选择列表
+                if (isGroupRoom) {
+                    val prevAtCount = prev.count { it == '@' || it == '＠' }
+                    val newAtCount = newText.count { it == '@' || it == '＠' }
+                    val hasNewAt = newAtCount > prevAtCount ||
+                        (newText.endsWith("@") && !prev.endsWith("@")) ||
+                        (newText.endsWith("＠") && !prev.endsWith("＠")) ||
+                        (newText.endsWith("@ ") && !prev.endsWith("@ ")) ||
+                        (newText.endsWith("＠ ") && !prev.endsWith("＠ "))
+                    if (hasNewAt) {
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
                         showMentionPicker = true
                     }
                 }
@@ -2011,8 +2020,9 @@ fun PrivateChatScreen(
                         val name = member.username.ifBlank { "零友" }
                         val id = member.uid.ifBlank { member.userId.toString() }
                         val current = inputTextState.value
-                        val newText = if (current.endsWith("@")) {
-                            current.dropLast(1) + "@$name "
+                        val lastAtIndex = current.lastIndexOfAny(charArrayOf('@', '＠'))
+                        val newText = if (lastAtIndex >= 0 && lastAtIndex >= current.length - 2) {
+                            current.substring(0, lastAtIndex) + "@$name "
                         } else if (current.isEmpty() || current.endsWith(" ")) {
                             "${current}@$name "
                         } else {
